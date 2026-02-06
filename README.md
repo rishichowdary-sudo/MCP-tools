@@ -1,13 +1,13 @@
 # MCP Tools Agent UI
 
-Web app that connects OpenAI chat with Gmail, Google Calendar, and GitHub tools.
+Web app that connects OpenAI chat with Gmail, Google Calendar (including Google Meet links), Google Chat, and GitHub tools.
 
 ## Prerequisites
 
 - Node.js `18+`
 - npm
 - OpenAI API key
-- Google OAuth client (for Gmail/Calendar features)
+- Google OAuth client (for Gmail/Calendar/Chat features)
 - GitHub OAuth app (for GitHub features)
 
 ## 1) Install dependencies
@@ -24,7 +24,7 @@ Create a `.env` file in the project root:
 OPENAI_API_KEY=your_openai_api_key_here
 PORT=3000
 
-# Google OAuth (required for Gmail/Calendar)
+# Google OAuth (required for Gmail/Calendar/Chat)
 # You can use either GOOGLE_* or GMAIL_* names.
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
@@ -40,7 +40,7 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 
 In Google Cloud Console:
 
-1. Enable Gmail API and Google Calendar API.
+1. Enable Gmail API, Google Calendar API, and Google Chat API.
 2. Create OAuth client credentials (Web application).
 3. Add this redirect URI:
    `http://localhost:3000/oauth2callback`
@@ -71,9 +71,20 @@ Open:
 ## 6) Connect services in the UI
 
 1. Click `Sign in with Google` to connect Gmail.
-2. For Calendar, use the Calendar panel `Sign in with Google` if it asks again.
+2. For Calendar and Google Chat, use their panel `Sign in with Google` buttons if re-consent is needed.
 3. Click `Sign in with GitHub` in the GitHub panel.
 4. Use each panel's `Reauthenticate` button any time you want to switch accounts.
+
+## Meet + Chat Tools
+
+- Calendar now supports:
+  - `create_meet_event` to create events with Meet links
+  - `add_meet_link_to_event` to add Meet links to existing events
+  - `create_event` with `createMeetLink=true`
+- Google Chat now supports:
+  - `list_chat_spaces`
+  - `send_chat_message`
+  - `list_chat_messages`
 
 ## Notes
 

@@ -4,16 +4,20 @@ const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const gmailNavItem = document.getElementById('gmailNavItem');
 const calendarNavItem = document.getElementById('calendarNavItem');
+const gchatNavItem = document.getElementById('gchatNavItem');
 const githubNavItem = document.getElementById('githubNavItem');
 const gmailPanel = document.getElementById('gmailPanel');
 const calendarPanel = document.getElementById('calendarPanel');
+const gchatPanel = document.getElementById('gchatPanel');
 const githubPanel = document.getElementById('githubPanel');
 const authenticateBtn = document.getElementById('authenticateBtn');
 const calendarAuthBtn = document.getElementById('calendarAuthBtn');
+const gchatAuthBtn = document.getElementById('gchatAuthBtn');
 const githubAuthBtn = document.getElementById('githubAuthBtn');
 const githubDisconnectBtn = document.getElementById('githubDisconnectBtn');
 const gmailReauthBtn = document.getElementById('gmailReauthBtn');
 const calendarReauthBtn = document.getElementById('calendarReauthBtn');
+const gchatReauthBtn = document.getElementById('gchatReauthBtn');
 const githubReauthBtn = document.getElementById('githubReauthBtn');
 const githubAuthNote = document.getElementById('githubAuthNote');
 const authSection = document.getElementById('authSection');
@@ -21,13 +25,17 @@ const connectedSection = document.getElementById('connectedSection');
 const setupSection = document.getElementById('setupSection');
 const calendarAuthSection = document.getElementById('calendarAuthSection');
 const calendarConnectedSection = document.getElementById('calendarConnectedSection');
+const gchatAuthSection = document.getElementById('gchatAuthSection');
+const gchatConnectedSection = document.getElementById('gchatConnectedSection');
 const githubAuthSection = document.getElementById('githubAuthSection');
 const githubConnectedSection = document.getElementById('githubConnectedSection');
 const gmailStatus = document.getElementById('gmailStatus');
 const calendarStatus = document.getElementById('calendarStatus');
+const gchatStatus = document.getElementById('gchatStatus');
 const githubStatus = document.getElementById('githubStatus');
 const gmailBadge = document.getElementById('gmailBadge');
 const calendarBadge = document.getElementById('calendarBadge');
+const gchatBadge = document.getElementById('gchatBadge');
 const githubBadge = document.getElementById('githubBadge');
 const turnsBadge = document.getElementById('turnsBadge');
 const turnsCount = document.getElementById('turnsCount');
@@ -42,10 +50,11 @@ const modalTitle = document.getElementById('modalTitle');
 let chatHistory = [];
 let isGmailConnected = false;
 let isCalendarConnected = false;
+let isGchatConnected = false;
 let isGithubConnected = false;
 let activeFilter = 'all';
 
-// Tool icon mapping (all 60 tools)
+// Tool icon mapping
 const TOOL_ICONS = {
     // Gmail (25)
     send_email: '&#9993;', search_emails: '&#128269;', read_email: '&#128214;',
@@ -57,13 +66,17 @@ const TOOL_ICONS = {
     get_thread: '&#128172;', list_drafts: '&#128196;', delete_draft: '&#128465;',
     send_draft: '&#128228;', get_attachment_info: '&#128206;', get_profile: '&#128100;',
     batch_modify_emails: '&#9881;',
-    // Calendar (15)
+    // Calendar
     list_events: '&#128197;', get_event: '&#128196;', create_event: '&#10133;',
+    create_meet_event: '&#128249;', add_meet_link_to_event: '&#128279;',
     update_event: '&#9998;', delete_event: '&#128465;', list_calendars: '&#128197;',
     create_calendar: '&#10133;', quick_add_event: '&#9889;', get_free_busy: '&#128338;',
+    check_person_availability: '&#128100;', find_common_free_slots: '&#129309;',
     list_recurring_instances: '&#128257;', move_event: '&#10145;',
     update_event_attendees: '&#128101;', get_calendar_colors: '&#127912;',
     clear_calendar: '&#128465;', watch_events: '&#128276;',
+    // Google Chat (3)
+    list_chat_spaces: '&#128172;', send_chat_message: '&#9993;', list_chat_messages: '&#128221;',
     // GitHub (20)
     list_repos: '&#128193;', get_repo: '&#128196;', create_repo: '&#10133;',
     list_issues: '&#128196;', create_issue: '&#10133;', update_issue: '&#9998;',
@@ -88,9 +101,15 @@ const GMAIL_CATEGORIES = {
 
 const CALENDAR_CATEGORIES = {
     'Events': ['list_events', 'get_event', 'create_event', 'update_event', 'delete_event', 'quick_add_event'],
+    'Meet': ['create_meet_event', 'add_meet_link_to_event'],
     'Calendars': ['list_calendars', 'create_calendar', 'clear_calendar'],
-    'Scheduling': ['get_free_busy', 'list_recurring_instances', 'move_event'],
+    'Scheduling': ['get_free_busy', 'check_person_availability', 'find_common_free_slots', 'list_recurring_instances', 'move_event'],
     'Management': ['update_event_attendees', 'get_calendar_colors', 'watch_events']
+};
+
+const GCHAT_CATEGORIES = {
+    'Spaces': ['list_chat_spaces'],
+    'Messages': ['send_chat_message', 'list_chat_messages']
 };
 
 const GITHUB_CATEGORIES = {
@@ -125,6 +144,7 @@ function setupEventListeners() {
     // Nav items -> panels
     gmailNavItem.addEventListener('click', () => openPanel('gmail'));
     calendarNavItem.addEventListener('click', () => openPanel('calendar'));
+    gchatNavItem.addEventListener('click', () => openPanel('gchat'));
     githubNavItem.addEventListener('click', () => openPanel('github'));
 
     // Close panel buttons
@@ -165,10 +185,12 @@ function setupEventListeners() {
     // Auth buttons
     authenticateBtn.addEventListener('click', initiateGoogleAuth);
     calendarAuthBtn.addEventListener('click', initiateCalendarAuth);
+    gchatAuthBtn.addEventListener('click', initiateGchatAuth);
     githubAuthBtn.addEventListener('click', initiateGithubAuth);
     githubDisconnectBtn.addEventListener('click', disconnectGitHub);
     gmailReauthBtn.addEventListener('click', initiateGoogleAuth);
     calendarReauthBtn.addEventListener('click', initiateCalendarAuth);
+    gchatReauthBtn.addEventListener('click', initiateGchatAuth);
     githubReauthBtn.addEventListener('click', initiateGithubAuth);
 
     // Quick action buttons (all panels)
@@ -198,8 +220,8 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, github: githubPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, github: githubNavItem };
+    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, github: githubPanel };
+    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, github: githubNavItem };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -207,8 +229,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, githubPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, githubNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, githubPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, githubNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -234,6 +256,7 @@ async function loadCapabilities() {
         const serviceConfig = {
             gmail: { label: 'Gmail', dot: 'gmail', categories: GMAIL_CATEGORIES },
             calendar: { label: 'Google Calendar', dot: 'calendar', categories: CALENDAR_CATEGORIES },
+            gchat: { label: 'Google Chat', dot: 'gchat', categories: GCHAT_CATEGORIES },
             github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES }
         };
 
@@ -297,11 +320,13 @@ function autoResizeTextarea() {
 async function checkAllStatuses() {
     checkGmailStatus();
     checkCalendarStatus();
+    checkGchatStatus();
     checkGitHubStatus();
 
     setInterval(() => {
         checkGmailStatus();
         checkCalendarStatus();
+        checkGchatStatus();
         checkGitHubStatus();
     }, 5000);
 }
@@ -408,6 +433,34 @@ function updateGitHubStatus(data) {
     }
 }
 
+// Google Chat status
+async function checkGchatStatus() {
+    try {
+        const response = await fetch('/api/gchat/status');
+        const data = await response.json();
+        updateGchatStatus(data);
+    } catch (error) {
+        updateGchatStatus({ authenticated: false });
+    }
+}
+
+function updateGchatStatus(data) {
+    const statusDot = gchatStatus.querySelector('.status-dot');
+    isGchatConnected = data.authenticated;
+
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        gchatAuthSection.style.display = 'none';
+        gchatConnectedSection.style.display = 'block';
+        gchatBadge.style.display = 'inline-flex';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        gchatAuthSection.style.display = 'block';
+        gchatConnectedSection.style.display = 'none';
+        gchatBadge.style.display = 'none';
+    }
+}
+
 // Google OAuth (Gmail + Calendar)
 async function initiateGoogleAuth() {
     try {
@@ -424,6 +477,7 @@ async function initiateGoogleAuth() {
                     clearInterval(checkClosed);
                     checkGmailStatus();
                     checkCalendarStatus();
+                    checkGchatStatus();
                     resetGoogleAuthButton();
                 }
             }, 500);
@@ -453,6 +507,7 @@ async function initiateCalendarAuth() {
                     clearInterval(checkClosed);
                     checkGmailStatus();
                     checkCalendarStatus();
+                    checkGchatStatus();
                     resetCalendarAuthButton();
                 }
             }, 500);
@@ -475,6 +530,58 @@ function resetGoogleAuthButton() {
 function resetCalendarAuthButton() {
     calendarAuthBtn.disabled = false;
     calendarAuthBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg> Sign in with Google`;
+}
+
+async function initiateGchatAuth() {
+    try {
+        gchatAuthBtn.disabled = true;
+        gchatAuthBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...`;
+
+        const response = await fetch('/api/gchat/connect');
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 404) {
+                throw new Error('Google Chat auth route not found on backend. Restart the server so latest routes are loaded.');
+            }
+            throw new Error(`Unexpected non-JSON response from backend (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Google Chat auth failed with status ${response.status}`);
+        }
+
+        if (data.authUrl) {
+            const popup = window.open(data.authUrl, 'Google Chat Auth', 'width=600,height=700,left=200,top=100');
+            const checkClosed = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(checkClosed);
+                    checkGmailStatus();
+                    checkCalendarStatus();
+                    checkGchatStatus();
+                    resetGchatAuthButton();
+                }
+            }, 500);
+        } else if (data.setupRequired) {
+            alert('Please set up Google Cloud credentials first.');
+            resetGchatAuthButton();
+        } else {
+            alert(data.error || 'Failed to initiate Google Chat authentication');
+            resetGchatAuthButton();
+        }
+    } catch (error) {
+        console.error('Google Chat auth error:', error);
+        alert(error.message || 'Failed to initiate Google Chat authentication');
+        resetGchatAuthButton();
+    }
+}
+
+function resetGchatAuthButton() {
+    gchatAuthBtn.disabled = false;
+    gchatAuthBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg> Sign in with Google`;
 }
 
 // GitHub OAuth connect
@@ -704,6 +811,28 @@ function formatToolResults(results) {
                         <div class="email-card-from">To: ${escapeHtml(d.to || 'Not set')}</div>
                     </div>
                 `).join('');
+            // Google Chat spaces
+            } else if (result.result.spaces && Array.isArray(result.result.spaces)) {
+                content = result.result.spaces.map(s => `
+                    <div class="email-card">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(s.displayName || s.name)}</span>
+                            <span class="email-card-date">${escapeHtml(s.spaceType || '')}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(s.name || '')}</code></div>
+                    </div>
+                `).join('');
+            // Google Chat messages
+            } else if (result.result.space && result.result.messages && Array.isArray(result.result.messages)) {
+                content = result.result.messages.map(msg => `
+                    <div class="email-card thread-msg">
+                        <div class="email-card-header">
+                            <span class="email-card-from" style="font-weight:600">${escapeHtml(msg.sender || '')}</span>
+                            <span class="email-card-date">${formatDate(msg.createTime)}</span>
+                        </div>
+                        <div class="email-card-snippet">${escapeHtml(msg.text || '')}</div>
+                    </div>
+                `).join('');
             // Thread messages
             } else if (result.result.messages && Array.isArray(result.result.messages)) {
                 content = result.result.messages.map(msg => `
@@ -736,6 +865,7 @@ function formatToolResults(results) {
                         </div>
                         ${e.location ? `<div class="email-card-from">&#128205; ${escapeHtml(e.location)}</div>` : ''}
                         ${e.attendees && e.attendees.length > 0 ? `<div class="email-card-snippet">${e.attendees.length} attendee(s)</div>` : ''}
+                        ${e.meetLink ? `<div class="email-card-snippet"><a href="${escapeHtml(e.meetLink)}" target="_blank" rel="noopener noreferrer">Open Meet Link</a></div>` : ''}
                     </div>
                 `).join('');
             // Calendars list

@@ -28,9 +28,17 @@ const SCOPES = [
     'https://www.googleapis.com/auth/gmail.labels',
     'https://www.googleapis.com/auth/gmail.compose',
     'https://www.googleapis.com/auth/gmail.settings.basic',
-    'https://www.googleapis.com/auth/calendar'
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/chat.spaces.readonly',
+    'https://www.googleapis.com/auth/chat.messages.create',
+    'https://www.googleapis.com/auth/chat.messages.readonly'
 ];
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
+const GCHAT_REQUIRED_SCOPES = [
+    'https://www.googleapis.com/auth/chat.spaces.readonly',
+    'https://www.googleapis.com/auth/chat.messages.create',
+    'https://www.googleapis.com/auth/chat.messages.readonly'
+];
 const GOOGLE_OAUTH_PROMPT = 'consent select_account';
 const GITHUB_OAUTH_SCOPES = ['repo', 'read:user', 'user:email', 'notifications', 'gist'];
 const GITHUB_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -41,10 +49,16 @@ const GITHUB_TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME,
 let oauth2Client = null;
 let gmailClient = null;
 let calendarClient = null;
+let gchatClient = null;
 let octokitClient = null;
 let githubUsername = null;
 let githubAuthMethod = null;
 const githubOAuthStateStore = new Map();
+let cachedPrimaryEmail = null;
+
+const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
+const DISALLOWED_ATTENDEE_DOMAINS = new Set(['example.com', 'test.com', 'domain.com', 'email.com']);
+const NO_REPLY_PATTERN = /(no-?reply|do-?not-?reply|noreply)/i;
 
 function parseScopes(scopeString) {
     if (!scopeString || typeof scopeString !== 'string') return new Set();
@@ -54,6 +68,12 @@ function parseScopes(scopeString) {
 function tokenHasScope(token, scope) {
     if (!token || !scope) return false;
     return parseScopes(token.scope).has(scope);
+}
+
+function tokenHasScopes(token, scopes) {
+    if (!token || !Array.isArray(scopes) || scopes.length === 0) return false;
+    const granted = parseScopes(token.scope);
+    return scopes.every(scope => granted.has(scope));
 }
 
 function readSavedToken() {
@@ -74,12 +94,30 @@ function hasCalendarScope() {
     return tokenHasScope(savedToken, CALENDAR_SCOPE);
 }
 
+function hasGchatScopes() {
+    if (oauth2Client && tokenHasScopes(oauth2Client.credentials, GCHAT_REQUIRED_SCOPES)) {
+        return true;
+    }
+    const savedToken = readSavedToken();
+    return tokenHasScopes(savedToken, GCHAT_REQUIRED_SCOPES);
+}
+
 function getCalendarPermissionError(error) {
     const status = error?.code || error?.status || error?.response?.status;
     const message = String(error?.message || '');
     const looksLikeScopeError = /insufficient|permission|scope|forbidden|unauthorized/i.test(message);
     if ((status === 401 || status === 403) && looksLikeScopeError) {
         return 'Calendar permission is missing or expired. Please reconnect Google Calendar from the Calendar panel and try again.';
+    }
+    return null;
+}
+
+function getGchatPermissionError(error) {
+    const status = error?.code || error?.status || error?.response?.status;
+    const message = String(error?.message || '');
+    const looksLikeScopeError = /insufficient|permission|scope|forbidden|unauthorized/i.test(message);
+    if ((status === 401 || status === 403) && looksLikeScopeError) {
+        return 'Google Chat permission is missing or expired. Please reconnect Google Chat from the Chat panel and try again.';
     }
     return null;
 }
@@ -182,10 +220,16 @@ function initOAuthClient() {
             calendarClient = tokenHasScope(token, CALENDAR_SCOPE)
                 ? google.calendar({ version: 'v3', auth: oauth2Client })
                 : null;
+            gchatClient = tokenHasScopes(token, GCHAT_REQUIRED_SCOPES)
+                ? google.chat({ version: 'v1', auth: oauth2Client })
+                : null;
             if (calendarClient) {
                 console.log('Gmail + Calendar clients initialized with existing token');
             } else {
                 console.log('Gmail initialized. Calendar scope missing in token; reconnect required for Calendar tools.');
+            }
+            if (!gchatClient) {
+                console.log('Google Chat scopes missing in token; reconnect required for Chat tools.');
             }
         }
         return true;
@@ -582,6 +626,7 @@ async function getAttachmentInfo({ messageId }) {
 async function getProfile() {
     if (!gmailClient) throw new Error('Gmail not authenticated');
     const profile = await gmailClient.users.getProfile({ userId: 'me' });
+    cachedPrimaryEmail = (profile.data.emailAddress || '').toLowerCase() || cachedPrimaryEmail;
     return {
         emailAddress: profile.data.emailAddress,
         messagesTotal: profile.data.messagesTotal,
@@ -604,8 +649,353 @@ async function batchModifyEmails({ messageIds, addLabelIds = [], removeLabelIds 
 }
 
 // ============================================================
-//  15 GOOGLE CALENDAR TOOL IMPLEMENTATIONS
+//  GOOGLE CALENDAR TOOL IMPLEMENTATIONS
 // ============================================================
+
+function getMeetLinkFromEvent(eventData) {
+    if (!eventData) return null;
+    if (eventData.hangoutLink) return eventData.hangoutLink;
+    const entryPoints = eventData.conferenceData?.entryPoints || [];
+    const videoEntry = entryPoints.find(e => e.entryPointType === 'video');
+    return videoEntry?.uri || null;
+}
+
+function extractEmailsFromText(text) {
+    if (!text || typeof text !== 'string') return [];
+    return [...new Set((text.match(EMAIL_REGEX) || []).map(e => e.toLowerCase()))];
+}
+
+function normalizeIdentity(text) {
+    if (!text || typeof text !== 'string') return '';
+    return text
+        .toLowerCase()
+        .replace(/['"]/g, '')
+        .replace(/[_\-.,]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function isValidEmail(value) {
+    if (!value || typeof value !== 'string') return false;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function getEmailDomain(email) {
+    const i = email.lastIndexOf('@');
+    return i === -1 ? '' : email.slice(i + 1).toLowerCase();
+}
+
+function isDisallowedAttendeeEmail(email) {
+    if (!isValidEmail(email)) return true;
+    const domain = getEmailDomain(email);
+    if (DISALLOWED_ATTENDEE_DOMAINS.has(domain)) return true;
+    if (NO_REPLY_PATTERN.test(email)) return true;
+    return false;
+}
+
+async function getPrimaryEmailAddress() {
+    if (cachedPrimaryEmail) return cachedPrimaryEmail;
+    if (!gmailClient) return null;
+    try {
+        const profile = await gmailClient.users.getProfile({ userId: 'me' });
+        cachedPrimaryEmail = (profile?.data?.emailAddress || '').toLowerCase() || null;
+        return cachedPrimaryEmail;
+    } catch {
+        return null;
+    }
+}
+
+function attendeeLookupKey(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return '';
+    if (isValidEmail(raw)) {
+        if (!isDisallowedAttendeeEmail(raw)) return raw.toLowerCase();
+        return normalizeIdentity(raw.split('@')[0]);
+    }
+    return normalizeIdentity(raw);
+}
+
+async function resolveEmailFromGmailHistory(identity) {
+    const key = attendeeLookupKey(identity);
+    if (!key || !gmailClient) return null;
+
+    if (isValidEmail(key) && !isDisallowedAttendeeEmail(key)) {
+        return key.toLowerCase();
+    }
+
+    const ownEmail = await getPrimaryEmailAddress();
+    const queries = [
+        `"${key}"`,
+        `from:${key}`,
+        `to:${key}`
+    ];
+    const keyTokens = key.split(' ').filter(Boolean);
+    for (const token of keyTokens) {
+        if (token.length < 2) continue;
+        queries.push(`"${token}"`, `from:${token}`, `to:${token}`);
+    }
+    const requiresStrictHeaderMatch = key.includes(' ');
+
+    const scoreByEmail = new Map();
+    const seenMessageIds = new Set();
+
+    for (const q of queries) {
+        let messages = [];
+        try {
+            const list = await gmailClient.users.messages.list({ userId: 'me', q, maxResults: 10 });
+            messages = list?.data?.messages || [];
+        } catch {
+            continue;
+        }
+
+        for (const msg of messages) {
+            if (!msg?.id || seenMessageIds.has(msg.id)) continue;
+            seenMessageIds.add(msg.id);
+
+            try {
+                const data = await gmailClient.users.messages.get({
+                    userId: 'me',
+                    id: msg.id,
+                    format: 'metadata',
+                    metadataHeaders: ['From', 'To', 'Cc', 'Reply-To']
+                });
+
+                const headers = data?.data?.payload?.headers || [];
+                for (const header of headers) {
+                    const value = header?.value || '';
+                    const normalizedHeader = normalizeIdentity(value);
+                    const matchedIdentity = keyTokens.length > 1
+                        ? keyTokens.every(token => normalizedHeader.includes(token))
+                        : normalizedHeader.includes(key);
+                    if (requiresStrictHeaderMatch && !matchedIdentity) continue;
+                    const emails = extractEmailsFromText(value);
+
+                    for (const email of emails) {
+                        if (ownEmail && email === ownEmail) continue;
+                        if (isDisallowedAttendeeEmail(email)) continue;
+                        const localPart = normalizeIdentity(email.split('@')[0] || '');
+                        const matchedLocalPart = keyTokens.length > 1
+                            ? keyTokens.every(token => localPart.includes(token))
+                            : localPart.includes(key);
+                        if (requiresStrictHeaderMatch && !matchedIdentity && !matchedLocalPart) continue;
+                        const existing = scoreByEmail.get(email) || 0;
+                        const bump = matchedIdentity ? 5 : (matchedLocalPart ? 4 : 1);
+                        scoreByEmail.set(email, existing + bump);
+                    }
+                }
+            } catch {
+                continue;
+            }
+        }
+    }
+
+    if (scoreByEmail.size === 0) return null;
+    const ranked = [...scoreByEmail.entries()].sort((a, b) => b[1] - a[1]);
+    return ranked[0][0];
+}
+
+async function normalizeEventAttendees(attendeesInput = []) {
+    if (!Array.isArray(attendeesInput) || attendeesInput.length === 0) return [];
+
+    const resolved = [];
+    const unresolved = [];
+
+    for (const item of attendeesInput) {
+        const raw = String(item || '').trim();
+        if (!raw) continue;
+
+        if (isValidEmail(raw) && !isDisallowedAttendeeEmail(raw)) {
+            resolved.push(raw.toLowerCase());
+            continue;
+        }
+
+        const found = await resolveEmailFromGmailHistory(raw);
+        if (found) resolved.push(found.toLowerCase());
+        else unresolved.push(raw);
+    }
+
+    const deduped = [...new Set(resolved)];
+    if (unresolved.length > 0) {
+        throw new Error(`Could not resolve attendee email(s) from Gmail history: ${unresolved.join(', ')}. Please provide exact email address(es).`);
+    }
+    return deduped;
+}
+
+function parseIsoDateTime(value, fieldName) {
+    const parsed = new Date(value);
+    if (!value || Number.isNaN(parsed.getTime())) {
+        throw new Error(`${fieldName} must be a valid ISO 8601 datetime.`);
+    }
+    return parsed;
+}
+
+function normalizeDurationMinutes(value, fallback = 30) {
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes <= 0) return fallback;
+    return Math.round(minutes);
+}
+
+function mergeBusyIntervals(busy = [], rangeStart, rangeEnd) {
+    const normalized = [];
+
+    for (const interval of busy) {
+        const start = new Date(interval?.start);
+        const end = new Date(interval?.end);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) continue;
+        if (end <= rangeStart || start >= rangeEnd) continue;
+
+        const clippedStart = start < rangeStart ? rangeStart : start;
+        const clippedEnd = end > rangeEnd ? rangeEnd : end;
+        if (clippedEnd > clippedStart) {
+            normalized.push({ start: clippedStart, end: clippedEnd });
+        }
+    }
+
+    normalized.sort((a, b) => a.start - b.start);
+    const merged = [];
+    for (const interval of normalized) {
+        const previous = merged[merged.length - 1];
+        if (!previous || interval.start > previous.end) {
+            merged.push({ ...interval });
+            continue;
+        }
+        if (interval.end > previous.end) {
+            previous.end = interval.end;
+        }
+    }
+    return merged;
+}
+
+function calculateFreeSlots({ timeMin, timeMax, busy = [], durationMinutes = 30 }) {
+    const rangeStart = parseIsoDateTime(timeMin, 'timeMin');
+    const rangeEnd = parseIsoDateTime(timeMax, 'timeMax');
+    if (rangeEnd <= rangeStart) {
+        throw new Error('timeMax must be greater than timeMin.');
+    }
+
+    const minimumDurationMs = normalizeDurationMinutes(durationMinutes) * 60 * 1000;
+    const mergedBusy = mergeBusyIntervals(busy, rangeStart, rangeEnd);
+
+    const freeSlots = [];
+    let cursor = rangeStart;
+
+    for (const interval of mergedBusy) {
+        if (interval.start > cursor) {
+            const gapMs = interval.start.getTime() - cursor.getTime();
+            if (gapMs >= minimumDurationMs) {
+                freeSlots.push({
+                    start: cursor.toISOString(),
+                    end: interval.start.toISOString(),
+                    durationMinutes: Math.round(gapMs / 60000)
+                });
+            }
+        }
+        if (interval.end > cursor) {
+            cursor = interval.end;
+        }
+    }
+
+    if (rangeEnd > cursor) {
+        const gapMs = rangeEnd.getTime() - cursor.getTime();
+        if (gapMs >= minimumDurationMs) {
+            freeSlots.push({
+                start: cursor.toISOString(),
+                end: rangeEnd.toISOString(),
+                durationMinutes: Math.round(gapMs / 60000)
+            });
+        }
+    }
+
+    return {
+        mergedBusy: mergedBusy.map(interval => ({
+            start: interval.start.toISOString(),
+            end: interval.end.toISOString()
+        })),
+        freeSlots
+    };
+}
+
+function freeBusyErrorMessage(calendarId, errors = []) {
+    const reasonText = errors
+        .map(error => String(error?.reason || error?.message || '').toLowerCase())
+        .join(' ');
+    if (/notfound|forbidden|insufficientpermissions|accessdenied/.test(reasonText)) {
+        return `Cannot access availability for "${calendarId}". Ask them to share their calendar with at least "See free/busy" permission.`;
+    }
+    return `Could not retrieve availability for "${calendarId}".`;
+}
+
+async function resolveAvailabilityCalendarId({ person, email, calendarId }) {
+    const explicitCalendarId = String(calendarId || '').trim();
+    if (explicitCalendarId) return explicitCalendarId;
+
+    const explicitEmail = String(email || '').trim();
+    if (explicitEmail) {
+        if (!isValidEmail(explicitEmail) || isDisallowedAttendeeEmail(explicitEmail)) {
+            throw new Error(`Invalid attendee email: ${explicitEmail}`);
+        }
+        return explicitEmail.toLowerCase();
+    }
+
+    const personText = String(person || '').trim();
+    if (!personText) {
+        throw new Error('Provide one of: person, email, or calendarId.');
+    }
+    if (isValidEmail(personText) && !isDisallowedAttendeeEmail(personText)) {
+        return personText.toLowerCase();
+    }
+
+    const resolved = await resolveEmailFromGmailHistory(personText);
+    if (!resolved) {
+        throw new Error(`Could not resolve "${personText}" from Gmail history. Please provide exact email address.`);
+    }
+    return resolved.toLowerCase();
+}
+
+async function queryFreeBusyCalendars({ timeMin, timeMax, calendarIds = [] }) {
+    const rangeStart = parseIsoDateTime(timeMin, 'timeMin');
+    const rangeEnd = parseIsoDateTime(timeMax, 'timeMax');
+    if (rangeEnd <= rangeStart) {
+        throw new Error('timeMax must be greater than timeMin.');
+    }
+    if (!Array.isArray(calendarIds) || calendarIds.length === 0) {
+        throw new Error('calendarIds must include at least one calendar.');
+    }
+
+    const dedupedCalendarIds = [...new Set(
+        calendarIds
+            .map(id => String(id || '').trim())
+            .filter(Boolean)
+    )];
+    if (dedupedCalendarIds.length === 0) {
+        throw new Error('calendarIds must include at least one non-empty calendar ID.');
+    }
+
+    const response = await calendarClient.freebusy.query({
+        requestBody: {
+            timeMin: rangeStart.toISOString(),
+            timeMax: rangeEnd.toISOString(),
+            items: dedupedCalendarIds.map(id => ({ id }))
+        }
+    });
+
+    const calendars = {};
+    const errors = {};
+    for (const [id, data] of Object.entries(response?.data?.calendars || {})) {
+        calendars[id] = { busy: data?.busy || [] };
+        if (Array.isArray(data?.errors) && data.errors.length > 0) {
+            errors[id] = data.errors;
+        }
+    }
+
+    return {
+        timeMin: rangeStart.toISOString(),
+        timeMax: rangeEnd.toISOString(),
+        requestedCalendarIds: dedupedCalendarIds,
+        calendars,
+        errors
+    };
+}
 
 // 1. List Events
 async function listEvents({ calendarId = 'primary', maxResults = 10, timeMin, timeMax }) {
@@ -620,7 +1010,8 @@ async function listEvents({ calendarId = 'primary', maxResults = 10, timeMin, ti
         start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date,
         location: e.location, description: e.description,
         attendees: (e.attendees || []).map(a => ({ email: a.email, responseStatus: a.responseStatus })),
-        htmlLink: e.htmlLink
+        htmlLink: e.htmlLink,
+        meetLink: getMeetLinkFromEvent(e)
     }));
     return { events, message: `Found ${events.length} events` };
 }
@@ -634,12 +1025,13 @@ async function getEvent({ calendarId = 'primary', eventId }) {
         start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date,
         location: e.location, creator: e.creator, organizer: e.organizer,
         attendees: e.attendees || [], recurrence: e.recurrence, htmlLink: e.htmlLink,
+        meetLink: getMeetLinkFromEvent(e),
         message: `Event: ${e.summary}`
     };
 }
 
 // 3. Create Event
-async function createEvent({ calendarId = 'primary', summary, description, location, startDateTime, endDateTime, startDate, endDate, attendees, recurrence, timeZone }) {
+async function createEvent({ calendarId = 'primary', summary, description, location, startDateTime, endDateTime, startDate, endDate, attendees, recurrence, timeZone, createMeetLink = false }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
     const event = { summary };
     if (description) event.description = description;
@@ -648,10 +1040,102 @@ async function createEvent({ calendarId = 'primary', summary, description, locat
     else if (startDate) event.start = { date: startDate };
     if (endDateTime) event.end = { dateTime: endDateTime, timeZone: timeZone || 'UTC' };
     else if (endDate) event.end = { date: endDate };
-    if (attendees) event.attendees = attendees.map(email => ({ email }));
+    if (attendees) {
+        const resolvedAttendees = await normalizeEventAttendees(attendees);
+        if (resolvedAttendees.length > 0) {
+            event.attendees = resolvedAttendees.map(email => ({ email }));
+        }
+    }
     if (recurrence) event.recurrence = recurrence;
-    const result = await calendarClient.events.insert({ calendarId, requestBody: event });
-    return { success: true, eventId: result.data.id, htmlLink: result.data.htmlLink, message: `Event "${summary}" created` };
+    if (createMeetLink) {
+        event.conferenceData = {
+            createRequest: {
+                requestId: crypto.randomUUID(),
+                conferenceSolutionKey: { type: 'hangoutsMeet' }
+            }
+        };
+    }
+
+    const insertParams = { calendarId, requestBody: event };
+    if (createMeetLink) insertParams.conferenceDataVersion = 1;
+    const result = await calendarClient.events.insert(insertParams);
+    const meetLink = getMeetLinkFromEvent(result.data);
+    return { success: true, eventId: result.data.id, htmlLink: result.data.htmlLink, meetLink, message: `Event "${summary}" created` };
+}
+
+// 3b. Create Google Meet event
+async function createMeetEvent({ calendarId = 'primary', summary, description, startDateTime, endDateTime, attendees = [], timeZone = 'UTC' }) {
+    if (!calendarClient) throw new Error('Calendar not authenticated');
+    if (!summary || !startDateTime || !endDateTime) {
+        throw new Error('summary, startDateTime, and endDateTime are required to create a Meet event');
+    }
+
+    const resolvedAttendees = await normalizeEventAttendees(attendees);
+    const requestBody = {
+        summary,
+        description,
+        start: { dateTime: startDateTime, timeZone },
+        end: { dateTime: endDateTime, timeZone },
+        attendees: resolvedAttendees.map(email => ({ email })),
+        conferenceData: {
+            createRequest: {
+                requestId: crypto.randomUUID(),
+                conferenceSolutionKey: { type: 'hangoutsMeet' }
+            }
+        }
+    };
+
+    const result = await calendarClient.events.insert({
+        calendarId,
+        conferenceDataVersion: 1,
+        requestBody
+    });
+    const meetLink = getMeetLinkFromEvent(result.data);
+    return {
+        success: true,
+        eventId: result.data.id,
+        htmlLink: result.data.htmlLink,
+        meetLink,
+        message: `Meet event "${summary}" created`
+    };
+}
+
+// 3c. Add Meet link to existing event
+async function addMeetLinkToEvent({ calendarId = 'primary', eventId }) {
+    if (!calendarClient) throw new Error('Calendar not authenticated');
+    if (!eventId) throw new Error('eventId is required');
+
+    const existing = (await calendarClient.events.get({ calendarId, eventId })).data;
+    const alreadyLinked = getMeetLinkFromEvent(existing);
+    if (alreadyLinked) {
+        return {
+            success: true,
+            eventId,
+            meetLink: alreadyLinked,
+            message: 'This event already has a Google Meet link'
+        };
+    }
+
+    existing.conferenceData = {
+        createRequest: {
+            requestId: crypto.randomUUID(),
+            conferenceSolutionKey: { type: 'hangoutsMeet' }
+        }
+    };
+
+    const result = await calendarClient.events.patch({
+        calendarId,
+        eventId,
+        conferenceDataVersion: 1,
+        requestBody: { conferenceData: existing.conferenceData }
+    });
+    const meetLink = getMeetLinkFromEvent(result.data);
+    return {
+        success: true,
+        eventId,
+        meetLink,
+        message: 'Google Meet link added to event'
+    };
 }
 
 // 4. Update Event
@@ -707,17 +1191,125 @@ async function quickAddEvent({ calendarId = 'primary', text }) {
 // 9. Get Free/Busy
 async function getFreeBusy({ timeMin, timeMax, calendarIds = ['primary'] }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
-    const response = await calendarClient.freebusy.query({
-        requestBody: {
-            timeMin, timeMax,
-            items: calendarIds.map(id => ({ id }))
-        }
+    const result = await queryFreeBusyCalendars({ timeMin, timeMax, calendarIds });
+    const checkedIds = result.requestedCalendarIds || [];
+    const defaultedToPrimaryOnly = checkedIds.length === 1 && checkedIds[0] === 'primary';
+    const warning = defaultedToPrimaryOnly
+        ? 'Only your primary calendar was checked. This is not another person\'s availability.'
+        : null;
+    return {
+        calendarIdsChecked: checkedIds,
+        calendars: result.calendars,
+        errors: Object.fromEntries(
+            Object.entries(result.errors).map(([id, errs]) => [id, freeBusyErrorMessage(id, errs)])
+        ),
+        warning,
+        message: warning ? `Free/busy info retrieved. ${warning}` : 'Free/busy info retrieved'
+    };
+}
+
+// 9b. Check one person's availability
+async function checkPersonAvailability({ person, email, calendarId, timeMin, timeMax, durationMinutes = 30 }) {
+    if (!calendarClient) throw new Error('Calendar not authenticated');
+
+    const resolvedCalendarId = await resolveAvailabilityCalendarId({ person, email, calendarId });
+    const result = await queryFreeBusyCalendars({
+        timeMin,
+        timeMax,
+        calendarIds: [resolvedCalendarId]
     });
-    const calendars = {};
-    for (const [id, data] of Object.entries(response.data.calendars || {})) {
-        calendars[id] = { busy: data.busy || [] };
+
+    const availabilityError = result.errors[resolvedCalendarId];
+    if (availabilityError) {
+        throw new Error(freeBusyErrorMessage(resolvedCalendarId, availabilityError));
     }
-    return { calendars, message: 'Free/busy info retrieved' };
+
+    const busy = result.calendars[resolvedCalendarId]?.busy || [];
+    const { mergedBusy, freeSlots } = calculateFreeSlots({
+        timeMin: result.timeMin,
+        timeMax: result.timeMax,
+        busy,
+        durationMinutes
+    });
+
+    return {
+        calendarId: resolvedCalendarId,
+        resolvedEmail: isValidEmail(resolvedCalendarId) ? resolvedCalendarId : null,
+        requestedIdentity: person || email || calendarId || resolvedCalendarId,
+        timeMin: result.timeMin,
+        timeMax: result.timeMax,
+        busy: mergedBusy,
+        freeSlots,
+        message: `Found ${freeSlots.length} free slot(s) for ${resolvedCalendarId}`
+    };
+}
+
+// 9c. Find common free slots across people/calendars
+async function findCommonFreeSlots({ timeMin, timeMax, durationMinutes = 30, people = [], calendarIds = [], includePrimary = true }) {
+    if (!calendarClient) throw new Error('Calendar not authenticated');
+
+    const requestedCalendarIds = Array.isArray(calendarIds) ? [...calendarIds] : [];
+    const resolvedPeople = [];
+
+    if (Array.isArray(people)) {
+        for (const person of people) {
+            const identity = String(person || '').trim();
+            if (!identity) continue;
+            const id = await resolveAvailabilityCalendarId({ person: identity });
+            requestedCalendarIds.push(id);
+            resolvedPeople.push({ input: identity, calendarId: id });
+        }
+    }
+
+    if (includePrimary) {
+        requestedCalendarIds.push('primary');
+    }
+
+    const result = await queryFreeBusyCalendars({
+        timeMin,
+        timeMax,
+        calendarIds: requestedCalendarIds
+    });
+
+    const successfulCalendarIds = result.requestedCalendarIds.filter(id => !result.errors[id]);
+    if (successfulCalendarIds.length === 0) {
+        const firstError = result.requestedCalendarIds[0];
+        throw new Error(
+            firstError
+                ? freeBusyErrorMessage(firstError, result.errors[firstError] || [])
+                : 'No calendars were available for free/busy lookup.'
+        );
+    }
+
+    const combinedBusy = [];
+    for (const id of successfulCalendarIds) {
+        for (const interval of result.calendars[id]?.busy || []) {
+            combinedBusy.push(interval);
+        }
+    }
+
+    const { mergedBusy, freeSlots } = calculateFreeSlots({
+        timeMin: result.timeMin,
+        timeMax: result.timeMax,
+        busy: combinedBusy,
+        durationMinutes
+    });
+
+    const errorMessages = Object.fromEntries(
+        Object.entries(result.errors).map(([id, errs]) => [id, freeBusyErrorMessage(id, errs)])
+    );
+
+    return {
+        timeMin: result.timeMin,
+        timeMax: result.timeMax,
+        durationMinutes: normalizeDurationMinutes(durationMinutes),
+        resolvedPeople,
+        calendarsChecked: successfulCalendarIds,
+        unavailableCalendars: errorMessages,
+        mergedBusy,
+        freeSlots,
+        message: `Found ${freeSlots.length} common free slot(s) across ${successfulCalendarIds.length} calendar(s)`
+    };
 }
 
 // 10. List Recurring Event Instances
@@ -748,8 +1340,9 @@ async function updateEventAttendees({ calendarId = 'primary', eventId, addAttend
     const existing = (await calendarClient.events.get({ calendarId, eventId })).data;
     let attendees = existing.attendees || [];
     if (addAttendees.length > 0) {
+        const resolvedAdditions = await normalizeEventAttendees(addAttendees);
         const existingEmails = new Set(attendees.map(a => a.email));
-        for (const email of addAttendees) {
+        for (const email of resolvedAdditions) {
             if (!existingEmails.has(email)) attendees.push({ email });
         }
     }
@@ -788,6 +1381,66 @@ async function watchEvents({ calendarId = 'primary', webhookUrl }) {
         }
     });
     return { success: true, channelId: result.data.id, expiration: result.data.expiration, message: 'Watch channel created' };
+}
+
+// ============================================================
+//  GOOGLE CHAT TOOL IMPLEMENTATIONS
+// ============================================================
+
+function normalizeSpaceName(spaceId) {
+    if (!spaceId) return '';
+    return spaceId.startsWith('spaces/') ? spaceId : `spaces/${spaceId}`;
+}
+
+async function listChatSpaces({ maxResults = 20 }) {
+    if (!gchatClient) throw new Error('Google Chat not authenticated');
+    const response = await gchatClient.spaces.list({ pageSize: maxResults });
+    const spaces = (response.data.spaces || []).map(space => ({
+        name: space.name,
+        displayName: space.displayName || space.name,
+        spaceType: space.spaceType,
+        singleUserBotDm: !!space.singleUserBotDm,
+        threaded: !!space.threaded
+    }));
+    return { spaces, message: `Found ${spaces.length} Google Chat spaces` };
+}
+
+async function sendChatMessage({ spaceId, text }) {
+    if (!gchatClient) throw new Error('Google Chat not authenticated');
+    if (!spaceId || !text) throw new Error('spaceId and text are required');
+
+    const parent = normalizeSpaceName(spaceId);
+    const response = await gchatClient.spaces.messages.create({
+        parent,
+        requestBody: { text }
+    });
+    return {
+        success: true,
+        space: parent,
+        messageName: response.data.name,
+        createTime: response.data.createTime,
+        text: response.data.text || text,
+        message: `Message sent to ${parent}`
+    };
+}
+
+async function listChatMessages({ spaceId, maxResults = 20 }) {
+    if (!gchatClient) throw new Error('Google Chat not authenticated');
+    if (!spaceId) throw new Error('spaceId is required');
+
+    const parent = normalizeSpaceName(spaceId);
+    const response = await gchatClient.spaces.messages.list({
+        parent,
+        pageSize: maxResults
+    });
+    const messages = (response.data.messages || []).map(msg => ({
+        name: msg.name,
+        text: msg.text || '',
+        createTime: msg.createTime,
+        sender: msg.sender?.displayName || msg.sender?.name || 'Unknown',
+        thread: msg.thread?.name
+    }));
+    return { space: parent, messages, message: `Found ${messages.length} messages in ${parent}` };
 }
 
 // ============================================================
@@ -1411,19 +2064,29 @@ const gmailTools = [
 const calendarTools = [
     { type: "function", function: { name: "list_events", description: "List upcoming calendar events. Can filter by time range.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, maxResults: { type: "integer", description: "Max events to return (default 10)" }, timeMin: { type: "string", description: "Start time in ISO 8601 format" }, timeMax: { type: "string", description: "End time in ISO 8601 format" } } } } },
     { type: "function", function: { name: "get_event", description: "Get full details of a specific calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" } }, required: ["eventId"] } } },
-    { type: "function", function: { name: "create_event", description: "Create a new calendar event with optional attendees, location, and recurrence.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, summary: { type: "string", description: "Event title" }, description: { type: "string", description: "Event description" }, location: { type: "string", description: "Event location" }, startDateTime: { type: "string", description: "Start datetime in ISO 8601 (for timed events)" }, endDateTime: { type: "string", description: "End datetime in ISO 8601 (for timed events)" }, startDate: { type: "string", description: "Start date YYYY-MM-DD (for all-day events)" }, endDate: { type: "string", description: "End date YYYY-MM-DD (for all-day events)" }, attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" }, recurrence: { type: "array", items: { type: "string" }, description: "RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=5']" }, timeZone: { type: "string", description: "Time zone (default: UTC)" } }, required: ["summary"] } } },
+    { type: "function", function: { name: "create_event", description: "Create a new calendar event with optional attendees, location, recurrence, and optional Google Meet link.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, summary: { type: "string", description: "Event title" }, description: { type: "string", description: "Event description" }, location: { type: "string", description: "Event location" }, startDateTime: { type: "string", description: "Start datetime in ISO 8601 (for timed events)" }, endDateTime: { type: "string", description: "End datetime in ISO 8601 (for timed events)" }, startDate: { type: "string", description: "Start date YYYY-MM-DD (for all-day events)" }, endDate: { type: "string", description: "End date YYYY-MM-DD (for all-day events)" }, attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" }, recurrence: { type: "array", items: { type: "string" }, description: "RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=5']" }, timeZone: { type: "string", description: "Time zone (default: UTC)" }, createMeetLink: { type: "boolean", description: "If true, create a Google Meet link for this event" } }, required: ["summary"] } } },
+    { type: "function", function: { name: "create_meet_event", description: "Create a Google Calendar event with a Google Meet link.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, summary: { type: "string", description: "Meeting title" }, description: { type: "string", description: "Meeting description" }, startDateTime: { type: "string", description: "Start datetime in ISO 8601" }, endDateTime: { type: "string", description: "End datetime in ISO 8601" }, attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" }, timeZone: { type: "string", description: "Time zone (default: UTC)" } }, required: ["summary", "startDateTime", "endDateTime"] } } },
+    { type: "function", function: { name: "add_meet_link_to_event", description: "Add a Google Meet link to an existing calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "update_event", description: "Update an existing calendar event's title, time, location, or description.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to update" }, summary: { type: "string", description: "New event title" }, description: { type: "string", description: "New description" }, location: { type: "string", description: "New location" }, startDateTime: { type: "string", description: "New start datetime" }, endDateTime: { type: "string", description: "New end datetime" }, startDate: { type: "string", description: "New start date (all-day)" }, endDate: { type: "string", description: "New end date (all-day)" }, timeZone: { type: "string", description: "Time zone" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "delete_event", description: "Delete a calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to delete" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "list_calendars", description: "List all calendars accessible to the user.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "create_calendar", description: "Create a new calendar.", parameters: { type: "object", properties: { summary: { type: "string", description: "Calendar name" }, description: { type: "string", description: "Calendar description" }, timeZone: { type: "string", description: "Time zone" } }, required: ["summary"] } } },
     { type: "function", function: { name: "quick_add_event", description: "Quickly create an event using natural language (e.g. 'Meeting tomorrow at 3pm').", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, text: { type: "string", description: "Natural language event description" } }, required: ["text"] } } },
-    { type: "function", function: { name: "get_free_busy", description: "Check free/busy status for calendars in a time range.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, calendarIds: { type: "array", items: { type: "string" }, description: "Calendar IDs to check (default: ['primary'])" } }, required: ["timeMin", "timeMax"] } } },
+    { type: "function", function: { name: "get_free_busy", description: "Check free/busy status for specified calendar IDs in a time range. If calendarIds is omitted, it checks only your primary calendar.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, calendarIds: { type: "array", items: { type: "string" }, description: "Calendar IDs to check (default: ['primary'])" } }, required: ["timeMin", "timeMax"] } } },
+    { type: "function", function: { name: "check_person_availability", description: "Check one person's calendar availability and return free slots. Requires access to that person's calendar free/busy data.", parameters: { type: "object", properties: { person: { type: "string", description: "Person name or email to resolve from Gmail history" }, email: { type: "string", description: "Exact person email (preferred if known)" }, calendarId: { type: "string", description: "Calendar ID override (if known)" }, timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, durationMinutes: { type: "integer", description: "Minimum free slot length in minutes (default 30)" } }, required: ["timeMin", "timeMax"] } } },
+    { type: "function", function: { name: "find_common_free_slots", description: "Find common free slots across multiple people and/or calendars.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, people: { type: "array", items: { type: "string" }, description: "Names or emails to resolve and include" }, calendarIds: { type: "array", items: { type: "string" }, description: "Optional calendar IDs to include" }, includePrimary: { type: "boolean", description: "Include your primary calendar (default true)" }, durationMinutes: { type: "integer", description: "Minimum free slot length in minutes (default 30)" } }, required: ["timeMin", "timeMax"] } } },
     { type: "function", function: { name: "list_recurring_instances", description: "List individual occurrences of a recurring event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The recurring event ID" }, maxResults: { type: "integer", description: "Max instances to return" }, timeMin: { type: "string", description: "Start time filter" }, timeMax: { type: "string", description: "End time filter" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "move_event", description: "Move an event from one calendar to another.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Source calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to move" }, destinationCalendarId: { type: "string", description: "Destination calendar ID" } }, required: ["eventId", "destinationCalendarId"] } } },
     { type: "function", function: { name: "update_event_attendees", description: "Add or remove attendees from a calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" }, addAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to add" }, removeAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to remove" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "get_calendar_colors", description: "Get available color options for calendars and events.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "clear_calendar", description: "Clear all events from a calendar. WARNING: This is destructive!", parameters: { type: "object", properties: { calendarId: { type: "string", description: "The calendar ID to clear (cannot be primary)" } }, required: ["calendarId"] } } },
     { type: "function", function: { name: "watch_events", description: "Set up push notifications for calendar changes (requires a public webhook URL).", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, webhookUrl: { type: "string", description: "Public webhook URL to receive notifications" } }, required: ["webhookUrl"] } } }
+];
+
+const gchatTools = [
+    { type: "function", function: { name: "list_chat_spaces", description: "List Google Chat spaces available to the authenticated user.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Max spaces to return (default 20)" } } } } },
+    { type: "function", function: { name: "send_chat_message", description: "Send a text message to a Google Chat space.", parameters: { type: "object", properties: { spaceId: { type: "string", description: "Space ID or full name like spaces/AAAA..." }, text: { type: "string", description: "Message text to send" } }, required: ["spaceId", "text"] } } },
+    { type: "function", function: { name: "list_chat_messages", description: "List recent messages in a Google Chat space.", parameters: { type: "object", properties: { spaceId: { type: "string", description: "Space ID or full name like spaces/AAAA..." }, maxResults: { type: "integer", description: "Max messages to return (default 20)" } }, required: ["spaceId"] } } }
 ];
 
 const githubTools = [
@@ -1456,6 +2119,7 @@ const githubTools = [
 // Gmail tool names for fast lookup
 const gmailToolNames = new Set(gmailTools.map(t => t.function.name));
 const calendarToolNames = new Set(calendarTools.map(t => t.function.name));
+const gchatToolNames = new Set(gchatTools.map(t => t.function.name));
 const githubToolNames = new Set(githubTools.map(t => t.function.name));
 
 async function executeGmailTool(toolName, args) {
@@ -1480,9 +2144,11 @@ async function executeCalendarTool(toolName, args) {
     if (!calendarClient) throw new Error('Calendar not connected. Please authenticate with Google first.');
     const toolMap = {
         list_events: listEvents, get_event: getEvent, create_event: createEvent,
+        create_meet_event: createMeetEvent, add_meet_link_to_event: addMeetLinkToEvent,
         update_event: updateEvent, delete_event: deleteEvent, list_calendars: listCalendars,
         create_calendar: createCalendar, quick_add_event: quickAddEvent,
-        get_free_busy: getFreeBusy, list_recurring_instances: listRecurringInstances,
+        get_free_busy: getFreeBusy, check_person_availability: checkPersonAvailability,
+        find_common_free_slots: findCommonFreeSlots, list_recurring_instances: listRecurringInstances,
         move_event: moveEvent, update_event_attendees: updateEventAttendees,
         get_calendar_colors: getCalendarColors, clear_calendar: clearCalendar,
         watch_events: watchEvents
@@ -1495,6 +2161,27 @@ async function executeCalendarTool(toolName, args) {
         const permissionError = getCalendarPermissionError(error);
         if (permissionError) {
             calendarClient = null;
+            throw new Error(permissionError);
+        }
+        throw error;
+    }
+}
+
+async function executeGchatTool(toolName, args) {
+    if (!gchatClient) throw new Error('Google Chat not connected. Please authenticate with Google first.');
+    const toolMap = {
+        list_chat_spaces: listChatSpaces,
+        send_chat_message: sendChatMessage,
+        list_chat_messages: listChatMessages
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown Google Chat tool: ${toolName}`);
+    try {
+        return await fn(args);
+    } catch (error) {
+        const permissionError = getGchatPermissionError(error);
+        if (permissionError) {
+            gchatClient = null;
             throw new Error(permissionError);
         }
         throw error;
@@ -1524,6 +2211,7 @@ async function executeTool(toolName, args) {
     console.log(`[Tool] ${toolName}`, JSON.stringify(args).slice(0, 200));
     if (gmailToolNames.has(toolName)) return await executeGmailTool(toolName, args);
     if (calendarToolNames.has(toolName)) return await executeCalendarTool(toolName, args);
+    if (gchatToolNames.has(toolName)) return await executeGchatTool(toolName, args);
     if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, args);
     throw new Error(`Unknown tool: ${toolName}`);
 }
@@ -1537,8 +2225,10 @@ app.get('/api/tools', (req, res) => {
     const gmail = { service: 'gmail', connected: !!gmailClient, tools: gmailTools.map(t => ({ function: t.function })) };
     const calendarConnected = !!calendarClient && hasCalendarScope();
     const calendar = { service: 'calendar', connected: calendarConnected, tools: calendarTools.map(t => ({ function: t.function })) };
+    const gchatConnected = !!gchatClient && hasGchatScopes();
+    const gchat = { service: 'gchat', connected: gchatConnected, tools: gchatTools.map(t => ({ function: t.function })) };
     const github = { service: 'github', connected: !!octokitClient, tools: githubTools.map(t => ({ function: t.function })) };
-    res.json({ services: [gmail, calendar, github], totalTools: gmailTools.length + calendarTools.length + githubTools.length });
+    res.json({ services: [gmail, calendar, gchat, github], totalTools: gmailTools.length + calendarTools.length + gchatTools.length + githubTools.length });
 });
 
 // Gmail authentication status
@@ -1568,8 +2258,35 @@ app.get('/api/calendar/status', (req, res) => {
     });
 });
 
+// Google Chat authentication status (same Google OAuth, separate scopes)
+app.get('/api/gchat/status', (req, res) => {
+    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
+        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasToken = fs.existsSync(TOKEN_PATH);
+    const gchatScopeGranted = hasGchatScopes();
+    res.json({
+        credentialsConfigured: !!hasCredentials,
+        authenticated: hasToken && gchatClient !== null && gchatScopeGranted,
+        hasGchatScopes: gchatScopeGranted,
+        requiresReconnect: hasToken && !gchatScopeGranted,
+        toolCount: gchatTools.length
+    });
+});
+
 // Calendar connect - triggers re-auth with calendar scope
 app.get('/api/calendar/connect', (req, res) => {
+    if (!oauth2Client) {
+        const initialized = initOAuthClient();
+        if (!initialized) {
+            return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
+        }
+    }
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    res.json({ authUrl });
+});
+
+// Google Chat connect - triggers re-auth with Chat scopes
+app.get('/api/gchat/connect', (req, res) => {
     if (!oauth2Client) {
         const initialized = initOAuthClient();
         if (!initialized) {
@@ -1729,10 +2446,16 @@ app.get('/oauth2callback', async (req, res) => {
         calendarClient = tokenHasScope(tokens, CALENDAR_SCOPE)
             ? google.calendar({ version: 'v3', auth: oauth2Client })
             : null;
+        gchatClient = tokenHasScopes(tokens, GCHAT_REQUIRED_SCOPES)
+            ? google.chat({ version: 'v1', auth: oauth2Client })
+            : null;
         const calendarMessage = calendarClient
             ? 'Gmail + Calendar are ready.'
             : 'Gmail is ready. Calendar permission is still missing, so reconnect Calendar from the app.';
-        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} You can close this window.</p></div></body></html>`);
+        const gchatMessage = gchatClient
+            ? 'Google Chat is ready.'
+            : 'Google Chat permission is still missing, so reconnect Chat from the app.';
+        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} ${gchatMessage} You can close this window.</p></div></body></html>`);
     } catch (error) {
         console.error('OAuth callback error:', error);
         res.status(500).send(`Authentication failed: ${error.message}`);
@@ -1755,42 +2478,53 @@ app.post('/api/chat', async (req, res) => {
         if (gmailClient) availableTools.push(...gmailTools);
         const calendarConnected = !!calendarClient && hasCalendarScope();
         if (calendarConnected) availableTools.push(...calendarTools);
+        const gchatConnected = !!gchatClient && hasGchatScopes();
+        if (gchatConnected) availableTools.push(...gchatTools);
         if (octokitClient) availableTools.push(...githubTools);
 
         const connectedServices = [];
         if (gmailClient) connectedServices.push('Gmail (25 tools)');
-        if (calendarConnected) connectedServices.push('Google Calendar (15 tools)');
+        if (calendarConnected) connectedServices.push(`Google Calendar (${calendarTools.length} tools)`);
+        if (gchatConnected) connectedServices.push(`Google Chat (${gchatTools.length} tools)`);
         if (octokitClient) connectedServices.push('GitHub (20 tools)');
         const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
         const dateContext = getCurrentDateContext();
 
-        const systemPrompt = `You are a powerful AI assistant with up to 60 tools across Gmail, Google Calendar, and GitHub. You can perform complex, multi-step operations across all connected services.
+        const systemPrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, and GitHub. You can perform complex, multi-step operations across all connected services.
 
 Connected Services: ${statusText}
 Total Tools Available: ${availableTools.length}
 
 ## CORE RULES — Follow these STRICTLY:
 
-1. **ALWAYS SEARCH FIRST**: When the user refers to an email by description, you MUST use search_emails first. When referring to repos/issues, use list/search tools first. NEVER guess IDs.
+1. **ALWAYS SEARCH FIRST**: When the user refers to an email by description, you MUST use search_emails first. When referring to repos/issues, use list/search tools first. NEVER guess IDs or fabricate email addresses.
 
 2. **CHAIN TOOLS FOR COMPLEX TASKS**: Break down complex requests into steps and execute them one by one.
    - "Read and reply to John's latest email" → search_emails → read_email → reply_to_email
    - "Create an issue for the bug and email the team" → create_issue → send_email
    - "Find calendar events for today and email the attendees" → list_events → send_email
-   - "Archive all unread emails from newsletters" → search_emails → batch_modify_emails
+   - "Check if Meghan is free today between 1pm and 5pm" -> check_person_availability
+   - "Find a 30-minute slot for me, Meghan, and Rahul tomorrow" -> find_common_free_slots
+   - "Archive all unread emails from newsletters" -> search_emails -> batch_modify_emails
    - "Check my PRs and create calendar events for reviews" → list_pull_requests → create_event
+
+2b. **PERSON AVAILABILITY SAFETY**: For a named person, NEVER infer availability from get_free_busy on your default primary calendar. Use check_person_availability (single person) or find_common_free_slots (multiple people).
 
 3. **NEVER STOP MID-TASK**: If a task requires multiple steps, keep going until FULLY completed. Do NOT ask to confirm intermediate steps unless the action is destructive.
 
 4. **USE BATCH OPERATIONS**: When modifying multiple emails, prefer batch_modify_emails.
 
-5. **CROSS-SERVICE OPERATIONS**: You can combine Gmail, Calendar, and GitHub tools in a single task. Think creatively about how services work together.
+5. **CROSS-SERVICE OPERATIONS**: You can combine Gmail, Calendar, Chat, and GitHub tools in a single task. Think creatively about how services work together.
 
 6. **BE PROACTIVE**: Mention relevant info you notice while processing (unread counts, upcoming events, open PRs).
 
 ## TOOL USAGE TIPS:
 - Gmail: search_emails supports full Gmail query syntax (from:, to:, subject:, is:unread, has:attachment, etc.)
-- Calendar: Use list_events with timeMin/timeMax for date ranges. quick_add_event for natural language.
+- Calendar: Use list_events with timeMin/timeMax for date ranges. Use create_meet_event or create_event with createMeetLink=true for Google Meet.
+- Calendar attendees: If the user gives a person name (not exact email), resolve it from Gmail history first and do not use placeholder domains like example.com.
+- Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
+- Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
+- Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.`;
 
         const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
@@ -1802,7 +2536,7 @@ Total Tools Available: ${availableTools.length}
 
 Rules:
 - Resolve relative date words (today, tomorrow, yesterday, this week, next week) using this context.
-- For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events.`;
+- For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events, get_free_busy, check_person_availability, and find_common_free_slots.`;
 
         const enrichedSystemPrompt = `${systemPrompt}\n\n${dateContextPrompt}`;
         const enrichedUserMessage = `${message}
@@ -1912,11 +2646,15 @@ Rules:
 const credentialsConfigured = initOAuthClient();
 initGitHubClient();
 
-const totalTools = gmailTools.length + calendarTools.length + githubTools.length;
+const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + githubTools.length;
 app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
-    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, GitHub: ${githubTools.length})`);
+    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, GitHub: ${githubTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
-    console.log(`Calendar: ${calendarClient ? 'Connected' : 'Not connected'}`);
+    console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);
+    console.log(`Google Chat: ${gchatClient && hasGchatScopes() ? 'Connected' : 'Not connected'}`);
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
 });
+
+
+
