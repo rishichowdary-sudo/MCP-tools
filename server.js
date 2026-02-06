@@ -4,6 +4,8 @@ const cors = require('cors');
 const { google } = require('googleapis');
 const OpenAI = require('openai');
 const { Octokit } = require('octokit');
+const { Client: McpClient } = require('@modelcontextprotocol/sdk/client');
+const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -46,6 +48,14 @@ const GCHAT_REQUIRED_SCOPES = [
 const GOOGLE_OAUTH_PROMPT = 'consent select_account';
 const GITHUB_OAUTH_SCOPES = ['repo', 'read:user', 'user:email', 'notifications', 'gist'];
 const GITHUB_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const SHEETS_MCP_TOOL_PREFIX = 'sheets_mcp__';
+const SHEETS_MCP_ENABLED = String(process.env.SHEETS_MCP_ENABLED || 'true').toLowerCase() !== 'false';
+const SHEETS_MCP_COMMAND = process.env.SHEETS_MCP_COMMAND || 'node';
+const SHEETS_MCP_ARGS = process.env.SHEETS_MCP_ARGS
+    ? process.env.SHEETS_MCP_ARGS.split(',').map(arg => arg.trim()).filter(Boolean)
+    : [path.join(__dirname, 'node_modules', '@isaacphi', 'mcp-gdrive', 'dist', 'index.js')];
+const SHEETS_MCP_CREDS_DIR = process.env.SHEETS_MCP_CREDS_DIR ||
+    path.join(process.env.USERPROFILE || process.env.HOME || '.', '.gmail-mcp', 'sheets-mcp');
 
 const TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'token.json');
 const GITHUB_TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'github-token.json');
@@ -59,6 +69,10 @@ let sheetsClient = null;
 let octokitClient = null;
 let githubUsername = null;
 let githubAuthMethod = null;
+let sheetsMcpClient = null;
+let sheetsMcpTransport = null;
+let sheetsMcpTools = [];
+let sheetsMcpError = null;
 const githubOAuthStateStore = new Map();
 let cachedPrimaryEmail = null;
 
@@ -215,6 +229,155 @@ function clearGitHubAuth() {
     githubUsername = null;
     githubAuthMethod = null;
     if (fs.existsSync(GITHUB_TOKEN_PATH)) fs.unlinkSync(GITHUB_TOKEN_PATH);
+}
+
+function getGoogleOAuthCredentials() {
+    const clientId = process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
+    const clientSecret = process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
+    return { clientId, clientSecret };
+}
+
+function ensureSheetsMcpOAuthKeyfile(clientId, clientSecret) {
+    if (!clientId || !clientSecret) {
+        throw new Error('Google OAuth credentials are required to initialize Sheets MCP');
+    }
+
+    fs.mkdirSync(SHEETS_MCP_CREDS_DIR, { recursive: true });
+    const keyfilePath = path.join(SHEETS_MCP_CREDS_DIR, 'gcp-oauth.keys.json');
+    if (fs.existsSync(keyfilePath)) return keyfilePath;
+
+    const desktopOAuthConfig = {
+        installed: {
+            client_id: clientId,
+            project_id: process.env.GOOGLE_PROJECT_ID || 'gmail-mcp-chat',
+            auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+            token_uri: 'https://oauth2.googleapis.com/token',
+            auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+            client_secret: clientSecret,
+            redirect_uris: ['http://localhost']
+        }
+    };
+    fs.writeFileSync(keyfilePath, JSON.stringify(desktopOAuthConfig, null, 2));
+    return keyfilePath;
+}
+
+function toOpenAiToolFromMcpTool(tool) {
+    return {
+        type: 'function',
+        function: {
+            name: `${SHEETS_MCP_TOOL_PREFIX}${tool.name}`,
+            description: `[Sheets MCP] ${tool.description || `Run ${tool.name}`}`,
+            parameters: tool.inputSchema || { type: 'object', properties: {} }
+        }
+    };
+}
+
+function getSheetsMcpConnectionError() {
+    if (!sheetsMcpError) {
+        return 'Google Sheets MCP is not connected.';
+    }
+    return `Google Sheets MCP is not connected: ${sheetsMcpError}`;
+}
+
+function parseMcpTextContent(content) {
+    if (!Array.isArray(content)) return [];
+    return content
+        .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+        .map(part => part.text);
+}
+
+async function initSheetsMcpClient() {
+    if (!SHEETS_MCP_ENABLED) {
+        sheetsMcpError = 'Disabled by SHEETS_MCP_ENABLED=false';
+        return;
+    }
+    if (sheetsMcpClient) return;
+
+    const { clientId, clientSecret } = getGoogleOAuthCredentials();
+    if (!clientId || !clientSecret) {
+        sheetsMcpError = 'Missing GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET for Sheets MCP.';
+        return;
+    }
+
+    try {
+        ensureSheetsMcpOAuthKeyfile(clientId, clientSecret);
+
+        const client = new McpClient({
+            name: 'gmail-mcp-chat-sheets-bridge',
+            version: '1.0.0'
+        });
+        const transport = new StdioClientTransport({
+            command: SHEETS_MCP_COMMAND,
+            args: SHEETS_MCP_ARGS,
+            env: {
+                ...process.env,
+                CLIENT_ID: clientId,
+                CLIENT_SECRET: clientSecret,
+                GDRIVE_CREDS_DIR: SHEETS_MCP_CREDS_DIR
+            },
+            stderr: 'pipe'
+        });
+
+        if (transport.stderr) {
+            transport.stderr.on('data', chunk => {
+                const text = String(chunk || '').trim();
+                if (text) console.log(`[Sheets MCP] ${text}`);
+            });
+        }
+
+        await client.connect(transport);
+        const listResult = await client.listTools();
+        const discoveredTools = Array.isArray(listResult?.tools) ? listResult.tools : [];
+
+        sheetsMcpClient = client;
+        sheetsMcpTransport = transport;
+        sheetsMcpTools = discoveredTools.map(toOpenAiToolFromMcpTool);
+        sheetsMcpError = null;
+        console.log(`Sheets MCP connected with ${sheetsMcpTools.length} tool(s).`);
+    } catch (error) {
+        sheetsMcpClient = null;
+        sheetsMcpTransport = null;
+        sheetsMcpTools = [];
+        sheetsMcpError = error?.message || 'Unknown Sheets MCP connection failure';
+        console.error('Sheets MCP init error:', sheetsMcpError);
+    }
+}
+
+async function executeSheetsMcpTool(toolName, args) {
+    if (!sheetsMcpClient) {
+        throw new Error(getSheetsMcpConnectionError());
+    }
+    if (!toolName.startsWith(SHEETS_MCP_TOOL_PREFIX)) {
+        throw new Error(`Unknown Sheets MCP tool: ${toolName}`);
+    }
+    const mcpToolName = toolName.slice(SHEETS_MCP_TOOL_PREFIX.length);
+    const result = await sheetsMcpClient.callTool({
+        name: mcpToolName,
+        arguments: args || {}
+    });
+    const textBlocks = parseMcpTextContent(result?.content);
+    return {
+        provider: '@isaacphi/mcp-gdrive',
+        tool: mcpToolName,
+        isError: !!result?.isError,
+        text: textBlocks.join('\n\n'),
+        structuredContent: result?.structuredContent || null,
+        content: result?.content || []
+    };
+}
+
+async function closeSheetsMcpClient() {
+    try {
+        if (sheetsMcpTransport) {
+            await sheetsMcpTransport.close();
+        }
+    } catch (error) {
+        console.error('Error closing Sheets MCP transport:', error.message);
+    } finally {
+        sheetsMcpClient = null;
+        sheetsMcpTransport = null;
+        sheetsMcpTools = [];
+    }
 }
 
 function pruneGithubOAuthStates() {
@@ -1516,18 +1679,67 @@ function normalizeDriveFile(record) {
     };
 }
 
-async function listDriveFiles({ query, pageSize = 25, orderBy = 'modifiedTime desc', includeTrashed = false }) {
+function escapeDriveQueryLiteral(value) {
+    return String(value || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'");
+}
+
+function looksLikeDriveQuerySyntax(query) {
+    const value = String(query || '').trim();
+    if (!value) return false;
+    return /(^|\s)(name|mimeType|modifiedTime|createdTime|trashed|sharedWithMe|owners|parents)\s|contains|=|!=|<=|>=|<|>|\band\b|\bor\b|\bnot\b|\(|\)|'/.test(value);
+}
+
+function buildDriveKeywordClause(query) {
+    const escaped = escapeDriveQueryLiteral(query);
+    if (!escaped) return '';
+    return `(name contains '${escaped}' or fullText contains '${escaped}')`;
+}
+
+function buildDriveQueryClause(query) {
+    const trimmed = String(query || '').trim();
+    if (!trimmed) return '';
+    if (looksLikeDriveQuerySyntax(trimmed)) return `(${trimmed})`;
+    return buildDriveKeywordClause(trimmed);
+}
+
+async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime desc', includeTrashed = false }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
     const qParts = [];
     if (!includeTrashed) qParts.push('trashed = false');
-    if (query) qParts.push(`(${query})`);
+    const queryText = String(query || '').trim();
+    const primaryClause = buildDriveQueryClause(queryText);
+    if (primaryClause) qParts.push(primaryClause);
 
-    const response = await driveClient.files.list({
-        q: qParts.length > 0 ? qParts.join(' and ') : undefined,
-        pageSize,
-        orderBy,
-        fields: 'nextPageToken, files(id,name,mimeType,owners(displayName,emailAddress),modifiedTime,createdTime,size,webViewLink,parents,trashed)'
-    });
+    let response;
+    try {
+        response = await driveClient.files.list({
+            q: qParts.length > 0 ? qParts.join(' and ') : undefined,
+            pageSize,
+            orderBy,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+            corpora: 'allDrives',
+            fields: 'nextPageToken, files(id,name,mimeType,owners(displayName,emailAddress),modifiedTime,createdTime,size,webViewLink,parents,trashed)'
+        });
+    } catch (error) {
+        const shouldRetryWithKeyword = queryText && looksLikeDriveQuerySyntax(queryText);
+        if (!shouldRetryWithKeyword) throw error;
+
+        const retryQParts = [];
+        if (!includeTrashed) retryQParts.push('trashed = false');
+        retryQParts.push(buildDriveKeywordClause(queryText));
+        response = await driveClient.files.list({
+            q: retryQParts.join(' and '),
+            pageSize,
+            orderBy,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+            corpora: 'allDrives',
+            fields: 'nextPageToken, files(id,name,mimeType,owners(displayName,emailAddress),modifiedTime,createdTime,size,webViewLink,parents,trashed)'
+        });
+    }
 
     const files = (response.data.files || []).map(normalizeDriveFile);
     return { files, nextPageToken: response.data.nextPageToken || null, message: `Found ${files.length} Drive file(s)` };
@@ -1743,23 +1955,235 @@ function normalizeSheetValuesInput(values) {
     return [values];
 }
 
-async function listSpreadsheets({ query, maxResults = 25 }) {
+function normalizeSheetCellForCompare(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    return String(value).trim();
+}
+
+function columnLettersToIndex(columnLetters) {
+    const text = String(columnLetters || '').trim().toUpperCase();
+    if (!/^[A-Z]+$/.test(text)) throw new Error(`Invalid column letters: ${columnLetters}`);
+    let value = 0;
+    for (let i = 0; i < text.length; i += 1) {
+        value = value * 26 + (text.charCodeAt(i) - 64);
+    }
+    return value - 1;
+}
+
+function parseA1StartRow(a1Range) {
+    const text = String(a1Range || '');
+    const bangIndex = text.indexOf('!');
+    const local = bangIndex >= 0 ? text.slice(bangIndex + 1) : text;
+    const startRef = local.split(':')[0] || local;
+    const match = startRef.match(/\d+/);
+    return match ? Number(match[0]) : 1;
+}
+
+function isEffectivelyEmptyTimesheetCell(value) {
+    const text = normalizeSheetCellForCompare(value).toLowerCase();
+    return text === '' || text === 'na' || text === 'n/a' || text === '-' || text === 'none' || text === 'null';
+}
+
+function tryParseNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const normalized = String(value).trim();
+    if (!/^[-+]?\d+(\.\d+)?$/.test(normalized)) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+const MONTH_NAME_TO_NUMBER = {
+    jan: 1, january: 1,
+    feb: 2, february: 2,
+    mar: 3, march: 3,
+    apr: 4, april: 4,
+    may: 5,
+    jun: 6, june: 6,
+    jul: 7, july: 7,
+    aug: 8, august: 8,
+    sep: 9, sept: 9, september: 9,
+    oct: 10, october: 10,
+    nov: 11, november: 11,
+    dec: 12, december: 12
+};
+
+function toDateKey(year, month, day) {
+    const y = Number(year);
+    const m = Number(month);
+    const d = Number(day);
+    if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return null;
+    if (y < 1900 || y > 9999 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+    const dt = new Date(y, m - 1, d);
+    if (Number.isNaN(dt.getTime())) return null;
+    if (dt.getFullYear() !== y || dt.getMonth() + 1 !== m || dt.getDate() !== d) return null;
+    return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+function sheetSerialToDateKey(serial) {
+    if (!Number.isFinite(serial)) return null;
+    const wholeDays = Math.floor(serial);
+    if (wholeDays < 1 || wholeDays > 300000) return null;
+    const epochMs = Date.UTC(1899, 11, 30);
+    const ms = epochMs + wholeDays * 86400000;
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return null;
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+function tryParseDateKey(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) return null;
+        return toDateKey(value.getFullYear(), value.getMonth() + 1, value.getDate());
+    }
+    if (typeof value === 'number') return sheetSerialToDateKey(value);
+
+    const text = String(value).trim();
+    if (!text) return null;
+
+    const cleaned = text
+        .toLowerCase()
+        .replace(/,/g, ' ')
+        .replace(/\b(\d{1,2})(st|nd|rd|th)\b/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    let match = cleaned.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
+    if (match) {
+        return toDateKey(match[1], match[2], match[3]);
+    }
+
+    match = cleaned.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/);
+    if (match) {
+        const first = Number(match[1]);
+        const second = Number(match[2]);
+        const year = match[3];
+        if (first > 12 && second <= 12) return toDateKey(year, second, first);
+        if (second > 12 && first <= 12) return toDateKey(year, first, second);
+        return toDateKey(year, first, second);
+    }
+
+    match = cleaned.match(/^(\d{1,2})[\s\-\/]+([a-z]+)[\s\-\/]+(\d{4})$/);
+    if (match) {
+        const month = MONTH_NAME_TO_NUMBER[match[2]];
+        if (month) return toDateKey(match[3], month, match[1]);
+    }
+
+    match = cleaned.match(/^([a-z]+)[\s\-\/]+(\d{1,2})[\s\-\/]+(\d{4})$/);
+    if (match) {
+        const month = MONTH_NAME_TO_NUMBER[match[1]];
+        if (month) return toDateKey(match[3], month, match[2]);
+    }
+
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return toDateKey(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate());
+}
+
+function sheetCellsEquivalent(expectedValue, actualValue) {
+    const expected = normalizeSheetCellForCompare(expectedValue);
+    const actual = normalizeSheetCellForCompare(actualValue);
+    if (expected === actual) return true;
+
+    const expectedNum = tryParseNumber(expectedValue);
+    const actualNum = tryParseNumber(actualValue);
+    if (expectedNum !== null && actualNum !== null && Math.abs(expectedNum - actualNum) < 1e-9) {
+        return true;
+    }
+
+    const expectedDate = tryParseDateKey(expectedValue);
+    const actualDate = tryParseDateKey(actualValue);
+    if (expectedDate && actualDate && expectedDate === actualDate) {
+        return true;
+    }
+
+    return false;
+}
+
+function detectFormulaInValues(values) {
+    return values.some(row =>
+        Array.isArray(row) && row.some(cell => typeof cell === 'string' && cell.trim().startsWith('='))
+    );
+}
+
+function sheetValuesMatch(expected, actual) {
+    for (let rowIndex = 0; rowIndex < expected.length; rowIndex += 1) {
+        const expectedRow = Array.isArray(expected[rowIndex]) ? expected[rowIndex] : [];
+        const actualRow = Array.isArray(actual[rowIndex]) ? actual[rowIndex] : [];
+        for (let colIndex = 0; colIndex < expectedRow.length; colIndex += 1) {
+            const expectedCell = expectedRow[colIndex];
+            const actualCell = actualRow[colIndex];
+            if (!sheetCellsEquivalent(expectedCell, actualCell)) return false;
+        }
+    }
+    return true;
+}
+
+async function listSpreadsheets({ query, maxResults = 100 }) {
     if (!driveClient) throw new Error('Google Drive is required to list spreadsheets. Reconnect Google Drive.');
 
     const qParts = [
         "mimeType = 'application/vnd.google-apps.spreadsheet'",
         'trashed = false'
     ];
-    if (query) qParts.push(`(${query})`);
+    const queryText = String(query || '').trim();
+    const primaryClause = buildDriveQueryClause(queryText);
+    if (primaryClause) qParts.push(primaryClause);
 
-    const response = await driveClient.files.list({
-        q: qParts.join(' and '),
-        pageSize: maxResults,
-        orderBy: 'modifiedTime desc',
-        fields: 'files(id,name,owners(displayName,emailAddress),modifiedTime,webViewLink)'
-    });
+    let response;
+    try {
+        response = await driveClient.files.list({
+            q: qParts.join(' and '),
+            pageSize: maxResults,
+            orderBy: 'modifiedTime desc',
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+            corpora: 'allDrives',
+            fields: 'files(id,name,owners(displayName,emailAddress),modifiedTime,webViewLink)'
+        });
+    } catch (error) {
+        const shouldRetryWithKeyword = queryText && looksLikeDriveQuerySyntax(queryText);
+        if (!shouldRetryWithKeyword) throw error;
 
-    const spreadsheets = (response.data.files || []).map(file => ({
+        const retryQParts = [
+            "mimeType = 'application/vnd.google-apps.spreadsheet'",
+            'trashed = false',
+            buildDriveKeywordClause(queryText)
+        ];
+        response = await driveClient.files.list({
+            q: retryQParts.join(' and '),
+            pageSize: maxResults,
+            orderBy: 'modifiedTime desc',
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+            corpora: 'allDrives',
+            fields: 'files(id,name,owners(displayName,emailAddress),modifiedTime,webViewLink)'
+        });
+    }
+
+    let files = response.data.files || [];
+    if (queryText && files.length === 0) {
+        const broad = await driveClient.files.list({
+            q: "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+            pageSize: Math.max(maxResults, 200),
+            orderBy: 'modifiedTime desc',
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+            corpora: 'allDrives',
+            fields: 'files(id,name,owners(displayName,emailAddress),modifiedTime,webViewLink)'
+        });
+        const qLower = queryText.toLowerCase();
+        files = (broad.data.files || []).filter(file => String(file.name || '').toLowerCase().includes(qLower));
+    }
+
+    const spreadsheets = files.map(file => ({
         spreadsheetId: file.id,
         title: file.name,
         owners: (file.owners || []).map(owner => owner.displayName || owner.emailAddress).filter(Boolean),
@@ -1928,14 +2352,33 @@ async function updateSheetValues({ spreadsheetId, range, values, valueInputOptio
         }
     });
 
+    const updatedCells = response.data.updatedCells || 0;
+    if (updatedCells === 0) {
+        throw new Error(`No cells were updated for ${range}. Verify sheet tab/range and try again.`);
+    }
+
+    const verifyValueRenderOption = detectFormulaInValues(normalizedValues) ? 'FORMULA' : 'UNFORMATTED_VALUE';
+    const verifyResponse = await sheetsClient.spreadsheets.values.get({
+        spreadsheetId,
+        range,
+        valueRenderOption: verifyValueRenderOption
+    });
+    const readBackValues = verifyResponse.data.values || [];
+    const verified = sheetValuesMatch(normalizedValues, readBackValues);
+    if (!verified) {
+        throw new Error(`Sheets write verification failed for ${range}. Read-back values did not match the requested update.`);
+    }
+
     return {
         success: true,
         spreadsheetId,
         range,
         updatedRows: response.data.updatedRows || 0,
         updatedColumns: response.data.updatedColumns || 0,
-        updatedCells: response.data.updatedCells || 0,
-        message: `Updated ${response.data.updatedCells || 0} cell(s)`
+        updatedCells,
+        verified,
+        readBackValues,
+        message: `Updated and verified ${updatedCells} cell(s)`
     };
 }
 
@@ -1955,15 +2398,157 @@ async function appendSheetValues({ spreadsheetId, range, values, valueInputOptio
     });
 
     const updates = response.data.updates || {};
+    const updatedCells = updates.updatedCells || 0;
+    if (updatedCells === 0) {
+        throw new Error(`No rows were appended for ${range}. Verify target range and try again.`);
+    }
+
+    const updatedRange = updates.updatedRange || '';
+    let readBackValues = [];
+    let verified = false;
+    if (updatedRange) {
+        const verifyValueRenderOption = detectFormulaInValues(normalizedValues) ? 'FORMULA' : 'UNFORMATTED_VALUE';
+        const verifyResponse = await sheetsClient.spreadsheets.values.get({
+            spreadsheetId,
+            range: updatedRange,
+            valueRenderOption: verifyValueRenderOption
+        });
+        readBackValues = verifyResponse.data.values || [];
+        verified = sheetValuesMatch(normalizedValues, readBackValues);
+        if (!verified) {
+            throw new Error(`Sheets append verification failed for ${updatedRange}. Read-back values did not match appended rows.`);
+        }
+    }
+
     return {
         success: true,
         spreadsheetId,
         tableRange: response.data.tableRange || '',
-        updatedRange: updates.updatedRange || '',
+        updatedRange,
         updatedRows: updates.updatedRows || 0,
         updatedColumns: updates.updatedColumns || 0,
-        updatedCells: updates.updatedCells || 0,
-        message: `Appended ${updates.updatedRows || 0} row(s)`
+        updatedCells,
+        verified: updatedRange ? verified : true,
+        readBackValues,
+        message: `Appended and verified ${updates.updatedRows || 0} row(s)`
+    };
+}
+
+async function updateTimesheetHours({
+    spreadsheetId,
+    sheetName = 'Tracker',
+    date,
+    billingHours,
+    dateColumn = 'B',
+    billingHoursColumn = 'D',
+    searchRange = 'A1:Z3000',
+    preferEmptyBilling = true
+}) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId || !date) throw new Error('spreadsheetId and date are required');
+    if (billingHours === undefined || billingHours === null || billingHours === '') {
+        throw new Error('billingHours is required');
+    }
+
+    const targetDateKey = tryParseDateKey(date);
+    if (!targetDateKey) {
+        throw new Error(`Could not parse date "${date}". Use a concrete date like "6-Feb-2026" or "2026-02-06".`);
+    }
+
+    const dateColumnIndex = columnLettersToIndex(dateColumn);
+    const billingColumnIndex = columnLettersToIndex(billingHoursColumn);
+    const readRange = `${sheetName}!${searchRange}`;
+
+    const table = await readSheetValues({
+        spreadsheetId,
+        range: readRange,
+        valueRenderOption: 'FORMATTED_VALUE'
+    });
+    const rows = table.values || [];
+    const startRow = parseA1StartRow(table.range || readRange);
+
+    const matches = [];
+    for (let i = 0; i < rows.length; i += 1) {
+        const row = rows[i] || [];
+        const dateCellKey = tryParseDateKey(row[dateColumnIndex]);
+        if (dateCellKey !== targetDateKey) continue;
+        matches.push({
+            rowNumber: startRow + i,
+            row,
+            existingBilling: row[billingColumnIndex]
+        });
+    }
+
+    if (matches.length === 0) {
+        throw new Error(`No row found for "${date}" in ${sheetName}.`);
+    }
+
+    let selected = matches[0];
+    if (preferEmptyBilling) {
+        const emptyCandidate = matches.find(m => isEffectivelyEmptyTimesheetCell(m.existingBilling));
+        if (emptyCandidate) selected = emptyCandidate;
+    }
+
+    const targetCell = `${sheetName}!${billingHoursColumn.toUpperCase()}${selected.rowNumber}`;
+    const writeValue = Number.isFinite(Number(billingHours)) ? Number(billingHours) : String(billingHours);
+    const preWriteCell = await readSheetValues({
+        spreadsheetId,
+        range: targetCell,
+        valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+    const existingUnformatted = Array.isArray(preWriteCell.values?.[0]) ? preWriteCell.values[0][0] : undefined;
+    if (sheetCellsEquivalent(writeValue, existingUnformatted)) {
+        const previewRange = `${sheetName}!A${selected.rowNumber}:G${selected.rowNumber}`;
+        const preview = await readSheetValues({
+            spreadsheetId,
+            range: previewRange,
+            valueRenderOption: 'FORMATTED_VALUE'
+        });
+        return {
+            success: true,
+            spreadsheetId,
+            sheetName,
+            dateRequested: date,
+            normalizedDate: targetDateKey,
+            matchesFound: matches.length,
+            rowNumber: selected.rowNumber,
+            updatedCell: targetCell,
+            previousBillingHours: existingUnformatted ?? '',
+            updatedBillingHours: writeValue,
+            verified: true,
+            noOp: true,
+            rowPreview: preview.values || [],
+            message: `Billing hours already set to ${writeValue} on row ${selected.rowNumber}; no update needed.`
+        };
+    }
+    const writeResult = await updateSheetValues({
+        spreadsheetId,
+        range: targetCell,
+        values: [[writeValue]],
+        valueInputOption: 'USER_ENTERED'
+    });
+
+    const previewRange = `${sheetName}!A${selected.rowNumber}:G${selected.rowNumber}`;
+    const preview = await readSheetValues({
+        spreadsheetId,
+        range: previewRange,
+        valueRenderOption: 'FORMATTED_VALUE'
+    });
+
+    return {
+        success: true,
+        spreadsheetId,
+        sheetName,
+        dateRequested: date,
+        normalizedDate: targetDateKey,
+        matchesFound: matches.length,
+        rowNumber: selected.rowNumber,
+        updatedCell: targetCell,
+        previousBillingHours: selected.existingBilling ?? '',
+        updatedBillingHours: writeValue,
+        verified: !!writeResult.verified,
+        rowPreview: preview.values || [],
+        message: `Updated billing hours to ${writeValue} on row ${selected.rowNumber} (${targetCell}).`
     };
 }
 
@@ -2651,6 +3236,7 @@ const sheetsTools = [
     { type: "function", function: { name: "delete_sheet_tab", description: "Delete a tab sheet from a spreadsheet by sheetId.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetId: { type: "integer", description: "Numeric sheet ID" } }, required: ["spreadsheetId", "sheetId"] } } },
     { type: "function", function: { name: "read_sheet_values", description: "Read values from a spreadsheet range (A1 notation).", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range (e.g. Sheet1!A1:D20)" }, valueRenderOption: { type: "string", description: "FORMATTED_VALUE, UNFORMATTED_VALUE, or FORMULA" }, dateTimeRenderOption: { type: "string", description: "SERIAL_NUMBER or FORMATTED_STRING" } }, required: ["spreadsheetId", "range"] } } },
     { type: "function", function: { name: "update_sheet_values", description: "Overwrite values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to write" }, values: { type: "array", description: "2D array of rows, e.g. [[\"Name\",\"Role\"],[\"Rishi\",\"Lead\"]]", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, majorDimension: { type: "string", description: "ROWS or COLUMNS (default ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
+    { type: "function", function: { name: "update_timesheet_hours", description: "Find a timesheet row by date and update billing hours reliably.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetName: { type: "string", description: "Tab name (default Tracker)" }, date: { type: "string", description: "Date to match, e.g. 6-Feb-2026 or 2026-02-06" }, billingHours: { type: "number", description: "Billing hours value to set" }, dateColumn: { type: "string", description: "Date column letter (default B)" }, billingHoursColumn: { type: "string", description: "Billing hours column letter (default D)" }, searchRange: { type: "string", description: "A1 range to search (default A1:Z3000)" }, preferEmptyBilling: { type: "boolean", description: "Prefer row where billing cell is empty when duplicates exist (default true)" } }, required: ["spreadsheetId", "date", "billingHours"] } } },
     { type: "function", function: { name: "append_sheet_values", description: "Append rows to a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 target range (e.g. Sheet1!A:D)" }, values: { type: "array", description: "2D array of rows to append", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, insertDataOption: { type: "string", description: "INSERT_ROWS or OVERWRITE (default INSERT_ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
     { type: "function", function: { name: "clear_sheet_values", description: "Clear values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to clear" } }, required: ["spreadsheetId", "range"] } } }
 ];
@@ -2795,6 +3381,7 @@ async function executeSheetsTool(toolName, args) {
         delete_sheet_tab: deleteSheetTab,
         read_sheet_values: readSheetValues,
         update_sheet_values: updateSheetValues,
+        update_timesheet_hours: updateTimesheetHours,
         append_sheet_values: appendSheetValues,
         clear_sheet_values: clearSheetValues
     };
@@ -2838,6 +3425,7 @@ async function executeTool(toolName, args) {
     if (gchatToolNames.has(toolName)) return await executeGchatTool(toolName, args);
     if (driveToolNames.has(toolName)) return await executeDriveTool(toolName, args);
     if (sheetsToolNames.has(toolName)) return await executeSheetsTool(toolName, args);
+    if (toolName.startsWith(SHEETS_MCP_TOOL_PREFIX)) return await executeSheetsMcpTool(toolName, args);
     if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, args);
     throw new Error(`Unknown tool: ${toolName}`);
 }
@@ -2856,11 +3444,16 @@ app.get('/api/tools', (req, res) => {
     const driveConnected = !!driveClient && hasDriveScope();
     const drive = { service: 'drive', connected: driveConnected, tools: driveTools.map(t => ({ function: t.function })) };
     const sheetsConnected = !!sheetsClient && hasSheetsScope();
-    const sheets = { service: 'sheets', connected: sheetsConnected, tools: sheetsTools.map(t => ({ function: t.function })) };
+    const sheets = {
+        service: 'sheets',
+        connected: sheetsConnected,
+        tools: [...sheetsTools, ...sheetsMcpTools].map(t => ({ function: t.function }))
+    };
     const github = { service: 'github', connected: !!octokitClient, tools: githubTools.map(t => ({ function: t.function })) };
+    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length;
     res.json({
         services: [gmail, calendar, gchat, drive, sheets, github],
-        totalTools: gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + githubTools.length
+        totalTools
     });
 });
 
@@ -2933,6 +3526,29 @@ app.get('/api/sheets/status', (req, res) => {
         hasSheetsScope: sheetsScopeGranted,
         requiresReconnect: hasToken && !sheetsScopeGranted,
         toolCount: sheetsTools.length
+    });
+});
+
+app.get('/api/sheets-mcp/status', (req, res) => {
+    res.json({
+        enabled: SHEETS_MCP_ENABLED,
+        connected: !!sheetsMcpClient,
+        toolCount: sheetsMcpTools.length,
+        command: SHEETS_MCP_COMMAND,
+        args: SHEETS_MCP_ARGS,
+        credentialsDirectory: SHEETS_MCP_CREDS_DIR,
+        error: sheetsMcpError
+    });
+});
+
+app.post('/api/sheets-mcp/reconnect', async (req, res) => {
+    await closeSheetsMcpClient();
+    await initSheetsMcpClient();
+    res.json({
+        success: !!sheetsMcpClient,
+        connected: !!sheetsMcpClient,
+        toolCount: sheetsMcpTools.length,
+        error: sheetsMcpError
     });
 });
 
@@ -3183,6 +3799,8 @@ app.post('/api/chat', async (req, res) => {
         if (driveConnected) availableTools.push(...driveTools);
         const sheetsConnected = !!sheetsClient && hasSheetsScope();
         if (sheetsConnected) availableTools.push(...sheetsTools);
+        const sheetsMcpConnected = !!sheetsMcpClient && sheetsMcpTools.length > 0;
+        if (sheetsMcpConnected) availableTools.push(...sheetsMcpTools);
         if (octokitClient) availableTools.push(...githubTools);
 
         const connectedServices = [];
@@ -3191,6 +3809,7 @@ app.post('/api/chat', async (req, res) => {
         if (gchatConnected) connectedServices.push(`Google Chat (${gchatTools.length} tools)`);
         if (driveConnected) connectedServices.push(`Google Drive (${driveTools.length} tools)`);
         if (sheetsConnected) connectedServices.push(`Google Sheets (${sheetsTools.length} tools)`);
+        if (sheetsMcpConnected) connectedServices.push(`Google Sheets MCP (${sheetsMcpTools.length} tools)`);
         if (octokitClient) connectedServices.push('GitHub (20 tools)');
         const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
         const dateContext = getCurrentDateContext();
@@ -3234,6 +3853,10 @@ Total Tools Available: ${availableTools.length}
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
 - Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access.
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
+- Sheets timesheets: For date-based hours updates, ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
+- Sheets timesheets row safety: Update the matching existing date row only; do not create a second date row unless the user explicitly asks to append.
+- Sheets MCP: MCP tools are prefixed with ${SHEETS_MCP_TOOL_PREFIX} and provide fallback read/update operations when needed.
+- Sheets write safety: Never claim a sheet update succeeded unless tool output indicates verification/read-back succeeded.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.`;
 
         const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
@@ -3354,17 +3977,31 @@ Rules:
 // ============================================================
 const credentialsConfigured = initOAuthClient();
 initGitHubClient();
+initSheetsMcpClient().catch(error => {
+    console.error('Sheets MCP bootstrap failed:', error?.message || error);
+});
 
-const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + githubTools.length;
+const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length;
 app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
-    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, GitHub: ${githubTools.length})`);
+    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, GitHub: ${githubTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
     console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Chat: ${gchatClient && hasGchatScopes() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Drive: ${driveClient && hasDriveScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Sheets: ${sheetsClient && hasSheetsScope() ? 'Connected' : 'Not connected'}`);
+    console.log(`Google Sheets MCP: ${sheetsMcpClient ? `Connected (${sheetsMcpTools.length} tools)` : `Not connected${sheetsMcpError ? ` (${sheetsMcpError})` : ''}`}`);
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
+});
+
+process.on('SIGINT', async () => {
+    await closeSheetsMcpClient();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    await closeSheetsMcpClient();
+    process.exit(0);
 });
 
 

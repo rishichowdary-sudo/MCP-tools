@@ -8,6 +8,7 @@
     "dev": "node server.js"
   },
   "dependencies": {
+    "@isaacphi/mcp-gdrive": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",

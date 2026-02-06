@@ -100,10 +100,11 @@ const TOOL_ICONS = {
     create_drive_file: '&#10133;', update_drive_file: '&#9998;', delete_drive_file: '&#128465;',
     copy_drive_file: '&#128209;', move_drive_file: '&#10145;', share_drive_file: '&#128101;',
     download_drive_file: '&#128229;',
-    // Google Sheets (10)
+    // Google Sheets
     list_spreadsheets: '&#128202;', create_spreadsheet: '&#10133;', get_spreadsheet: '&#128196;',
     list_sheet_tabs: '&#128203;', add_sheet_tab: '&#10133;', delete_sheet_tab: '&#10134;',
-    read_sheet_values: '&#128214;', update_sheet_values: '&#9998;', append_sheet_values: '&#128228;',
+    read_sheet_values: '&#128214;', update_sheet_values: '&#9998;', update_timesheet_hours: '&#9201;',
+    append_sheet_values: '&#128228;',
     clear_sheet_values: '&#128465;',
     // GitHub (20)
     list_repos: '&#128193;', get_repo: '&#128196;', create_repo: '&#10133;',
@@ -149,7 +150,7 @@ const DRIVE_CATEGORIES = {
 const SHEETS_CATEGORIES = {
     'Discovery': ['list_spreadsheets', 'get_spreadsheet', 'list_sheet_tabs'],
     'Structure': ['create_spreadsheet', 'add_sheet_tab', 'delete_sheet_tab'],
-    'Data': ['read_sheet_values', 'update_sheet_values', 'append_sheet_values', 'clear_sheet_values']
+    'Data': ['read_sheet_values', 'update_sheet_values', 'update_timesheet_hours', 'append_sheet_values', 'clear_sheet_values']
 };
 
 const GITHUB_CATEGORIES = {
