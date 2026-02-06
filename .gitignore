@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.log
+temp/
+nul
+.gmail-mcp/
+.DS_Store
+Thumbs.db

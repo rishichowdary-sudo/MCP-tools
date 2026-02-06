@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent - 60 Tools</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles-modal.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">
+                        <svg viewBox="0 0 24 24" width="24" height="24">
+                            <circle cx="12" cy="12" r="10" fill="none" stroke="#6366f1" stroke-width="2"/>
+                            <path fill="#6366f1" d="M8 12l3 3 5-6" stroke="#6366f1" stroke-width="2" fill="none"/>
+                        </svg>
+                    </span>
+                    <h1>AI Agent</h1>
+                </div>
+                <div class="tool-count-badge" id="toolCountBadge">60 tools</div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <span class="nav-section-title">Integrations</span>
+
+                    <!-- Gmail Option -->
+                    <button class="nav-item" id="gmailNavItem" data-service="gmail">
+                        <div class="nav-item-icon gmail-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#EA4335"
+                                    d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" />
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Gmail</span>
+                        <span class="nav-item-status" id="gmailStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
+                    <!-- Calendar Option -->
+                    <button class="nav-item" id="calendarNavItem" data-service="calendar">
+                        <div class="nav-item-icon calendar-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#4285f4" d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM9 10H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Calendar</span>
+                        <span class="nav-item-status" id="calendarStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
+                    <!-- GitHub Option -->
+                    <button class="nav-item" id="githubNavItem" data-service="github">
+                        <div class="nav-item-icon github-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#e6edf3" d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">GitHub</span>
+                        <span class="nav-item-status" id="githubStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
+                    <!-- Capabilities Option -->
+                    <button class="nav-item" id="capabilitiesNavItem">
+                        <div class="nav-item-icon capabilities-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="currentColor"
+                                    d="M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4L12 14.01l-3-3" />
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">All 60 Tools</span>
+                    </button>
+                </div>
+
+                <div class="nav-section">
+                    <span class="nav-section-title">Quick Actions</span>
+                    <button class="nav-item quick-nav" data-prompt="Show me my latest 10 unread emails">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128236;</span></div>
+                        <span class="nav-item-text">Unread Emails</span>
+                    </button>
+                    <button class="nav-item quick-nav" data-prompt="Show my calendar events for today">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128197;</span></div>
+                        <span class="nav-item-text">Today's Events</span>
+                    </button>
+                    <button class="nav-item quick-nav" data-prompt="List my GitHub notifications">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128276;</span></div>
+                        <span class="nav-item-text">GitHub Notifications</span>
+                    </button>
+                    <button class="nav-item quick-nav" data-prompt="Show my starred emails">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#11088;</span></div>
+                        <span class="nav-item-text">Starred</span>
+                    </button>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <p>Powered by OpenAI + Google + GitHub APIs</p>
+            </div>
+        </aside>
+
+        <!-- Capabilities Modal -->
+        <div class="modal-overlay" id="capabilitiesModal" style="display: none;">
+            <div class="modal modal-large">
+                <div class="modal-header">
+                    <h2 id="modalTitle">All 60 Tools</h2>
+                    <button class="close-modal-btn" id="closeCapabilitiesBtn">&times;</button>
+                </div>
+                <div class="modal-content">
+                    <div class="service-tabs" id="serviceTabs">
+                        <button class="service-tab active" data-filter="all">All</button>
+                        <button class="service-tab" data-filter="gmail">Gmail (25)</button>
+                        <button class="service-tab" data-filter="github">GitHub (20)</button>
+                        <button class="service-tab" data-filter="calendar">Calendar (15)</button>
+                    </div>
+                    <div class="capability-group">
+                        <p class="capability-description"><span id="toolStatusText">Not connected</span></p>
+                        <div class="tools-container" id="toolsGrid">
+                            <div style="color:var(--text-secondary)">Loading tools...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Gmail Panel (shown when Gmail is selected) -->
+            <div class="service-panel" id="gmailPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#EA4335"
+                                d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" />
+                        </svg>
+                        <h2>Gmail Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="gmail">&times;</button>
+                </div>
+
+                <div class="panel-content">
+                    <!-- Not Authenticated State -->
+                    <div class="auth-section" id="authSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#EA4335"
+                                        d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" />
+                                </svg>
+                            </div>
+                            <h3>Connect Your Gmail</h3>
+                            <p>Sign in to unlock all 25 AI-powered email tools:</p>
+                            <ul class="feature-list">
+                                <li>Send, reply, forward emails</li>
+                                <li>Search, read, and summarize</li>
+                                <li>Star, archive, label management</li>
+                                <li>Drafts, threads, batch operations</li>
+                                <li>Multi-step agentic task execution</li>
+                            </ul>
+                            <button class="auth-btn" id="authenticateBtn">
+                                <svg viewBox="0 0 24 24" width="20" height="20">
+                                    <path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                    <path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                    <path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                                    <path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                                </svg>
+                                Sign in with Google
+                            </button>
+                            <p class="auth-note">This also enables Google Calendar. Your data stays secure.</p>
+                        </div>
+                    </div>
+
+                    <!-- Authenticated State -->
+                    <div class="connected-section" id="connectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon">&#10003;</div>
+                                <div>
+                                    <h3>Gmail Connected</h3>
+                                    <p>25 tools ready. Try complex multi-step tasks!</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="Show me my latest 5 emails and summarize them">
+                                    &#128236; Summarize Recent Emails
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Find all unread emails, read the most important one, and star it">
+                                    &#11088; Find & Star Important
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Search for emails with attachments from the last 3 days and list what files they contain">
+                                    &#128206; Recent Attachments
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Help me compose a professional email">
+                                    &#9997; Compose Email
+                                </button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="gmail">
+                                Start Chatting
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Setup Required State -->
+                    <div class="setup-section" id="setupSection" style="display: none;">
+                        <div class="setup-card">
+                            <div class="setup-icon">&#9881;</div>
+                            <h3>Setup Required</h3>
+                            <p>Google Cloud credentials need to be configured first.</p>
+                            <ol class="setup-steps">
+                                <li>Go to <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a></li>
+                                <li>Create a project & enable Gmail + Calendar APIs</li>
+                                <li>Create OAuth 2.0 credentials (Desktop app)</li>
+                                <li>Add <code>GMAIL_CLIENT_ID</code> and <code>GMAIL_CLIENT_SECRET</code> to your <code>.env</code> file</li>
+                                <li>Restart the server</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calendar Panel -->
+            <div class="service-panel" id="calendarPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#4285f4" d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM9 10H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/>
+                        </svg>
+                        <h2>Calendar Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="calendar">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="auth-section" id="calendarAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#4285f4" d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM9 10H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Google Calendar</h3>
+                            <p>Sign in with Google to unlock 15 calendar tools:</p>
+                            <ul class="feature-list">
+                                <li>List, create, update, delete events</li>
+                                <li>Quick add events with natural language</li>
+                                <li>Check free/busy, manage attendees</li>
+                                <li>Multiple calendars, recurring events</li>
+                            </ul>
+                            <button class="auth-btn" id="calendarAuthBtn">
+                                <svg viewBox="0 0 24 24" width="20" height="20">
+                                    <path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                    <path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                    <path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                                    <path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                                </svg>
+                                Sign in with Google
+                            </button>
+                            <p class="auth-note">Uses the same Google OAuth as Gmail.</p>
+                        </div>
+                    </div>
+                    <div class="connected-section" id="calendarConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#4285f4,#1a73e8)">&#10003;</div>
+                                <div>
+                                    <h3>Calendar Connected</h3>
+                                    <p>15 tools ready. Manage events, check availability!</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="Show my calendar events for today">
+                                    &#128197; Today's Events
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Create a meeting tomorrow at 2pm for 1 hour titled 'Team Sync'">
+                                    &#10133; Create Event
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Check my availability for this week">
+                                    &#128338; Check Availability
+                                </button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="calendar">
+                                Start Chatting
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- GitHub Panel -->
+            <div class="service-panel" id="githubPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#e6edf3" d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                        </svg>
+                        <h2>GitHub Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="github">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="auth-section" id="githubAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#e6edf3" d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect GitHub</h3>
+                            <p>Add your Personal Access Token to unlock 20 GitHub tools:</p>
+                            <ul class="feature-list">
+                                <li>Repos, issues, pull requests</li>
+                                <li>Create branches, merge PRs</li>
+                                <li>Search repos and code</li>
+                                <li>Notifications, commits, gists</li>
+                            </ul>
+                            <div class="token-input-group">
+                                <input type="password" id="githubTokenInput" class="token-input" placeholder="ghp_xxxxxxxxxxxxx" autocomplete="off">
+                                <button class="auth-btn github-auth-btn" id="githubConnectBtn">
+                                    <svg viewBox="0 0 24 24" width="20" height="20">
+                                        <path fill="#fff" d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                                    </svg>
+                                    Connect GitHub
+                                </button>
+                            </div>
+                            <p class="auth-note">Generate a PAT at GitHub Settings > Developer settings > Personal access tokens.</p>
+                        </div>
+                    </div>
+                    <div class="connected-section" id="githubConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#238636,#2ea043)">&#10003;</div>
+                                <div>
+                                    <h3>GitHub Connected</h3>
+                                    <p id="githubUsername">20 tools ready.</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="List my GitHub repositories">
+                                    &#128193; My Repositories
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Show my GitHub notifications">
+                                    &#128276; Notifications
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Show my GitHub profile">
+                                    &#128100; My Profile
+                                </button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="github">
+                                Start Chatting
+                            </button>
+                            <button class="disconnect-btn" id="githubDisconnectBtn">Disconnect GitHub</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Area -->
+            <div class="chat-area" id="chatArea">
+                <div class="chat-header">
+                    <h2>Chat</h2>
+                    <div class="chat-status" id="chatStatus">
+                        <span class="service-badge gmail-badge" id="gmailBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Gmail
+                        </span>
+                        <span class="service-badge calendar-badge" id="calendarBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Calendar
+                        </span>
+                        <span class="service-badge github-badge" id="githubBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            GitHub
+                        </span>
+                        <span class="turns-badge" id="turnsBadge" style="display: none;">
+                            Steps: <span id="turnsCount">0</span>/15
+                        </span>
+                    </div>
+                </div>
+
+                <div class="chat-messages" id="chatMessages">
+                    <!-- Welcome Message -->
+                    <div class="message assistant">
+                        <div class="message-avatar">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <circle cx="12" cy="12" r="10" fill="none" stroke="#6366f1" stroke-width="2"/>
+                                <path fill="none" stroke="#6366f1" stroke-width="2" d="M8 12l3 3 5-6"/>
+                            </svg>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-bubble">
+                                <p>Hello! I'm your AI Agent with <strong>60 tools</strong> across Gmail, Google Calendar, and GitHub. I can chain <strong>up to 15 steps</strong> to complete complex cross-service tasks.</p>
+                                <p>Connect services in the sidebar, then try things like:</p>
+                                <ul style="margin:0.5rem 0;padding-left:1.2rem;color:var(--text-secondary)">
+                                    <li>"Find today's meetings and email the attendees a reminder"</li>
+                                    <li>"Create a GitHub issue for the bug and schedule a review meeting"</li>
+                                    <li>"List my open PRs and send me a summary email"</li>
+                                    <li>"Search for emails from my team, star the important ones, and create calendar events for follow-ups"</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="chat-input-container">
+                    <div class="input-wrapper">
+                        <textarea id="messageInput" placeholder="Ask me anything across Gmail, Calendar, or GitHub..." rows="1"></textarea>
+                        <button class="send-btn" id="sendBtn" disabled>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" />
+                            </svg>
+                        </button>
+                    </div>
+                    <p class="input-hint">Press Enter to send &bull; Shift+Enter for new line &bull; Agent chains up to 15 steps automatically</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
