@@ -26,7 +26,7 @@
                     </span>
                     <h1>AI Agent</h1>
                 </div>
-                <div class="tool-count-badge" id="toolCountBadge">60 tools</div>
+                <div class="tool-count-badge" id="toolCountBadge">65 tools</div>
             </div>
 
             <nav class="sidebar-nav">
@@ -73,6 +73,19 @@
                         </span>
                     </button>
 
+                    <!-- Google Chat Option -->
+                    <button class="nav-item" id="gchatNavItem" data-service="gchat">
+                        <div class="nav-item-icon gchat-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#34a853" d="M3 4h18v12H7l-4 4V4zm4 5h10v2H7V9z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Google Chat</span>
+                        <span class="nav-item-status" id="gchatStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
                     <!-- Capabilities Option -->
                     <button class="nav-item" id="capabilitiesNavItem">
                         <div class="nav-item-icon capabilities-icon">
@@ -81,7 +94,7 @@
                                     d="M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4L12 14.01l-3-3" />
                             </svg>
                         </div>
-                        <span class="nav-item-text">All 60 Tools</span>
+                        <span class="nav-item-text">All Tools</span>
                     </button>
                 </div>
 
@@ -99,6 +112,10 @@
                         <div class="nav-item-icon"><span style="font-size:16px">&#128276;</span></div>
                         <span class="nav-item-text">GitHub Notifications</span>
                     </button>
+                    <button class="nav-item quick-nav" data-prompt="List my Google Chat spaces">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128172;</span></div>
+                        <span class="nav-item-text">Chat Spaces</span>
+                    </button>
                     <button class="nav-item quick-nav" data-prompt="Show my starred emails">
                         <div class="nav-item-icon"><span style="font-size:16px">&#11088;</span></div>
                         <span class="nav-item-text">Starred</span>
@@ -115,15 +132,16 @@
         <div class="modal-overlay" id="capabilitiesModal" style="display: none;">
             <div class="modal modal-large">
                 <div class="modal-header">
-                    <h2 id="modalTitle">All 60 Tools</h2>
+                    <h2 id="modalTitle">All Tools</h2>
                     <button class="close-modal-btn" id="closeCapabilitiesBtn">&times;</button>
                 </div>
                 <div class="modal-content">
                     <div class="service-tabs" id="serviceTabs">
                         <button class="service-tab active" data-filter="all">All</button>
                         <button class="service-tab" data-filter="gmail">Gmail (25)</button>
+                        <button class="service-tab" data-filter="gchat">Chat (3)</button>
                         <button class="service-tab" data-filter="github">GitHub (20)</button>
-                        <button class="service-tab" data-filter="calendar">Calendar (15)</button>
+                        <button class="service-tab" data-filter="calendar">Calendar (19)</button>
                     </div>
                     <div class="capability-group">
                         <p class="capability-description"><span id="toolStatusText">Not connected</span></p>
@@ -251,7 +269,7 @@
                                 </svg>
                             </div>
                             <h3>Connect Google Calendar</h3>
-                            <p>Sign in with Google to unlock 15 calendar tools:</p>
+                            <p>Sign in with Google to unlock 19 calendar tools:</p>
                             <ul class="feature-list">
                                 <li>List, create, update, delete events</li>
                                 <li>Quick add events with natural language</li>
@@ -276,7 +294,7 @@
                                 <div class="connected-icon" style="background:linear-gradient(135deg,#4285f4,#1a73e8)">&#10003;</div>
                                 <div>
                                     <h3>Calendar Connected</h3>
-                                    <p>15 tools ready. Manage events, check availability!</p>
+                                    <p>19 tools ready. Manage events, check availability!</p>
                                 </div>
                             </div>
                             <div class="quick-actions">
@@ -294,6 +312,73 @@
                                 Start Chatting
                             </button>
                             <button class="disconnect-btn reauth-btn" id="calendarReauthBtn">Reauthenticate Calendar (Switch Account)</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- GitHub Panel -->
+            <div class="service-panel" id="gchatPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#34a853" d="M3 4h18v12H7l-4 4V4zm4 5h10v2H7V9z"/>
+                        </svg>
+                        <h2>Google Chat Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="gchat">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="auth-section" id="gchatAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#34a853" d="M3 4h18v12H7l-4 4V4zm4 5h10v2H7V9z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Google Chat</h3>
+                            <p>Use Google OAuth to unlock chat space tools:</p>
+                            <ul class="feature-list">
+                                <li>List Google Chat spaces</li>
+                                <li>Send messages to spaces</li>
+                                <li>Read recent chat messages</li>
+                            </ul>
+                            <button class="auth-btn" id="gchatAuthBtn">
+                                <svg viewBox="0 0 24 24" width="20" height="20">
+                                    <path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                    <path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                    <path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                                    <path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                                </svg>
+                                Sign in with Google
+                            </button>
+                            <p class="auth-note">Uses the same Google OAuth as Gmail and Calendar.</p>
+                        </div>
+                    </div>
+                    <div class="connected-section" id="gchatConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#34a853,#16a34a)">&#10003;</div>
+                                <div>
+                                    <h3>Google Chat Connected</h3>
+                                    <p>3 tools ready for space messaging workflows.</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="List my Google Chat spaces">
+                                    &#128172; List Spaces
+                                </button>
+                                <button class="quick-action-btn" data-prompt="List my Google Chat spaces and send a hello message to the first one">
+                                    &#9993; Send Space Message
+                                </button>
+                                <button class="quick-action-btn" data-prompt="List recent messages from a Google Chat space">
+                                    &#128221; Read Recent Messages
+                                </button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="gchat">
+                                Start Chatting
+                            </button>
+                            <button class="disconnect-btn reauth-btn" id="gchatReauthBtn">Reauthenticate Chat (Switch Account)</button>
                         </div>
                     </div>
                 </div>
@@ -382,6 +467,10 @@
                             <span class="badge-dot"></span>
                             GitHub
                         </span>
+                        <span class="service-badge gchat-badge" id="gchatBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Chat
+                        </span>
                         <span class="turns-badge" id="turnsBadge" style="display: none;">
                             Steps: <span id="turnsCount">0</span>/15
                         </span>
@@ -399,7 +488,7 @@
                         </div>
                         <div class="message-content">
                             <div class="message-bubble">
-                                <p>Hello! I'm your AI Agent with <strong>60 tools</strong> across Gmail, Google Calendar, and GitHub. I can chain <strong>up to 15 steps</strong> to complete complex cross-service tasks.</p>
+                                <p>Hello! I'm your AI Agent with <strong>65 tools</strong> across Gmail, Google Calendar, Google Chat, and GitHub. I can chain <strong>up to 15 steps</strong> to complete complex cross-service tasks.</p>
                                 <p>Connect services in the sidebar, then try things like:</p>
                                 <ul style="margin:0.5rem 0;padding-left:1.2rem;color:var(--text-secondary)">
                                     <li>"Find today's meetings and email the attendees a reminder"</li>

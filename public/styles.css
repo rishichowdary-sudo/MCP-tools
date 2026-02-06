@@ -169,6 +169,10 @@ body {
     background: rgba(139, 148, 158, 0.15);
 }
 
+.nav-item-icon.gchat-icon {
+    background: rgba(52, 168, 83, 0.15);
+}
+
 .nav-item-status {
     margin-left: auto;
 }
@@ -520,6 +524,12 @@ body {
     background: rgba(34, 197, 94, 0.15);
     border: 1px solid rgba(34, 197, 94, 0.3);
     color: var(--success);
+}
+
+.gchat-badge {
+    background: rgba(52, 168, 83, 0.15);
+    border: 1px solid rgba(52, 168, 83, 0.35);
+    color: #34a853;
 }
 
 .badge-dot {
