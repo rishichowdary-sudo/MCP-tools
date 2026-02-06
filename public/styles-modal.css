@@ -133,6 +133,8 @@
 .service-section-header .service-dot.gmail { background: #EA4335; }
 .service-section-header .service-dot.calendar { background: #4285f4; }
 .service-section-header .service-dot.gchat { background: #34a853; }
+.service-section-header .service-dot.drive { background: #0f9d58; }
+.service-section-header .service-dot.sheets { background: #16a34a; }
 .service-section-header .service-dot.github { background: #238636; }
 
 .capability-group h3 {

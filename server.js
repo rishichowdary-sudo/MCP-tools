@@ -20,7 +20,7 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
 
-// Gmail + Calendar OAuth setup
+// Google OAuth scopes setup (Gmail, Calendar, Chat, Drive, Sheets)
 const SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.send',
@@ -29,11 +29,15 @@ const SCOPES = [
     'https://www.googleapis.com/auth/gmail.compose',
     'https://www.googleapis.com/auth/gmail.settings.basic',
     'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/chat.spaces.readonly',
     'https://www.googleapis.com/auth/chat.messages.create',
     'https://www.googleapis.com/auth/chat.messages.readonly'
 ];
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const GCHAT_REQUIRED_SCOPES = [
     'https://www.googleapis.com/auth/chat.spaces.readonly',
     'https://www.googleapis.com/auth/chat.messages.create',
@@ -50,6 +54,8 @@ let oauth2Client = null;
 let gmailClient = null;
 let calendarClient = null;
 let gchatClient = null;
+let driveClient = null;
+let sheetsClient = null;
 let octokitClient = null;
 let githubUsername = null;
 let githubAuthMethod = null;
@@ -102,6 +108,22 @@ function hasGchatScopes() {
     return tokenHasScopes(savedToken, GCHAT_REQUIRED_SCOPES);
 }
 
+function hasDriveScope() {
+    if (oauth2Client && tokenHasScope(oauth2Client.credentials, DRIVE_SCOPE)) {
+        return true;
+    }
+    const savedToken = readSavedToken();
+    return tokenHasScope(savedToken, DRIVE_SCOPE);
+}
+
+function hasSheetsScope() {
+    if (oauth2Client && tokenHasScope(oauth2Client.credentials, SHEETS_SCOPE)) {
+        return true;
+    }
+    const savedToken = readSavedToken();
+    return tokenHasScope(savedToken, SHEETS_SCOPE);
+}
+
 function getCalendarPermissionError(error) {
     const status = error?.code || error?.status || error?.response?.status;
     const message = String(error?.message || '');
@@ -118,6 +140,26 @@ function getGchatPermissionError(error) {
     const looksLikeScopeError = /insufficient|permission|scope|forbidden|unauthorized/i.test(message);
     if ((status === 401 || status === 403) && looksLikeScopeError) {
         return 'Google Chat permission is missing or expired. Please reconnect Google Chat from the Chat panel and try again.';
+    }
+    return null;
+}
+
+function getDrivePermissionError(error) {
+    const status = error?.code || error?.status || error?.response?.status;
+    const message = String(error?.message || '');
+    const looksLikeScopeError = /insufficient|permission|scope|forbidden|unauthorized/i.test(message);
+    if ((status === 401 || status === 403) && looksLikeScopeError) {
+        return 'Google Drive permission is missing or expired. Please reconnect Google Drive from the Drive panel and try again.';
+    }
+    return null;
+}
+
+function getSheetsPermissionError(error) {
+    const status = error?.code || error?.status || error?.response?.status;
+    const message = String(error?.message || '');
+    const looksLikeScopeError = /insufficient|permission|scope|forbidden|unauthorized/i.test(message);
+    if ((status === 401 || status === 403) && looksLikeScopeError) {
+        return 'Google Sheets permission is missing or expired. Please reconnect Google Sheets from the Sheets panel and try again.';
     }
     return null;
 }
@@ -223,6 +265,12 @@ function initOAuthClient() {
             gchatClient = tokenHasScopes(token, GCHAT_REQUIRED_SCOPES)
                 ? google.chat({ version: 'v1', auth: oauth2Client })
                 : null;
+            driveClient = tokenHasScope(token, DRIVE_SCOPE)
+                ? google.drive({ version: 'v3', auth: oauth2Client })
+                : null;
+            sheetsClient = tokenHasScope(token, SHEETS_SCOPE)
+                ? google.sheets({ version: 'v4', auth: oauth2Client })
+                : null;
             if (calendarClient) {
                 console.log('Gmail + Calendar clients initialized with existing token');
             } else {
@@ -230,6 +278,12 @@ function initOAuthClient() {
             }
             if (!gchatClient) {
                 console.log('Google Chat scopes missing in token; reconnect required for Chat tools.');
+            }
+            if (!driveClient) {
+                console.log('Google Drive scope missing in token; reconnect required for Drive tools.');
+            }
+            if (!sheetsClient) {
+                console.log('Google Sheets scope missing in token; reconnect required for Sheets tools.');
             }
         }
         return true;
@@ -1444,6 +1498,492 @@ async function listChatMessages({ spaceId, maxResults = 20 }) {
 }
 
 // ============================================================
+//  GOOGLE DRIVE TOOL IMPLEMENTATIONS
+// ============================================================
+
+function normalizeDriveFile(record) {
+    return {
+        id: record.id,
+        name: record.name,
+        mimeType: record.mimeType,
+        owners: (record.owners || []).map(owner => owner.displayName || owner.emailAddress).filter(Boolean),
+        modifiedTime: record.modifiedTime,
+        createdTime: record.createdTime,
+        size: record.size ? Number(record.size) : null,
+        webViewLink: record.webViewLink,
+        parents: record.parents || [],
+        trashed: !!record.trashed
+    };
+}
+
+async function listDriveFiles({ query, pageSize = 25, orderBy = 'modifiedTime desc', includeTrashed = false }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    const qParts = [];
+    if (!includeTrashed) qParts.push('trashed = false');
+    if (query) qParts.push(`(${query})`);
+
+    const response = await driveClient.files.list({
+        q: qParts.length > 0 ? qParts.join(' and ') : undefined,
+        pageSize,
+        orderBy,
+        fields: 'nextPageToken, files(id,name,mimeType,owners(displayName,emailAddress),modifiedTime,createdTime,size,webViewLink,parents,trashed)'
+    });
+
+    const files = (response.data.files || []).map(normalizeDriveFile);
+    return { files, nextPageToken: response.data.nextPageToken || null, message: `Found ${files.length} Drive file(s)` };
+}
+
+async function getDriveFile({ fileId }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+    const response = await driveClient.files.get({
+        fileId,
+        fields: 'id,name,mimeType,description,owners(displayName,emailAddress),modifiedTime,createdTime,size,webViewLink,webContentLink,parents,trashed'
+    });
+    return { file: normalizeDriveFile(response.data), webContentLink: response.data.webContentLink || null, description: response.data.description || '', message: `Drive file: ${response.data.name}` };
+}
+
+async function createDriveFolder({ name, parentId }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!name) throw new Error('name is required');
+    const requestBody = {
+        name,
+        mimeType: 'application/vnd.google-apps.folder'
+    };
+    if (parentId) requestBody.parents = [parentId];
+
+    const response = await driveClient.files.create({
+        requestBody,
+        fields: 'id,name,mimeType,webViewLink,parents'
+    });
+    return {
+        success: true,
+        file: normalizeDriveFile(response.data),
+        message: `Folder "${response.data.name}" created`
+    };
+}
+
+async function createDriveFile({ name, content = '', mimeType = 'text/plain', parentId }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!name) throw new Error('name is required');
+
+    const requestBody = { name };
+    if (parentId) requestBody.parents = [parentId];
+
+    const response = await driveClient.files.create({
+        requestBody,
+        media: { mimeType, body: content },
+        fields: 'id,name,mimeType,webViewLink,parents,size,modifiedTime'
+    });
+    return {
+        success: true,
+        file: normalizeDriveFile(response.data),
+        message: `File "${response.data.name}" created`
+    };
+}
+
+async function updateDriveFile({ fileId, content, name, mimeType = 'text/plain' }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    const requestBody = {};
+    if (name) requestBody.name = name;
+
+    const params = {
+        fileId,
+        requestBody,
+        fields: 'id,name,mimeType,webViewLink,parents,size,modifiedTime'
+    };
+    if (content !== undefined) {
+        params.media = { mimeType, body: content };
+    }
+
+    const response = await driveClient.files.update(params);
+    return {
+        success: true,
+        file: normalizeDriveFile(response.data),
+        message: `File "${response.data.name}" updated`
+    };
+}
+
+async function deleteDriveFile({ fileId, permanent = false }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    if (permanent) {
+        await driveClient.files.delete({ fileId });
+        return { success: true, fileId, message: 'Drive file permanently deleted' };
+    }
+
+    await driveClient.files.update({
+        fileId,
+        requestBody: { trashed: true },
+        fields: 'id,name,trashed'
+    });
+    return { success: true, fileId, message: 'Drive file moved to trash' };
+}
+
+async function copyDriveFile({ fileId, name, parentId }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    const requestBody = {};
+    if (name) requestBody.name = name;
+    if (parentId) requestBody.parents = [parentId];
+
+    const response = await driveClient.files.copy({
+        fileId,
+        requestBody,
+        fields: 'id,name,mimeType,webViewLink,parents,size,modifiedTime'
+    });
+    return { success: true, file: normalizeDriveFile(response.data), message: `Copied file to "${response.data.name}"` };
+}
+
+async function moveDriveFile({ fileId, newParentId }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId || !newParentId) throw new Error('fileId and newParentId are required');
+
+    const meta = await driveClient.files.get({ fileId, fields: 'id,name,parents' });
+    const currentParents = meta.data.parents || [];
+
+    const response = await driveClient.files.update({
+        fileId,
+        addParents: newParentId,
+        removeParents: currentParents.join(','),
+        fields: 'id,name,mimeType,webViewLink,parents,modifiedTime'
+    });
+
+    return {
+        success: true,
+        file: normalizeDriveFile(response.data),
+        previousParents: currentParents,
+        message: `Moved "${response.data.name}" to new parent`
+    };
+}
+
+async function shareDriveFile({ fileId, emailAddress, role = 'reader', sendNotificationEmail = true }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId || !emailAddress) throw new Error('fileId and emailAddress are required');
+
+    const permission = await driveClient.permissions.create({
+        fileId,
+        sendNotificationEmail,
+        requestBody: {
+            type: 'user',
+            role,
+            emailAddress
+        },
+        fields: 'id,type,role,emailAddress'
+    });
+    return {
+        success: true,
+        permission: permission.data,
+        message: `Shared file with ${emailAddress} as ${role}`
+    };
+}
+
+async function downloadDriveFile({ fileId, maxBytes = 200000 }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    const meta = await driveClient.files.get({
+        fileId,
+        fields: 'id,name,mimeType,size'
+    });
+
+    const mimeType = meta.data.mimeType || '';
+    if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+        throw new Error('This file is a Google Sheet. Use Sheets tools (read_sheet_values, get_spreadsheet) to access data.');
+    }
+
+    let rawBytes;
+    if (mimeType.startsWith('application/vnd.google-apps.')) {
+        const exportResponse = await driveClient.files.export(
+            { fileId, mimeType: 'text/plain' },
+            { responseType: 'arraybuffer' }
+        );
+        rawBytes = Buffer.from(exportResponse.data);
+    } else {
+        const fileResponse = await driveClient.files.get(
+            { fileId, alt: 'media' },
+            { responseType: 'arraybuffer' }
+        );
+        rawBytes = Buffer.from(fileResponse.data);
+    }
+
+    const limit = Math.max(1024, Number(maxBytes) || 200000);
+    const truncated = rawBytes.length > limit;
+    const body = truncated ? rawBytes.subarray(0, limit) : rawBytes;
+    const content = body.toString('utf8');
+
+    return {
+        fileId,
+        name: meta.data.name,
+        mimeType,
+        content,
+        byteLength: rawBytes.length,
+        returnedBytes: body.length,
+        truncated,
+        message: truncated
+            ? `Downloaded truncated content for "${meta.data.name}" (${body.length}/${rawBytes.length} bytes)`
+            : `Downloaded file "${meta.data.name}"`
+    };
+}
+
+// ============================================================
+//  GOOGLE SHEETS TOOL IMPLEMENTATIONS
+// ============================================================
+
+function normalizeSheetValuesInput(values) {
+    if (!Array.isArray(values)) {
+        throw new Error('values must be an array');
+    }
+    if (values.length === 0) return [];
+    if (Array.isArray(values[0])) return values;
+    return [values];
+}
+
+async function listSpreadsheets({ query, maxResults = 25 }) {
+    if (!driveClient) throw new Error('Google Drive is required to list spreadsheets. Reconnect Google Drive.');
+
+    const qParts = [
+        "mimeType = 'application/vnd.google-apps.spreadsheet'",
+        'trashed = false'
+    ];
+    if (query) qParts.push(`(${query})`);
+
+    const response = await driveClient.files.list({
+        q: qParts.join(' and '),
+        pageSize: maxResults,
+        orderBy: 'modifiedTime desc',
+        fields: 'files(id,name,owners(displayName,emailAddress),modifiedTime,webViewLink)'
+    });
+
+    const spreadsheets = (response.data.files || []).map(file => ({
+        spreadsheetId: file.id,
+        title: file.name,
+        owners: (file.owners || []).map(owner => owner.displayName || owner.emailAddress).filter(Boolean),
+        modifiedTime: file.modifiedTime,
+        webViewLink: file.webViewLink
+    }));
+    return { spreadsheets, message: `Found ${spreadsheets.length} spreadsheet(s)` };
+}
+
+async function createSpreadsheet({ title, sheets = [] }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!title) throw new Error('title is required');
+
+    const normalizedSheets = Array.isArray(sheets)
+        ? sheets
+            .map(name => String(name || '').trim())
+            .filter(Boolean)
+            .map(name => ({ properties: { title: name } }))
+        : [];
+
+    const response = await sheetsClient.spreadsheets.create({
+        requestBody: {
+            properties: { title },
+            sheets: normalizedSheets.length > 0 ? normalizedSheets : undefined
+        }
+    });
+
+    return {
+        success: true,
+        spreadsheetId: response.data.spreadsheetId,
+        title: response.data.properties?.title || title,
+        url: response.data.spreadsheetUrl,
+        message: `Spreadsheet "${title}" created`
+    };
+}
+
+async function getSpreadsheet({ spreadsheetId, includeGridData = false }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId) throw new Error('spreadsheetId is required');
+
+    const response = await sheetsClient.spreadsheets.get({
+        spreadsheetId,
+        includeGridData
+    });
+    const data = response.data;
+    return {
+        spreadsheetId: data.spreadsheetId,
+        title: data.properties?.title,
+        locale: data.properties?.locale,
+        timeZone: data.properties?.timeZone,
+        spreadsheetUrl: data.spreadsheetUrl,
+        sheetCount: (data.sheets || []).length,
+        sheets: (data.sheets || []).map(sheet => ({
+            sheetId: sheet.properties?.sheetId,
+            title: sheet.properties?.title,
+            index: sheet.properties?.index,
+            rowCount: sheet.properties?.gridProperties?.rowCount,
+            columnCount: sheet.properties?.gridProperties?.columnCount
+        })),
+        message: `Spreadsheet: ${data.properties?.title || spreadsheetId}`
+    };
+}
+
+async function listSheetTabs({ spreadsheetId }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId) throw new Error('spreadsheetId is required');
+
+    const response = await sheetsClient.spreadsheets.get({
+        spreadsheetId,
+        fields: 'spreadsheetId,properties.title,sheets.properties(sheetId,title,index,gridProperties(rowCount,columnCount))'
+    });
+    const tabs = (response.data.sheets || []).map(sheet => ({
+        sheetId: sheet.properties?.sheetId,
+        title: sheet.properties?.title,
+        index: sheet.properties?.index,
+        rowCount: sheet.properties?.gridProperties?.rowCount,
+        columnCount: sheet.properties?.gridProperties?.columnCount
+    }));
+    return { spreadsheetId, title: response.data.properties?.title, tabs, message: `Found ${tabs.length} sheet tab(s)` };
+}
+
+async function addSheetTab({ spreadsheetId, title, rows = 1000, columns = 26 }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId || !title) throw new Error('spreadsheetId and title are required');
+
+    const response = await sheetsClient.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+            requests: [{
+                addSheet: {
+                    properties: {
+                        title,
+                        gridProperties: {
+                            rowCount: rows,
+                            columnCount: columns
+                        }
+                    }
+                }
+            }]
+        }
+    });
+
+    const sheetProperties = response.data.replies?.[0]?.addSheet?.properties || {};
+    return {
+        success: true,
+        sheetId: sheetProperties.sheetId,
+        title: sheetProperties.title || title,
+        message: `Sheet tab "${title}" added`
+    };
+}
+
+async function deleteSheetTab({ spreadsheetId, sheetId }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId || sheetId === undefined || sheetId === null) {
+        throw new Error('spreadsheetId and sheetId are required');
+    }
+
+    await sheetsClient.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+            requests: [{
+                deleteSheet: {
+                    sheetId: Number(sheetId)
+                }
+            }]
+        }
+    });
+
+    return { success: true, spreadsheetId, sheetId: Number(sheetId), message: `Deleted sheet tab ${sheetId}` };
+}
+
+async function readSheetValues({ spreadsheetId, range, valueRenderOption = 'FORMATTED_VALUE', dateTimeRenderOption = 'SERIAL_NUMBER' }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId || !range) throw new Error('spreadsheetId and range are required');
+
+    const response = await sheetsClient.spreadsheets.values.get({
+        spreadsheetId,
+        range,
+        valueRenderOption,
+        dateTimeRenderOption
+    });
+
+    const values = response.data.values || [];
+    return {
+        spreadsheetId,
+        range: response.data.range || range,
+        majorDimension: response.data.majorDimension || 'ROWS',
+        values,
+        rowCount: values.length,
+        message: `Read ${values.length} row(s) from ${range}`
+    };
+}
+
+async function updateSheetValues({ spreadsheetId, range, values, valueInputOption = 'USER_ENTERED', majorDimension = 'ROWS' }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId || !range) throw new Error('spreadsheetId and range are required');
+
+    const normalizedValues = normalizeSheetValuesInput(values);
+    const response = await sheetsClient.spreadsheets.values.update({
+        spreadsheetId,
+        range,
+        valueInputOption,
+        requestBody: {
+            majorDimension,
+            values: normalizedValues
+        }
+    });
+
+    return {
+        success: true,
+        spreadsheetId,
+        range,
+        updatedRows: response.data.updatedRows || 0,
+        updatedColumns: response.data.updatedColumns || 0,
+        updatedCells: response.data.updatedCells || 0,
+        message: `Updated ${response.data.updatedCells || 0} cell(s)`
+    };
+}
+
+async function appendSheetValues({ spreadsheetId, range, values, valueInputOption = 'USER_ENTERED', insertDataOption = 'INSERT_ROWS' }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId || !range) throw new Error('spreadsheetId and range are required');
+
+    const normalizedValues = normalizeSheetValuesInput(values);
+    const response = await sheetsClient.spreadsheets.values.append({
+        spreadsheetId,
+        range,
+        valueInputOption,
+        insertDataOption,
+        requestBody: {
+            values: normalizedValues
+        }
+    });
+
+    const updates = response.data.updates || {};
+    return {
+        success: true,
+        spreadsheetId,
+        tableRange: response.data.tableRange || '',
+        updatedRange: updates.updatedRange || '',
+        updatedRows: updates.updatedRows || 0,
+        updatedColumns: updates.updatedColumns || 0,
+        updatedCells: updates.updatedCells || 0,
+        message: `Appended ${updates.updatedRows || 0} row(s)`
+    };
+}
+
+async function clearSheetValues({ spreadsheetId, range }) {
+    if (!sheetsClient) throw new Error('Google Sheets not authenticated');
+    if (!spreadsheetId || !range) throw new Error('spreadsheetId and range are required');
+
+    const response = await sheetsClient.spreadsheets.values.clear({
+        spreadsheetId,
+        range
+    });
+    return {
+        success: true,
+        spreadsheetId,
+        clearedRange: response.data.clearedRange || range,
+        message: `Cleared range ${range}`
+    };
+}
+
+// ============================================================
 //  20 GITHUB TOOL IMPLEMENTATIONS
 // ============================================================
 
@@ -1699,7 +2239,7 @@ async function listGists({ perPage = 20 }) {
 }
 
 // ============================================================
-//  TOOL DEFINITIONS FOR OPENAI (25 Gmail + 15 Calendar + 20 GitHub = 60 Tools)
+//  TOOL DEFINITIONS FOR OPENAI
 // ============================================================
 const gmailTools = [
     {
@@ -2089,6 +2629,32 @@ const gchatTools = [
     { type: "function", function: { name: "list_chat_messages", description: "List recent messages in a Google Chat space.", parameters: { type: "object", properties: { spaceId: { type: "string", description: "Space ID or full name like spaces/AAAA..." }, maxResults: { type: "integer", description: "Max messages to return (default 20)" } }, required: ["spaceId"] } } }
 ];
 
+const driveTools = [
+    { type: "function", function: { name: "list_drive_files", description: "List Google Drive files/folders you can access. Supports Drive query syntax.", parameters: { type: "object", properties: { query: { type: "string", description: "Drive query string, e.g. name contains 'Q1' and mimeType contains 'spreadsheet'" }, pageSize: { type: "integer", description: "Max files to return (default 25)" }, orderBy: { type: "string", description: "Sort order (default 'modifiedTime desc')" }, includeTrashed: { type: "boolean", description: "Include trashed files (default false)" } } } } },
+    { type: "function", function: { name: "get_drive_file", description: "Get metadata/details for a specific Drive file or folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "create_drive_folder", description: "Create a new folder in Google Drive.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder name" }, parentId: { type: "string", description: "Optional parent folder ID" } }, required: ["name"] } } },
+    { type: "function", function: { name: "create_drive_file", description: "Create a text file in Drive with optional parent folder.", parameters: { type: "object", properties: { name: { type: "string", description: "File name" }, content: { type: "string", description: "Text content" }, mimeType: { type: "string", description: "MIME type (default text/plain)" }, parentId: { type: "string", description: "Optional parent folder ID" } }, required: ["name"] } } },
+    { type: "function", function: { name: "update_drive_file", description: "Update file content and/or rename a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, content: { type: "string", description: "New text content" }, name: { type: "string", description: "New file name" }, mimeType: { type: "string", description: "MIME type for content uploads (default text/plain)" } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "delete_drive_file", description: "Trash or permanently delete a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, permanent: { type: "boolean", description: "If true, permanently delete. Otherwise move to trash." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "copy_drive_file", description: "Copy an existing Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID" }, name: { type: "string", description: "Optional new file name" }, parentId: { type: "string", description: "Optional parent folder for copy" } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "move_drive_file", description: "Move a Drive file to another folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, newParentId: { type: "string", description: "Destination folder ID" } }, required: ["fileId", "newParentId"] } } },
+    { type: "function", function: { name: "share_drive_file", description: "Share a Drive file with a user email.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, emailAddress: { type: "string", description: "User email address to share with" }, role: { type: "string", description: "Permission role: reader, commenter, writer, organizer, fileOrganizer (default reader)" }, sendNotificationEmail: { type: "boolean", description: "Send share email notification (default true)" } }, required: ["fileId", "emailAddress"] } } },
+    { type: "function", function: { name: "download_drive_file", description: "Download readable content for a Drive file (truncated for very large files).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum bytes to return (default 200000)" } }, required: ["fileId"] } } }
+];
+
+const sheetsTools = [
+    { type: "function", function: { name: "list_spreadsheets", description: "List spreadsheets you can access in Google Drive.", parameters: { type: "object", properties: { query: { type: "string", description: "Optional Drive query filter" }, maxResults: { type: "integer", description: "Max spreadsheets to return (default 25)" } } } } },
+    { type: "function", function: { name: "create_spreadsheet", description: "Create a new Google Spreadsheet with optional sheet tab names.", parameters: { type: "object", properties: { title: { type: "string", description: "Spreadsheet title" }, sheets: { type: "array", items: { type: "string" }, description: "Optional sheet tab titles" } }, required: ["title"] } } },
+    { type: "function", function: { name: "get_spreadsheet", description: "Get spreadsheet metadata and sheet tab info.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, includeGridData: { type: "boolean", description: "Include cell grid data (default false)" } }, required: ["spreadsheetId"] } } },
+    { type: "function", function: { name: "list_sheet_tabs", description: "List all tab sheets in a spreadsheet.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" } }, required: ["spreadsheetId"] } } },
+    { type: "function", function: { name: "add_sheet_tab", description: "Add a new tab sheet to a spreadsheet.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, title: { type: "string", description: "New tab title" }, rows: { type: "integer", description: "Initial row count (default 1000)" }, columns: { type: "integer", description: "Initial column count (default 26)" } }, required: ["spreadsheetId", "title"] } } },
+    { type: "function", function: { name: "delete_sheet_tab", description: "Delete a tab sheet from a spreadsheet by sheetId.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetId: { type: "integer", description: "Numeric sheet ID" } }, required: ["spreadsheetId", "sheetId"] } } },
+    { type: "function", function: { name: "read_sheet_values", description: "Read values from a spreadsheet range (A1 notation).", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range (e.g. Sheet1!A1:D20)" }, valueRenderOption: { type: "string", description: "FORMATTED_VALUE, UNFORMATTED_VALUE, or FORMULA" }, dateTimeRenderOption: { type: "string", description: "SERIAL_NUMBER or FORMATTED_STRING" } }, required: ["spreadsheetId", "range"] } } },
+    { type: "function", function: { name: "update_sheet_values", description: "Overwrite values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to write" }, values: { type: "array", description: "2D array of rows, e.g. [[\"Name\",\"Role\"],[\"Rishi\",\"Lead\"]]", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, majorDimension: { type: "string", description: "ROWS or COLUMNS (default ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
+    { type: "function", function: { name: "append_sheet_values", description: "Append rows to a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 target range (e.g. Sheet1!A:D)" }, values: { type: "array", description: "2D array of rows to append", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, insertDataOption: { type: "string", description: "INSERT_ROWS or OVERWRITE (default INSERT_ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
+    { type: "function", function: { name: "clear_sheet_values", description: "Clear values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to clear" } }, required: ["spreadsheetId", "range"] } } }
+];
+
 const githubTools = [
     { type: "function", function: { name: "list_repos", description: "List repositories for a user or the authenticated user.", parameters: { type: "object", properties: { username: { type: "string", description: "GitHub username (omit for your own repos)" }, sort: { type: "string", description: "Sort by: created, updated, pushed, full_name (default: updated)" }, perPage: { type: "integer", description: "Results per page (default 30)" } } } } },
     { type: "function", function: { name: "get_repo", description: "Get detailed information about a specific repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" } }, required: ["owner", "repo"] } } },
@@ -2120,6 +2686,8 @@ const githubTools = [
 const gmailToolNames = new Set(gmailTools.map(t => t.function.name));
 const calendarToolNames = new Set(calendarTools.map(t => t.function.name));
 const gchatToolNames = new Set(gchatTools.map(t => t.function.name));
+const driveToolNames = new Set(driveTools.map(t => t.function.name));
+const sheetsToolNames = new Set(sheetsTools.map(t => t.function.name));
 const githubToolNames = new Set(githubTools.map(t => t.function.name));
 
 async function executeGmailTool(toolName, args) {
@@ -2188,6 +2756,62 @@ async function executeGchatTool(toolName, args) {
     }
 }
 
+async function executeDriveTool(toolName, args) {
+    if (!driveClient) throw new Error('Google Drive not connected. Please authenticate with Google first.');
+    const toolMap = {
+        list_drive_files: listDriveFiles,
+        get_drive_file: getDriveFile,
+        create_drive_folder: createDriveFolder,
+        create_drive_file: createDriveFile,
+        update_drive_file: updateDriveFile,
+        delete_drive_file: deleteDriveFile,
+        copy_drive_file: copyDriveFile,
+        move_drive_file: moveDriveFile,
+        share_drive_file: shareDriveFile,
+        download_drive_file: downloadDriveFile
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown Google Drive tool: ${toolName}`);
+    try {
+        return await fn(args);
+    } catch (error) {
+        const permissionError = getDrivePermissionError(error);
+        if (permissionError) {
+            driveClient = null;
+            throw new Error(permissionError);
+        }
+        throw error;
+    }
+}
+
+async function executeSheetsTool(toolName, args) {
+    if (!sheetsClient) throw new Error('Google Sheets not connected. Please authenticate with Google first.');
+    const toolMap = {
+        list_spreadsheets: listSpreadsheets,
+        create_spreadsheet: createSpreadsheet,
+        get_spreadsheet: getSpreadsheet,
+        list_sheet_tabs: listSheetTabs,
+        add_sheet_tab: addSheetTab,
+        delete_sheet_tab: deleteSheetTab,
+        read_sheet_values: readSheetValues,
+        update_sheet_values: updateSheetValues,
+        append_sheet_values: appendSheetValues,
+        clear_sheet_values: clearSheetValues
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown Google Sheets tool: ${toolName}`);
+    try {
+        return await fn(args);
+    } catch (error) {
+        const permissionError = getSheetsPermissionError(error);
+        if (permissionError) {
+            sheetsClient = null;
+            throw new Error(permissionError);
+        }
+        throw error;
+    }
+}
+
 async function executeGitHubTool(toolName, args) {
     if (!octokitClient) throw new Error('GitHub not connected. Please connect GitHub first.');
     const toolMap = {
@@ -2212,6 +2836,8 @@ async function executeTool(toolName, args) {
     if (gmailToolNames.has(toolName)) return await executeGmailTool(toolName, args);
     if (calendarToolNames.has(toolName)) return await executeCalendarTool(toolName, args);
     if (gchatToolNames.has(toolName)) return await executeGchatTool(toolName, args);
+    if (driveToolNames.has(toolName)) return await executeDriveTool(toolName, args);
+    if (sheetsToolNames.has(toolName)) return await executeSheetsTool(toolName, args);
     if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, args);
     throw new Error(`Unknown tool: ${toolName}`);
 }
@@ -2227,8 +2853,15 @@ app.get('/api/tools', (req, res) => {
     const calendar = { service: 'calendar', connected: calendarConnected, tools: calendarTools.map(t => ({ function: t.function })) };
     const gchatConnected = !!gchatClient && hasGchatScopes();
     const gchat = { service: 'gchat', connected: gchatConnected, tools: gchatTools.map(t => ({ function: t.function })) };
+    const driveConnected = !!driveClient && hasDriveScope();
+    const drive = { service: 'drive', connected: driveConnected, tools: driveTools.map(t => ({ function: t.function })) };
+    const sheetsConnected = !!sheetsClient && hasSheetsScope();
+    const sheets = { service: 'sheets', connected: sheetsConnected, tools: sheetsTools.map(t => ({ function: t.function })) };
     const github = { service: 'github', connected: !!octokitClient, tools: githubTools.map(t => ({ function: t.function })) };
-    res.json({ services: [gmail, calendar, gchat, github], totalTools: gmailTools.length + calendarTools.length + gchatTools.length + githubTools.length });
+    res.json({
+        services: [gmail, calendar, gchat, drive, sheets, github],
+        totalTools: gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + githubTools.length
+    });
 });
 
 // Gmail authentication status
@@ -2273,6 +2906,36 @@ app.get('/api/gchat/status', (req, res) => {
     });
 });
 
+// Google Drive authentication status (same Google OAuth, separate scope)
+app.get('/api/drive/status', (req, res) => {
+    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
+        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasToken = fs.existsSync(TOKEN_PATH);
+    const driveScopeGranted = hasDriveScope();
+    res.json({
+        credentialsConfigured: !!hasCredentials,
+        authenticated: hasToken && driveClient !== null && driveScopeGranted,
+        hasDriveScope: driveScopeGranted,
+        requiresReconnect: hasToken && !driveScopeGranted,
+        toolCount: driveTools.length
+    });
+});
+
+// Google Sheets authentication status (same Google OAuth, separate scope)
+app.get('/api/sheets/status', (req, res) => {
+    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
+        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasToken = fs.existsSync(TOKEN_PATH);
+    const sheetsScopeGranted = hasSheetsScope();
+    res.json({
+        credentialsConfigured: !!hasCredentials,
+        authenticated: hasToken && sheetsClient !== null && sheetsScopeGranted,
+        hasSheetsScope: sheetsScopeGranted,
+        requiresReconnect: hasToken && !sheetsScopeGranted,
+        toolCount: sheetsTools.length
+    });
+});
+
 // Calendar connect - triggers re-auth with calendar scope
 app.get('/api/calendar/connect', (req, res) => {
     if (!oauth2Client) {
@@ -2287,6 +2950,30 @@ app.get('/api/calendar/connect', (req, res) => {
 
 // Google Chat connect - triggers re-auth with Chat scopes
 app.get('/api/gchat/connect', (req, res) => {
+    if (!oauth2Client) {
+        const initialized = initOAuthClient();
+        if (!initialized) {
+            return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
+        }
+    }
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    res.json({ authUrl });
+});
+
+// Google Drive connect - triggers re-auth with Drive scope
+app.get('/api/drive/connect', (req, res) => {
+    if (!oauth2Client) {
+        const initialized = initOAuthClient();
+        if (!initialized) {
+            return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
+        }
+    }
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    res.json({ authUrl });
+});
+
+// Google Sheets connect - triggers re-auth with Sheets scope
+app.get('/api/sheets/connect', (req, res) => {
     if (!oauth2Client) {
         const initialized = initOAuthClient();
         if (!initialized) {
@@ -2449,13 +3136,25 @@ app.get('/oauth2callback', async (req, res) => {
         gchatClient = tokenHasScopes(tokens, GCHAT_REQUIRED_SCOPES)
             ? google.chat({ version: 'v1', auth: oauth2Client })
             : null;
+        driveClient = tokenHasScope(tokens, DRIVE_SCOPE)
+            ? google.drive({ version: 'v3', auth: oauth2Client })
+            : null;
+        sheetsClient = tokenHasScope(tokens, SHEETS_SCOPE)
+            ? google.sheets({ version: 'v4', auth: oauth2Client })
+            : null;
         const calendarMessage = calendarClient
             ? 'Gmail + Calendar are ready.'
             : 'Gmail is ready. Calendar permission is still missing, so reconnect Calendar from the app.';
         const gchatMessage = gchatClient
             ? 'Google Chat is ready.'
             : 'Google Chat permission is still missing, so reconnect Chat from the app.';
-        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} ${gchatMessage} You can close this window.</p></div></body></html>`);
+        const driveMessage = driveClient
+            ? 'Google Drive is ready.'
+            : 'Google Drive permission is still missing, so reconnect Drive from the app.';
+        const sheetsMessage = sheetsClient
+            ? 'Google Sheets is ready.'
+            : 'Google Sheets permission is still missing, so reconnect Sheets from the app.';
+        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} ${gchatMessage} ${driveMessage} ${sheetsMessage} You can close this window.</p></div></body></html>`);
     } catch (error) {
         console.error('OAuth callback error:', error);
         res.status(500).send(`Authentication failed: ${error.message}`);
@@ -2480,17 +3179,23 @@ app.post('/api/chat', async (req, res) => {
         if (calendarConnected) availableTools.push(...calendarTools);
         const gchatConnected = !!gchatClient && hasGchatScopes();
         if (gchatConnected) availableTools.push(...gchatTools);
+        const driveConnected = !!driveClient && hasDriveScope();
+        if (driveConnected) availableTools.push(...driveTools);
+        const sheetsConnected = !!sheetsClient && hasSheetsScope();
+        if (sheetsConnected) availableTools.push(...sheetsTools);
         if (octokitClient) availableTools.push(...githubTools);
 
         const connectedServices = [];
         if (gmailClient) connectedServices.push('Gmail (25 tools)');
         if (calendarConnected) connectedServices.push(`Google Calendar (${calendarTools.length} tools)`);
         if (gchatConnected) connectedServices.push(`Google Chat (${gchatTools.length} tools)`);
+        if (driveConnected) connectedServices.push(`Google Drive (${driveTools.length} tools)`);
+        if (sheetsConnected) connectedServices.push(`Google Sheets (${sheetsTools.length} tools)`);
         if (octokitClient) connectedServices.push('GitHub (20 tools)');
         const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
         const dateContext = getCurrentDateContext();
 
-        const systemPrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, and GitHub. You can perform complex, multi-step operations across all connected services.
+        const systemPrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, and GitHub. You can perform complex, multi-step operations across all connected services.
 
 Connected Services: ${statusText}
 Total Tools Available: ${availableTools.length}
@@ -2505,6 +3210,8 @@ Total Tools Available: ${availableTools.length}
    - "Find calendar events for today and email the attendees" → list_events → send_email
    - "Check if Meghan is free today between 1pm and 5pm" -> check_person_availability
    - "Find a 30-minute slot for me, Meghan, and Rahul tomorrow" -> find_common_free_slots
+   - "List my spreadsheets and summarize tabs" -> list_spreadsheets -> list_sheet_tabs
+   - "Create a Drive folder and upload notes" -> create_drive_folder -> create_drive_file
    - "Archive all unread emails from newsletters" -> search_emails -> batch_modify_emails
    - "Check my PRs and create calendar events for reviews" → list_pull_requests → create_event
 
@@ -2514,7 +3221,7 @@ Total Tools Available: ${availableTools.length}
 
 4. **USE BATCH OPERATIONS**: When modifying multiple emails, prefer batch_modify_emails.
 
-5. **CROSS-SERVICE OPERATIONS**: You can combine Gmail, Calendar, Chat, and GitHub tools in a single task. Think creatively about how services work together.
+5. **CROSS-SERVICE OPERATIONS**: You can combine Gmail, Calendar, Chat, Drive, Sheets, and GitHub tools in a single task. Think creatively about how services work together.
 
 6. **BE PROACTIVE**: Mention relevant info you notice while processing (unread counts, upcoming events, open PRs).
 
@@ -2525,6 +3232,8 @@ Total Tools Available: ${availableTools.length}
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
+- Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access.
+- Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.`;
 
         const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
@@ -2646,13 +3355,15 @@ Rules:
 const credentialsConfigured = initOAuthClient();
 initGitHubClient();
 
-const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + githubTools.length;
+const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + githubTools.length;
 app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
-    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, GitHub: ${githubTools.length})`);
+    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, GitHub: ${githubTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
     console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Chat: ${gchatClient && hasGchatScopes() ? 'Connected' : 'Not connected'}`);
+    console.log(`Google Drive: ${driveClient && hasDriveScope() ? 'Connected' : 'Not connected'}`);
+    console.log(`Google Sheets: ${sheetsClient && hasSheetsScope() ? 'Connected' : 'Not connected'}`);
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
 });
 
