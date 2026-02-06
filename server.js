@@ -6,6 +6,7 @@ const OpenAI = require('openai');
 const { Octokit } = require('octokit');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -30,6 +31,9 @@ const SCOPES = [
     'https://www.googleapis.com/auth/calendar'
 ];
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
+const GOOGLE_OAUTH_PROMPT = 'consent select_account';
+const GITHUB_OAUTH_SCOPES = ['repo', 'read:user', 'user:email', 'notifications', 'gist'];
+const GITHUB_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 const TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'token.json');
 const GITHUB_TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'github-token.json');
@@ -38,6 +42,9 @@ let oauth2Client = null;
 let gmailClient = null;
 let calendarClient = null;
 let octokitClient = null;
+let githubUsername = null;
+let githubAuthMethod = null;
+const githubOAuthStateStore = new Map();
 
 function parseScopes(scopeString) {
     if (!scopeString || typeof scopeString !== 'string') return new Set();
@@ -75,6 +82,80 @@ function getCalendarPermissionError(error) {
         return 'Calendar permission is missing or expired. Please reconnect Google Calendar from the Calendar panel and try again.';
     }
     return null;
+}
+
+function formatLocalDate(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+function getCurrentDateContext() {
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
+
+    return {
+        nowIso: now.toISOString(),
+        today: formatLocalDate(now),
+        tomorrow: formatLocalDate(tomorrow),
+        yesterday: formatLocalDate(yesterday),
+        weekday,
+        timeZone
+    };
+}
+
+function isGitHubOAuthConfigured() {
+    const clientId = process.env.GITHUB_CLIENT_ID;
+    const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+    if (!clientId || !clientSecret) return false;
+    if (clientId.includes('your_github_client_id_here')) return false;
+    if (clientSecret.includes('your_github_client_secret_here')) return false;
+    return true;
+}
+
+function getGitHubRedirectUri() {
+    return process.env.GITHUB_REDIRECT_URI || `http://localhost:${PORT}/github/callback`;
+}
+
+function saveGitHubTokenData(data) {
+    const tokenDir = path.dirname(GITHUB_TOKEN_PATH);
+    if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+    fs.writeFileSync(GITHUB_TOKEN_PATH, JSON.stringify(data, null, 2));
+}
+
+function clearGitHubAuth() {
+    octokitClient = null;
+    githubUsername = null;
+    githubAuthMethod = null;
+    if (fs.existsSync(GITHUB_TOKEN_PATH)) fs.unlinkSync(GITHUB_TOKEN_PATH);
+}
+
+function pruneGithubOAuthStates() {
+    const now = Date.now();
+    for (const [state, ts] of githubOAuthStateStore.entries()) {
+        if (now - ts > GITHUB_OAUTH_STATE_TTL_MS) githubOAuthStateStore.delete(state);
+    }
+}
+
+function issueGithubOAuthState() {
+    pruneGithubOAuthStates();
+    const state = crypto.randomBytes(24).toString('hex');
+    githubOAuthStateStore.set(state, Date.now());
+    return state;
+}
+
+function consumeGithubOAuthState(state) {
+    if (!state || !githubOAuthStateStore.has(state)) return false;
+    const ts = githubOAuthStateStore.get(state);
+    githubOAuthStateStore.delete(state);
+    return (Date.now() - ts) <= GITHUB_OAUTH_STATE_TTL_MS;
 }
 
 // Initialize OAuth client from environment variables
@@ -121,6 +202,8 @@ function initGitHubClient() {
             const data = JSON.parse(fs.readFileSync(GITHUB_TOKEN_PATH, 'utf8'));
             if (data.token) {
                 octokitClient = new Octokit({ auth: data.token });
+                githubUsername = data.username || null;
+                githubAuthMethod = data.authMethod || 'pat';
                 console.log('GitHub client initialized with saved token');
                 return true;
             }
@@ -1419,7 +1502,7 @@ async function executeCalendarTool(toolName, args) {
 }
 
 async function executeGitHubTool(toolName, args) {
-    if (!octokitClient) throw new Error('GitHub not connected. Please add your Personal Access Token first.');
+    if (!octokitClient) throw new Error('GitHub not connected. Please connect GitHub first.');
     const toolMap = {
         list_repos: listRepos, get_repo: getRepo, create_repo: createRepo,
         list_issues: listIssues, create_issue: createIssue, update_issue: updateIssue,
@@ -1493,7 +1576,7 @@ app.get('/api/calendar/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
     res.json({ authUrl });
 });
 
@@ -1501,8 +1584,30 @@ app.get('/api/calendar/connect', (req, res) => {
 app.get('/api/github/status', (req, res) => {
     res.json({
         authenticated: octokitClient !== null,
+        oauthConfigured: isGitHubOAuthConfigured(),
+        username: githubUsername,
+        authMethod: githubAuthMethod,
         toolCount: githubTools.length
     });
+});
+
+// GitHub OAuth connect
+app.get('/api/github/auth', (req, res) => {
+    if (!isGitHubOAuthConfigured()) {
+        return res.status(400).json({
+            error: 'GitHub OAuth credentials are not configured in .env file',
+            setupRequired: true
+        });
+    }
+    const state = issueGithubOAuthState();
+    const params = new URLSearchParams({
+        client_id: process.env.GITHUB_CLIENT_ID,
+        redirect_uri: getGitHubRedirectUri(),
+        scope: GITHUB_OAUTH_SCOPES.join(' '),
+        state
+    });
+    const authUrl = `https://github.com/login/oauth/authorize?${params.toString()}`;
+    res.json({ authUrl });
 });
 
 // GitHub connect with PAT
@@ -1514,11 +1619,16 @@ app.post('/api/github/connect', async (req, res) => {
         const testClient = new Octokit({ auth: token });
         const user = await testClient.rest.users.getAuthenticated();
         octokitClient = testClient;
+        githubUsername = user.data.login;
+        githubAuthMethod = 'pat';
 
         // Save token
-        const tokenDir = path.dirname(GITHUB_TOKEN_PATH);
-        if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
-        fs.writeFileSync(GITHUB_TOKEN_PATH, JSON.stringify({ token }, null, 2));
+        saveGitHubTokenData({
+            token,
+            username: githubUsername,
+            authMethod: githubAuthMethod,
+            connectedAt: new Date().toISOString()
+        });
 
         res.json({ success: true, username: user.data.login, message: `Connected as ${user.data.login}` });
     } catch (error) {
@@ -1528,10 +1638,7 @@ app.post('/api/github/connect', async (req, res) => {
 
 // GitHub disconnect
 app.post('/api/github/disconnect', (req, res) => {
-    octokitClient = null;
-    if (fs.existsSync(GITHUB_TOKEN_PATH)) {
-        fs.unlinkSync(GITHUB_TOKEN_PATH);
-    }
+    clearGitHubAuth();
     res.json({ success: true, message: 'GitHub disconnected' });
 });
 
@@ -1543,8 +1650,68 @@ app.get('/api/gmail/auth', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
     res.json({ authUrl });
+});
+
+// GitHub OAuth callback
+app.get('/github/callback', async (req, res) => {
+    const { code, state, error, error_description: errorDescription } = req.query;
+
+    if (error) {
+        return res.status(400).send(`GitHub authentication failed: ${errorDescription || error}`);
+    }
+    if (!code || !state) {
+        return res.status(400).send('Missing GitHub authorization code or state');
+    }
+    if (!consumeGithubOAuthState(state)) {
+        return res.status(400).send('Invalid or expired GitHub OAuth state. Please try connecting again.');
+    }
+    if (!isGitHubOAuthConfigured()) {
+        return res.status(400).send('GitHub OAuth credentials are not configured in server .env');
+    }
+
+    try {
+        const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                client_id: process.env.GITHUB_CLIENT_ID,
+                client_secret: process.env.GITHUB_CLIENT_SECRET,
+                code,
+                redirect_uri: getGitHubRedirectUri(),
+                state
+            })
+        });
+        const tokenData = await tokenResponse.json();
+        if (!tokenResponse.ok || tokenData.error || !tokenData.access_token) {
+            const details = tokenData.error_description || tokenData.error || tokenResponse.statusText;
+            return res.status(401).send(`GitHub token exchange failed: ${details}`);
+        }
+
+        const token = tokenData.access_token;
+        const client = new Octokit({ auth: token });
+        const user = await client.rest.users.getAuthenticated();
+
+        octokitClient = client;
+        githubUsername = user.data.login;
+        githubAuthMethod = 'oauth';
+        saveGitHubTokenData({
+            token,
+            username: githubUsername,
+            authMethod: githubAuthMethod,
+            scope: tokenData.scope || '',
+            connectedAt: new Date().toISOString()
+        });
+
+        res.send('<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>GitHub Connected!</h1><p>GitHub tools are ready. You can close this window.</p></div></body></html>');
+    } catch (oauthError) {
+        console.error('GitHub OAuth callback error:', oauthError);
+        res.status(500).send(`GitHub authentication failed: ${oauthError.message}`);
+    }
 });
 
 // OAuth callback
@@ -1595,6 +1762,7 @@ app.post('/api/chat', async (req, res) => {
         if (calendarConnected) connectedServices.push('Google Calendar (15 tools)');
         if (octokitClient) connectedServices.push('GitHub (20 tools)');
         const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
+        const dateContext = getCurrentDateContext();
 
         const systemPrompt = `You are a powerful AI assistant with up to 60 tools across Gmail, Google Calendar, and GitHub. You can perform complex, multi-step operations across all connected services.
 
@@ -1625,10 +1793,31 @@ Total Tools Available: ${availableTools.length}
 - Calendar: Use list_events with timeMin/timeMax for date ranges. quick_add_event for natural language.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.`;
 
+        const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
+- Current timestamp (UTC): ${dateContext.nowIso}
+- Local timezone: ${dateContext.timeZone}
+- Today: ${dateContext.today} (${dateContext.weekday})
+- Tomorrow: ${dateContext.tomorrow}
+- Yesterday: ${dateContext.yesterday}
+
+Rules:
+- Resolve relative date words (today, tomorrow, yesterday, this week, next week) using this context.
+- For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events.`;
+
+        const enrichedSystemPrompt = `${systemPrompt}\n\n${dateContextPrompt}`;
+        const enrichedUserMessage = `${message}
+
+[Runtime Date Context]
+- Current timestamp (UTC): ${dateContext.nowIso}
+- Local timezone: ${dateContext.timeZone}
+- Today: ${dateContext.today}
+- Tomorrow: ${dateContext.tomorrow}
+- Yesterday: ${dateContext.yesterday}`;
+
         const messages = [
-            { role: 'system', content: systemPrompt },
+            { role: 'system', content: enrichedSystemPrompt },
             ...history,
-            { role: 'user', content: message }
+            { role: 'user', content: enrichedUserMessage }
         ];
 
         let response = await openai.chat.completions.create({

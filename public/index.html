@@ -209,6 +209,7 @@
                             <button class="start-chat-btn" data-panel="gmail">
                                 Start Chatting
                             </button>
+                            <button class="disconnect-btn reauth-btn" id="gmailReauthBtn">Reauthenticate Google (Switch Account)</button>
                         </div>
                     </div>
 
@@ -221,7 +222,7 @@
                             <ol class="setup-steps">
                                 <li>Go to <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a></li>
                                 <li>Create a project & enable Gmail + Calendar APIs</li>
-                                <li>Create OAuth 2.0 credentials (Desktop app)</li>
+                                <li>Create OAuth 2.0 credentials (Web application)</li>
                                 <li>Add <code>GMAIL_CLIENT_ID</code> and <code>GMAIL_CLIENT_SECRET</code> to your <code>.env</code> file</li>
                                 <li>Restart the server</li>
                             </ol>
@@ -292,6 +293,7 @@
                             <button class="start-chat-btn" data-panel="calendar">
                                 Start Chatting
                             </button>
+                            <button class="disconnect-btn reauth-btn" id="calendarReauthBtn">Reauthenticate Calendar (Switch Account)</button>
                         </div>
                     </div>
                 </div>
@@ -317,23 +319,20 @@
                                 </svg>
                             </div>
                             <h3>Connect GitHub</h3>
-                            <p>Add your Personal Access Token to unlock 20 GitHub tools:</p>
+                            <p>Sign in with GitHub to unlock 20 GitHub tools:</p>
                             <ul class="feature-list">
                                 <li>Repos, issues, pull requests</li>
                                 <li>Create branches, merge PRs</li>
                                 <li>Search repos and code</li>
                                 <li>Notifications, commits, gists</li>
                             </ul>
-                            <div class="token-input-group">
-                                <input type="password" id="githubTokenInput" class="token-input" placeholder="ghp_xxxxxxxxxxxxx" autocomplete="off">
-                                <button class="auth-btn github-auth-btn" id="githubConnectBtn">
-                                    <svg viewBox="0 0 24 24" width="20" height="20">
-                                        <path fill="#fff" d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
-                                    </svg>
-                                    Connect GitHub
-                                </button>
-                            </div>
-                            <p class="auth-note">Generate a PAT at GitHub Settings > Developer settings > Personal access tokens.</p>
+                            <button class="auth-btn github-auth-btn" id="githubAuthBtn">
+                                <svg viewBox="0 0 24 24" width="20" height="20">
+                                    <path fill="#fff" d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                                </svg>
+                                Sign in with GitHub
+                            </button>
+                            <p class="auth-note" id="githubAuthNote">Configure <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>.env</code>.</p>
                         </div>
                     </div>
                     <div class="connected-section" id="githubConnectedSection" style="display: none;">
@@ -359,6 +358,7 @@
                             <button class="start-chat-btn" data-panel="github">
                                 Start Chatting
                             </button>
+                            <button class="disconnect-btn reauth-btn" id="githubReauthBtn">Reauthenticate GitHub (Switch Account)</button>
                             <button class="disconnect-btn" id="githubDisconnectBtn">Disconnect GitHub</button>
                         </div>
                     </div>

@@ -587,6 +587,16 @@ body {
     border-color: var(--error);
 }
 
+.reauth-btn {
+    border-color: rgba(99, 102, 241, 0.35);
+    color: var(--accent-primary);
+}
+
+.reauth-btn:hover {
+    background: rgba(99, 102, 241, 0.1);
+    border-color: var(--accent-primary);
+}
+
 @keyframes pulse {
 
     0%,
