@@ -29,6 +29,12 @@ PORT=3000
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 
+# Optional prebuilt Sheets MCP bridge (enabled by default)
+# SHEETS_MCP_ENABLED=true
+# SHEETS_MCP_COMMAND=node
+# SHEETS_MCP_ARGS=node_modules/@isaacphi/mcp-gdrive/dist/index.js
+# SHEETS_MCP_CREDS_DIR=C:\Users\<you>\.gmail-mcp\sheets-mcp
+
 # GitHub OAuth (required for GitHub Sign in)
 GITHUB_CLIENT_ID=your_github_client_id
 GITHUB_CLIENT_SECRET=your_github_client_secret
@@ -45,6 +51,20 @@ In Google Cloud Console:
 3. Add this redirect URI:
    `http://localhost:3000/oauth2callback`
    If you changed `PORT`, use that port in the URI.
+
+## 3b) Optional: Sheets MCP bridge
+
+This project now includes a prebuilt MCP server package: `@isaacphi/mcp-gdrive`.
+
+- It starts automatically on server boot.
+- It exposes MCP tool names prefixed with `sheets_mcp__`.
+- It stores MCP auth files in `SHEETS_MCP_CREDS_DIR` (default `~/.gmail-mcp/sheets-mcp`).
+
+If you do not want this bridge, set:
+
+```env
+SHEETS_MCP_ENABLED=false
+```
 
 ## 4) Configure GitHub OAuth
 
@@ -89,6 +109,8 @@ Open:
   - listing, creating, updating, moving, sharing, and downloading files
 - Google Sheets now supports:
   - listing spreadsheets/tabs, reading/writing ranges, appending rows, and tab management
+  - `update_timesheet_hours` for reliable date-based billing-hour updates
+  - additional MCP fallback tools prefixed with `sheets_mcp__`
 
 ## Notes
 
@@ -96,4 +118,6 @@ Open:
   `~/.gmail-mcp/token.json`
 - GitHub token is saved locally at:
   `~/.gmail-mcp/github-token.json`
+- Sheets MCP credentials are saved locally at:
+  `~/.gmail-mcp/sheets-mcp`
 - If Calendar shows `Insufficient Permission`, reconnect from the Calendar panel to grant Calendar scope.
