@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Agent - 60 Tools</title>
+    <title>AI Agent - Multi-Tools</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -26,7 +26,7 @@
                     </span>
                     <h1>AI Agent</h1>
                 </div>
-                <div class="tool-count-badge" id="toolCountBadge">65 tools</div>
+                <div class="tool-count-badge" id="toolCountBadge">87 tools</div>
             </div>
 
             <nav class="sidebar-nav">
@@ -86,6 +86,35 @@
                         </span>
                     </button>
 
+                    <!-- Google Drive Option -->
+                    <button class="nav-item" id="driveNavItem" data-service="drive">
+                        <div class="nav-item-icon drive-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#0f9d58" d="M8.5 3L3 12l2.75 4.5L11.25 7.5z"/>
+                                <path fill="#f4b400" d="M8.5 3h7L21 12h-7z"/>
+                                <path fill="#4285f4" d="M5.75 16.5h11.5L21 12h-7L10.25 18z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Google Drive</span>
+                        <span class="nav-item-status" id="driveStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
+                    <!-- Google Sheets Option -->
+                    <button class="nav-item" id="sheetsNavItem" data-service="sheets">
+                        <div class="nav-item-icon sheets-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#34a853" d="M5 2h10l4 4v16H5z"/>
+                                <path fill="#fff" d="M9 10h6v1H9zm0 3h6v1H9zm0 3h6v1H9z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Google Sheets</span>
+                        <span class="nav-item-status" id="sheetsStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
                     <!-- Capabilities Option -->
                     <button class="nav-item" id="capabilitiesNavItem">
                         <div class="nav-item-icon capabilities-icon">
@@ -116,6 +145,14 @@
                         <div class="nav-item-icon"><span style="font-size:16px">&#128172;</span></div>
                         <span class="nav-item-text">Chat Spaces</span>
                     </button>
+                    <button class="nav-item quick-nav" data-prompt="List my latest Google Drive files">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128193;</span></div>
+                        <span class="nav-item-text">Drive Files</span>
+                    </button>
+                    <button class="nav-item quick-nav" data-prompt="List my spreadsheets and sheet tabs">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128202;</span></div>
+                        <span class="nav-item-text">Spreadsheets</span>
+                    </button>
                     <button class="nav-item quick-nav" data-prompt="Show my starred emails">
                         <div class="nav-item-icon"><span style="font-size:16px">&#11088;</span></div>
                         <span class="nav-item-text">Starred</span>
@@ -140,6 +177,8 @@
                         <button class="service-tab active" data-filter="all">All</button>
                         <button class="service-tab" data-filter="gmail">Gmail (25)</button>
                         <button class="service-tab" data-filter="gchat">Chat (3)</button>
+                        <button class="service-tab" data-filter="drive">Drive (10)</button>
+                        <button class="service-tab" data-filter="sheets">Sheets (10)</button>
                         <button class="service-tab" data-filter="github">GitHub (20)</button>
                         <button class="service-tab" data-filter="calendar">Calendar (19)</button>
                     </div>
@@ -384,6 +423,148 @@
                 </div>
             </div>
 
+            <!-- Google Drive Panel -->
+            <div class="service-panel" id="drivePanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#0f9d58" d="M8.5 3L3 12l2.75 4.5L11.25 7.5z"/>
+                            <path fill="#f4b400" d="M8.5 3h7L21 12h-7z"/>
+                            <path fill="#4285f4" d="M5.75 16.5h11.5L21 12h-7L10.25 18z"/>
+                        </svg>
+                        <h2>Google Drive Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="drive">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="auth-section" id="driveAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#0f9d58" d="M8.5 3L3 12l2.75 4.5L11.25 7.5z"/>
+                                    <path fill="#f4b400" d="M8.5 3h7L21 12h-7z"/>
+                                    <path fill="#4285f4" d="M5.75 16.5h11.5L21 12h-7L10.25 18z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Google Drive</h3>
+                            <p>Use Google OAuth to unlock 10 Drive tools:</p>
+                            <ul class="feature-list">
+                                <li>List and inspect files/folders</li>
+                                <li>Create, update, move, copy files</li>
+                                <li>Share files with teammates</li>
+                                <li>Download readable file content</li>
+                            </ul>
+                            <button class="auth-btn" id="driveAuthBtn">
+                                <svg viewBox="0 0 24 24" width="20" height="20">
+                                    <path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                    <path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                    <path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                                    <path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                                </svg>
+                                Sign in with Google
+                            </button>
+                            <p class="auth-note">Uses the same Google OAuth as Gmail, Calendar, and Chat.</p>
+                        </div>
+                    </div>
+                    <div class="connected-section" id="driveConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#0f9d58,#4285f4)">&#10003;</div>
+                                <div>
+                                    <h3>Google Drive Connected</h3>
+                                    <p>10 tools ready for file operations.</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="List my latest Google Drive files">
+                                    &#128193; List Files
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Create a Drive folder called Team Docs and add a notes.txt file with today's updates">
+                                    &#10133; Create Folder + File
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Find files modified this week and show who owns them">
+                                    &#128269; Search Files
+                                </button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="drive">
+                                Start Chatting
+                            </button>
+                            <button class="disconnect-btn reauth-btn" id="driveReauthBtn">Reauthenticate Drive (Switch Account)</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Google Sheets Panel -->
+            <div class="service-panel" id="sheetsPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#34a853" d="M5 2h10l4 4v16H5z"/>
+                            <path fill="#fff" d="M9 10h6v1H9zm0 3h6v1H9zm0 3h6v1H9z"/>
+                        </svg>
+                        <h2>Google Sheets Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="sheets">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="auth-section" id="sheetsAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#34a853" d="M5 2h10l4 4v16H5z"/>
+                                    <path fill="#fff" d="M9 10h6v1H9zm0 3h6v1H9zm0 3h6v1H9z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Google Sheets</h3>
+                            <p>Use Google OAuth to unlock 10 Sheets tools:</p>
+                            <ul class="feature-list">
+                                <li>List spreadsheets and sheet tabs</li>
+                                <li>Read and write cell ranges</li>
+                                <li>Append or clear rows</li>
+                                <li>Create and manage tab sheets</li>
+                            </ul>
+                            <button class="auth-btn" id="sheetsAuthBtn">
+                                <svg viewBox="0 0 24 24" width="20" height="20">
+                                    <path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                    <path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                    <path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                                    <path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                                </svg>
+                                Sign in with Google
+                            </button>
+                            <p class="auth-note">Uses the same Google OAuth as Gmail, Calendar, and Drive.</p>
+                        </div>
+                    </div>
+                    <div class="connected-section" id="sheetsConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#34a853,#16a34a)">&#10003;</div>
+                                <div>
+                                    <h3>Google Sheets Connected</h3>
+                                    <p>10 tools ready for spreadsheet automation.</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="List my spreadsheets and tabs">
+                                    &#128202; List Spreadsheets
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Create a spreadsheet called Weekly Tracker with tabs Summary and Tasks">
+                                    &#10133; Create Spreadsheet
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Read values from Sheet1!A1:D20 in my latest spreadsheet">
+                                    &#128214; Read Sheet Values
+                                </button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="sheets">
+                                Start Chatting
+                            </button>
+                            <button class="disconnect-btn reauth-btn" id="sheetsReauthBtn">Reauthenticate Sheets (Switch Account)</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- GitHub Panel -->
             <div class="service-panel" id="githubPanel">
                 <div class="panel-header">
@@ -471,6 +652,14 @@
                             <span class="badge-dot"></span>
                             Chat
                         </span>
+                        <span class="service-badge drive-badge" id="driveBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Drive
+                        </span>
+                        <span class="service-badge sheets-badge" id="sheetsBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Sheets
+                        </span>
                         <span class="turns-badge" id="turnsBadge" style="display: none;">
                             Steps: <span id="turnsCount">0</span>/15
                         </span>
@@ -488,12 +677,13 @@
                         </div>
                         <div class="message-content">
                             <div class="message-bubble">
-                                <p>Hello! I'm your AI Agent with <strong>65 tools</strong> across Gmail, Google Calendar, Google Chat, and GitHub. I can chain <strong>up to 15 steps</strong> to complete complex cross-service tasks.</p>
+                                <p>Hello! I'm your AI Agent with <strong>87 tools</strong> across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, and GitHub. I can chain <strong>up to 15 steps</strong> to complete complex cross-service tasks.</p>
                                 <p>Connect services in the sidebar, then try things like:</p>
                                 <ul style="margin:0.5rem 0;padding-left:1.2rem;color:var(--text-secondary)">
                                     <li>"Find today's meetings and email the attendees a reminder"</li>
                                     <li>"Create a GitHub issue for the bug and schedule a review meeting"</li>
                                     <li>"List my open PRs and send me a summary email"</li>
+                                    <li>"List my spreadsheets, update a range, and share the file in Drive"</li>
                                     <li>"Search for emails from my team, star the important ones, and create calendar events for follow-ups"</li>
                                 </ul>
                             </div>
@@ -504,7 +694,7 @@
                 <!-- Input Area -->
                 <div class="chat-input-container">
                     <div class="input-wrapper">
-                        <textarea id="messageInput" placeholder="Ask me anything across Gmail, Calendar, or GitHub..." rows="1"></textarea>
+                        <textarea id="messageInput" placeholder="Ask me anything across Gmail, Calendar, Chat, Drive, Sheets, or GitHub..." rows="1"></textarea>
                         <button class="send-btn" id="sendBtn" disabled>
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" />

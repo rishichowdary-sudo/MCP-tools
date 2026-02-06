@@ -5,19 +5,27 @@ const sendBtn = document.getElementById('sendBtn');
 const gmailNavItem = document.getElementById('gmailNavItem');
 const calendarNavItem = document.getElementById('calendarNavItem');
 const gchatNavItem = document.getElementById('gchatNavItem');
+const driveNavItem = document.getElementById('driveNavItem');
+const sheetsNavItem = document.getElementById('sheetsNavItem');
 const githubNavItem = document.getElementById('githubNavItem');
 const gmailPanel = document.getElementById('gmailPanel');
 const calendarPanel = document.getElementById('calendarPanel');
 const gchatPanel = document.getElementById('gchatPanel');
+const drivePanel = document.getElementById('drivePanel');
+const sheetsPanel = document.getElementById('sheetsPanel');
 const githubPanel = document.getElementById('githubPanel');
 const authenticateBtn = document.getElementById('authenticateBtn');
 const calendarAuthBtn = document.getElementById('calendarAuthBtn');
 const gchatAuthBtn = document.getElementById('gchatAuthBtn');
+const driveAuthBtn = document.getElementById('driveAuthBtn');
+const sheetsAuthBtn = document.getElementById('sheetsAuthBtn');
 const githubAuthBtn = document.getElementById('githubAuthBtn');
 const githubDisconnectBtn = document.getElementById('githubDisconnectBtn');
 const gmailReauthBtn = document.getElementById('gmailReauthBtn');
 const calendarReauthBtn = document.getElementById('calendarReauthBtn');
 const gchatReauthBtn = document.getElementById('gchatReauthBtn');
+const driveReauthBtn = document.getElementById('driveReauthBtn');
+const sheetsReauthBtn = document.getElementById('sheetsReauthBtn');
 const githubReauthBtn = document.getElementById('githubReauthBtn');
 const githubAuthNote = document.getElementById('githubAuthNote');
 const authSection = document.getElementById('authSection');
@@ -27,15 +35,23 @@ const calendarAuthSection = document.getElementById('calendarAuthSection');
 const calendarConnectedSection = document.getElementById('calendarConnectedSection');
 const gchatAuthSection = document.getElementById('gchatAuthSection');
 const gchatConnectedSection = document.getElementById('gchatConnectedSection');
+const driveAuthSection = document.getElementById('driveAuthSection');
+const driveConnectedSection = document.getElementById('driveConnectedSection');
+const sheetsAuthSection = document.getElementById('sheetsAuthSection');
+const sheetsConnectedSection = document.getElementById('sheetsConnectedSection');
 const githubAuthSection = document.getElementById('githubAuthSection');
 const githubConnectedSection = document.getElementById('githubConnectedSection');
 const gmailStatus = document.getElementById('gmailStatus');
 const calendarStatus = document.getElementById('calendarStatus');
 const gchatStatus = document.getElementById('gchatStatus');
+const driveStatus = document.getElementById('driveStatus');
+const sheetsStatus = document.getElementById('sheetsStatus');
 const githubStatus = document.getElementById('githubStatus');
 const gmailBadge = document.getElementById('gmailBadge');
 const calendarBadge = document.getElementById('calendarBadge');
 const gchatBadge = document.getElementById('gchatBadge');
+const driveBadge = document.getElementById('driveBadge');
+const sheetsBadge = document.getElementById('sheetsBadge');
 const githubBadge = document.getElementById('githubBadge');
 const turnsBadge = document.getElementById('turnsBadge');
 const turnsCount = document.getElementById('turnsCount');
@@ -51,6 +67,8 @@ let chatHistory = [];
 let isGmailConnected = false;
 let isCalendarConnected = false;
 let isGchatConnected = false;
+let isDriveConnected = false;
+let isSheetsConnected = false;
 let isGithubConnected = false;
 let activeFilter = 'all';
 
@@ -77,6 +95,16 @@ const TOOL_ICONS = {
     clear_calendar: '&#128465;', watch_events: '&#128276;',
     // Google Chat (3)
     list_chat_spaces: '&#128172;', send_chat_message: '&#9993;', list_chat_messages: '&#128221;',
+    // Google Drive (10)
+    list_drive_files: '&#128193;', get_drive_file: '&#128196;', create_drive_folder: '&#128193;',
+    create_drive_file: '&#10133;', update_drive_file: '&#9998;', delete_drive_file: '&#128465;',
+    copy_drive_file: '&#128209;', move_drive_file: '&#10145;', share_drive_file: '&#128101;',
+    download_drive_file: '&#128229;',
+    // Google Sheets (10)
+    list_spreadsheets: '&#128202;', create_spreadsheet: '&#10133;', get_spreadsheet: '&#128196;',
+    list_sheet_tabs: '&#128203;', add_sheet_tab: '&#10133;', delete_sheet_tab: '&#10134;',
+    read_sheet_values: '&#128214;', update_sheet_values: '&#9998;', append_sheet_values: '&#128228;',
+    clear_sheet_values: '&#128465;',
     // GitHub (20)
     list_repos: '&#128193;', get_repo: '&#128196;', create_repo: '&#10133;',
     list_issues: '&#128196;', create_issue: '&#10133;', update_issue: '&#9998;',
@@ -112,6 +140,18 @@ const GCHAT_CATEGORIES = {
     'Messages': ['send_chat_message', 'list_chat_messages']
 };
 
+const DRIVE_CATEGORIES = {
+    'Browse': ['list_drive_files', 'get_drive_file', 'download_drive_file'],
+    'Create & Edit': ['create_drive_folder', 'create_drive_file', 'update_drive_file'],
+    'Manage': ['copy_drive_file', 'move_drive_file', 'share_drive_file', 'delete_drive_file']
+};
+
+const SHEETS_CATEGORIES = {
+    'Discovery': ['list_spreadsheets', 'get_spreadsheet', 'list_sheet_tabs'],
+    'Structure': ['create_spreadsheet', 'add_sheet_tab', 'delete_sheet_tab'],
+    'Data': ['read_sheet_values', 'update_sheet_values', 'append_sheet_values', 'clear_sheet_values']
+};
+
 const GITHUB_CATEGORIES = {
     'Repositories': ['list_repos', 'get_repo', 'create_repo', 'search_repos'],
     'Issues': ['list_issues', 'create_issue', 'update_issue'],
@@ -145,6 +185,8 @@ function setupEventListeners() {
     gmailNavItem.addEventListener('click', () => openPanel('gmail'));
     calendarNavItem.addEventListener('click', () => openPanel('calendar'));
     gchatNavItem.addEventListener('click', () => openPanel('gchat'));
+    driveNavItem.addEventListener('click', () => openPanel('drive'));
+    sheetsNavItem.addEventListener('click', () => openPanel('sheets'));
     githubNavItem.addEventListener('click', () => openPanel('github'));
 
     // Close panel buttons
@@ -186,11 +228,15 @@ function setupEventListeners() {
     authenticateBtn.addEventListener('click', initiateGoogleAuth);
     calendarAuthBtn.addEventListener('click', initiateCalendarAuth);
     gchatAuthBtn.addEventListener('click', initiateGchatAuth);
+    driveAuthBtn.addEventListener('click', initiateDriveAuth);
+    sheetsAuthBtn.addEventListener('click', initiateSheetsAuth);
     githubAuthBtn.addEventListener('click', initiateGithubAuth);
     githubDisconnectBtn.addEventListener('click', disconnectGitHub);
     gmailReauthBtn.addEventListener('click', initiateGoogleAuth);
     calendarReauthBtn.addEventListener('click', initiateCalendarAuth);
     gchatReauthBtn.addEventListener('click', initiateGchatAuth);
+    driveReauthBtn.addEventListener('click', initiateDriveAuth);
+    sheetsReauthBtn.addEventListener('click', initiateSheetsAuth);
     githubReauthBtn.addEventListener('click', initiateGithubAuth);
 
     // Quick action buttons (all panels)
@@ -220,8 +266,8 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, github: githubPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, github: githubNavItem };
+    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, github: githubPanel };
+    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, github: githubNavItem };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -229,8 +275,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, gchatPanel, githubPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, gchatNavItem, githubNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, githubPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, githubNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -257,6 +303,8 @@ async function loadCapabilities() {
             gmail: { label: 'Gmail', dot: 'gmail', categories: GMAIL_CATEGORIES },
             calendar: { label: 'Google Calendar', dot: 'calendar', categories: CALENDAR_CATEGORIES },
             gchat: { label: 'Google Chat', dot: 'gchat', categories: GCHAT_CATEGORIES },
+            drive: { label: 'Google Drive', dot: 'drive', categories: DRIVE_CATEGORIES },
+            sheets: { label: 'Google Sheets', dot: 'sheets', categories: SHEETS_CATEGORIES },
             github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES }
         };
 
@@ -321,12 +369,16 @@ async function checkAllStatuses() {
     checkGmailStatus();
     checkCalendarStatus();
     checkGchatStatus();
+    checkDriveStatus();
+    checkSheetsStatus();
     checkGitHubStatus();
 
     setInterval(() => {
         checkGmailStatus();
         checkCalendarStatus();
         checkGchatStatus();
+        checkDriveStatus();
+        checkSheetsStatus();
         checkGitHubStatus();
     }, 5000);
 }
@@ -461,7 +513,63 @@ function updateGchatStatus(data) {
     }
 }
 
-// Google OAuth (Gmail + Calendar)
+// Google Drive status
+async function checkDriveStatus() {
+    try {
+        const response = await fetch('/api/drive/status');
+        const data = await response.json();
+        updateDriveStatus(data);
+    } catch (error) {
+        updateDriveStatus({ authenticated: false });
+    }
+}
+
+function updateDriveStatus(data) {
+    const statusDot = driveStatus.querySelector('.status-dot');
+    isDriveConnected = data.authenticated;
+
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        driveAuthSection.style.display = 'none';
+        driveConnectedSection.style.display = 'block';
+        driveBadge.style.display = 'inline-flex';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        driveAuthSection.style.display = 'block';
+        driveConnectedSection.style.display = 'none';
+        driveBadge.style.display = 'none';
+    }
+}
+
+// Google Sheets status
+async function checkSheetsStatus() {
+    try {
+        const response = await fetch('/api/sheets/status');
+        const data = await response.json();
+        updateSheetsStatus(data);
+    } catch (error) {
+        updateSheetsStatus({ authenticated: false });
+    }
+}
+
+function updateSheetsStatus(data) {
+    const statusDot = sheetsStatus.querySelector('.status-dot');
+    isSheetsConnected = data.authenticated;
+
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        sheetsAuthSection.style.display = 'none';
+        sheetsConnectedSection.style.display = 'block';
+        sheetsBadge.style.display = 'inline-flex';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        sheetsAuthSection.style.display = 'block';
+        sheetsConnectedSection.style.display = 'none';
+        sheetsBadge.style.display = 'none';
+    }
+}
+
+// Google OAuth (shared across Google integrations)
 async function initiateGoogleAuth() {
     try {
         authenticateBtn.disabled = true;
@@ -478,6 +586,8 @@ async function initiateGoogleAuth() {
                     checkGmailStatus();
                     checkCalendarStatus();
                     checkGchatStatus();
+                    checkDriveStatus();
+                    checkSheetsStatus();
                     resetGoogleAuthButton();
                 }
             }, 500);
@@ -508,6 +618,8 @@ async function initiateCalendarAuth() {
                     checkGmailStatus();
                     checkCalendarStatus();
                     checkGchatStatus();
+                    checkDriveStatus();
+                    checkSheetsStatus();
                     resetCalendarAuthButton();
                 }
             }, 500);
@@ -562,6 +674,8 @@ async function initiateGchatAuth() {
                     checkGmailStatus();
                     checkCalendarStatus();
                     checkGchatStatus();
+                    checkDriveStatus();
+                    checkSheetsStatus();
                     resetGchatAuthButton();
                 }
             }, 500);
@@ -582,6 +696,114 @@ async function initiateGchatAuth() {
 function resetGchatAuthButton() {
     gchatAuthBtn.disabled = false;
     gchatAuthBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg> Sign in with Google`;
+}
+
+async function initiateDriveAuth() {
+    try {
+        driveAuthBtn.disabled = true;
+        driveAuthBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...`;
+
+        const response = await fetch('/api/drive/connect');
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 404) {
+                throw new Error('Google Drive auth route not found on backend. Restart the server so latest routes are loaded.');
+            }
+            throw new Error(`Unexpected non-JSON response from backend (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Google Drive auth failed with status ${response.status}`);
+        }
+
+        if (data.authUrl) {
+            const popup = window.open(data.authUrl, 'Google Drive Auth', 'width=600,height=700,left=200,top=100');
+            const checkClosed = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(checkClosed);
+                    checkGmailStatus();
+                    checkCalendarStatus();
+                    checkGchatStatus();
+                    checkDriveStatus();
+                    checkSheetsStatus();
+                    resetDriveAuthButton();
+                }
+            }, 500);
+        } else if (data.setupRequired) {
+            alert('Please set up Google Cloud credentials first.');
+            resetDriveAuthButton();
+        } else {
+            alert(data.error || 'Failed to initiate Google Drive authentication');
+            resetDriveAuthButton();
+        }
+    } catch (error) {
+        console.error('Google Drive auth error:', error);
+        alert(error.message || 'Failed to initiate Google Drive authentication');
+        resetDriveAuthButton();
+    }
+}
+
+function resetDriveAuthButton() {
+    driveAuthBtn.disabled = false;
+    driveAuthBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg> Sign in with Google`;
+}
+
+async function initiateSheetsAuth() {
+    try {
+        sheetsAuthBtn.disabled = true;
+        sheetsAuthBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...`;
+
+        const response = await fetch('/api/sheets/connect');
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 404) {
+                throw new Error('Google Sheets auth route not found on backend. Restart the server so latest routes are loaded.');
+            }
+            throw new Error(`Unexpected non-JSON response from backend (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Google Sheets auth failed with status ${response.status}`);
+        }
+
+        if (data.authUrl) {
+            const popup = window.open(data.authUrl, 'Google Sheets Auth', 'width=600,height=700,left=200,top=100');
+            const checkClosed = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(checkClosed);
+                    checkGmailStatus();
+                    checkCalendarStatus();
+                    checkGchatStatus();
+                    checkDriveStatus();
+                    checkSheetsStatus();
+                    resetSheetsAuthButton();
+                }
+            }, 500);
+        } else if (data.setupRequired) {
+            alert('Please set up Google Cloud credentials first.');
+            resetSheetsAuthButton();
+        } else {
+            alert(data.error || 'Failed to initiate Google Sheets authentication');
+            resetSheetsAuthButton();
+        }
+    } catch (error) {
+        console.error('Google Sheets auth error:', error);
+        alert(error.message || 'Failed to initiate Google Sheets authentication');
+        resetSheetsAuthButton();
+    }
+}
+
+function resetSheetsAuthButton() {
+    sheetsAuthBtn.disabled = false;
+    sheetsAuthBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg> Sign in with Google`;
 }
 
 // GitHub OAuth connect
@@ -879,6 +1101,37 @@ function formatToolResults(results) {
                         ${c.description ? `<div class="email-card-snippet">${escapeHtml(c.description)}</div>` : ''}
                     </div>
                 `).join('');
+            // Drive files
+            } else if (result.result.files && Array.isArray(result.result.files)) {
+                content = result.result.files.map(f => `
+                    <div class="email-card">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(f.name || f.id)}</span>
+                            <span class="email-card-date">${escapeHtml((f.mimeType || '').replace('application/vnd.google-apps.', ''))}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(f.id || '')}</code></div>
+                        ${f.webViewLink ? `<div class="email-card-snippet"><a href="${escapeHtml(f.webViewLink)}" target="_blank" rel="noopener noreferrer">Open in Drive</a></div>` : ''}
+                    </div>
+                `).join('');
+            // Spreadsheet list
+            } else if (result.result.spreadsheets && Array.isArray(result.result.spreadsheets)) {
+                content = result.result.spreadsheets.map(s => `
+                    <div class="email-card">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(s.title || s.spreadsheetId)}</span>
+                            <span class="email-card-date">${formatDate(s.modifiedTime)}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(s.spreadsheetId || '')}</code></div>
+                        ${s.webViewLink ? `<div class="email-card-snippet"><a href="${escapeHtml(s.webViewLink)}" target="_blank" rel="noopener noreferrer">Open Spreadsheet</a></div>` : ''}
+                    </div>
+                `).join('');
+            // Sheet tabs
+            } else if (result.result.tabs && Array.isArray(result.result.tabs)) {
+                content = `<div class="labels-list">${result.result.tabs.map(t => `<span class="label-chip">${escapeHtml(t.title || String(t.sheetId))}</span>`).join('')}</div>`;
+            // Sheet values
+            } else if (result.result.values && Array.isArray(result.result.values)) {
+                const preview = result.result.values.slice(0, 20);
+                content = `<pre style="font-size:0.8rem;max-height:180px;overflow:auto">${escapeHtml(JSON.stringify(preview, null, 2))}</pre>`;
             // GitHub repos
             } else if (result.result.repos && Array.isArray(result.result.repos)) {
                 content = result.result.repos.map(r => `

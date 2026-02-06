@@ -173,6 +173,14 @@ body {
     background: rgba(52, 168, 83, 0.15);
 }
 
+.nav-item-icon.drive-icon {
+    background: rgba(15, 157, 88, 0.18);
+}
+
+.nav-item-icon.sheets-icon {
+    background: rgba(52, 168, 83, 0.2);
+}
+
 .nav-item-status {
     margin-left: auto;
 }
@@ -530,6 +538,18 @@ body {
     background: rgba(52, 168, 83, 0.15);
     border: 1px solid rgba(52, 168, 83, 0.35);
     color: #34a853;
+}
+
+.drive-badge {
+    background: rgba(15, 157, 88, 0.16);
+    border: 1px solid rgba(15, 157, 88, 0.35);
+    color: #0f9d58;
+}
+
+.sheets-badge {
+    background: rgba(52, 168, 83, 0.2);
+    border: 1px solid rgba(52, 168, 83, 0.35);
+    color: #16a34a;
 }
 
 .badge-dot {
