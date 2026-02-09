@@ -509,6 +509,8 @@ body {
     display: flex;
     flex-direction: column;
     background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+    overflow: hidden;
+    height: 100%;
 }
 
 .chat-header {
@@ -788,6 +790,8 @@ body {
     flex: 1;
     overflow-y: auto;
     padding: 1.5rem;
+    min-height: 0;
+    /* Important for nested flex scroll */
 }
 
 .message {
@@ -838,6 +842,9 @@ body {
     padding: 1rem 1.25rem;
     border-radius: 18px;
     line-height: 1.6;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    min-width: 0;
 }
 
 .message.assistant .message-bubble {
@@ -1102,4 +1109,175 @@ body {
     .service-panel {
         width: 100%;
     }
+}
+
+/* Gmail-like Email List Styles */
+.email-card {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: box-shadow 0.2s, background-color 0.2s;
+    gap: 1rem;
+    position: relative;
+    border-radius: 0;
+    margin-bottom: 0;
+}
+
+.email-card:hover {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    background: var(--bg-tertiary);
+    z-index: 1;
+    border-color: transparent;
+    transform: none;
+}
+
+.email-card.vertical,
+.email-card-vertical {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+}
+
+.email-card.expanded {
+    flex-direction: column;
+    align-items: stretch;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    margin: 0.5rem 0;
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.email-card-content-wrapper {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 1rem;
+    min-width: 0;
+    /* Enable flex shrinking */
+}
+
+.email-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+    text-transform: uppercase;
+}
+
+.email-main-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+}
+
+.email-sender {
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+}
+
+.email-snippet-wrapper {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.email-subject {
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+    max-width: 60%;
+    /* Prevent subject from taking all space */
+}
+
+.email-snippet {
+    color: var(--text-secondary);
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.email-date {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    margin-left: auto;
+    flex-shrink: 0;
+    padding-left: 0.5rem;
+}
+
+/* Expanded View Styles */
+.email-details-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+}
+
+.email-details-subject {
+    font-size: 1.25rem;
+    font-weight: 400;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+    word-break: break-word;
+    /* Prevent long subjects from overflowing */
+}
+
+.email-details-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.email-details-sender-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.email-details-from {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.email-details-to {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.email-details-body {
+    font-family: sans-serif;
+    line-height: 1.6;
+    color: var(--text-primary);
+    margin: 1rem 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    /* Ensure long URLs wrap */
 }
