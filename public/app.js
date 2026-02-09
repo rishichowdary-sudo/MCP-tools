@@ -1471,16 +1471,27 @@ function formatToolResults(results) {
         if (result.result) {
             // Email list results
             if (result.result.results && Array.isArray(result.result.results)) {
-                content = result.result.results.map(email => `
+                content = result.result.results.map(email => {
+                    const sender = email.from || 'Unknown';
+                    const nameMatch = sender.match(/^([^<]+)/);
+                    const displayName = nameMatch ? nameMatch[1].trim().replace(/["']/g, '') : sender;
+                    const initials = (displayName[0] || '?').toUpperCase();
+
+                    return `
                     <div class="email-card email-clickable" data-message-id="${escapeHtml(email.id || '')}" onclick="openEmail('${escapeHtml(email.id || '')}', this)">
-                        <div class="email-card-header">
-                            <span class="email-card-subject">${escapeHtml(email.subject || '(no subject)')}</span>
-                            <span class="email-card-date">${formatDate(email.date)}</span>
+                        <div class="email-card-content-wrapper">
+                            <div class="email-avatar">${escapeHtml(initials)}</div>
+                            <div class="email-main-info">
+                                <div class="email-sender">${escapeHtml(displayName)}</div>
+                                <div class="email-snippet-wrapper">
+                                    <span class="email-subject">${escapeHtml(email.subject || '(no subject)')}</span>
+                                    <span class="email-snippet">- ${escapeHtml(email.snippet ? email.snippet.slice(0, 90) : '')}...</span>
+                                </div>
+                                <div class="email-date">${formatDate(email.date)}</div>
+                            </div>
                         </div>
-                        <div class="email-card-from">${escapeHtml(email.from || '')}</div>
-                        ${email.snippet ? `<div class="email-card-snippet">${escapeHtml(email.snippet.slice(0, 120))}...</div>` : ''}
                     </div>
-                `).join('');
+                `}).join('');
                 // Email body
             } else if (result.result.body) {
                 content = `
@@ -1608,19 +1619,20 @@ function formatToolResults(results) {
                 // GitHub repos
             } else if (result.result.repos && Array.isArray(result.result.repos)) {
                 content = result.result.repos.map(r => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(r.full_name || r.name)}</span>
                             <span class="email-card-date">${r.language || ''}</span>
                         </div>
                         ${r.description ? `<div class="email-card-snippet">${escapeHtml(r.description.slice(0, 100))}</div>` : ''}
                         <div class="email-card-from" style="margin-top:0.25rem">&#11088; ${r.stars || 0} &middot; &#128204; ${r.forks || 0}${r.private ? ' &middot; Private' : ''}</div>
+                        ${r.url ? `<div class="email-card-snippet" style="margin-top:0.5rem"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:none;font-weight:600">Go to Repo &rarr;</a></div>` : ''}
                     </div>
                 `).join('');
                 // GitHub issues
             } else if (result.result.issues && Array.isArray(result.result.issues)) {
                 content = result.result.issues.map(i => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">#${i.number} ${escapeHtml(i.title)}</span>
                             <span class="email-card-date">${i.state}</span>
@@ -1632,7 +1644,7 @@ function formatToolResults(results) {
                 // GitHub PRs
             } else if (result.result.pullRequests && Array.isArray(result.result.pullRequests)) {
                 content = result.result.pullRequests.map(p => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">#${p.number} ${escapeHtml(p.title)}</span>
                             <span class="email-card-date">${p.state}${p.draft ? ' (draft)' : ''}</span>
@@ -1646,7 +1658,7 @@ function formatToolResults(results) {
                 // GitHub commits
             } else if (result.result.commits && Array.isArray(result.result.commits)) {
                 content = result.result.commits.map(c => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <code style="font-size:0.8rem;color:var(--accent-secondary)">${escapeHtml(c.sha)}</code>
                             <span class="email-card-date">${formatDate(c.date)}</span>
@@ -1658,7 +1670,7 @@ function formatToolResults(results) {
                 // GitHub notifications
             } else if (result.result.notifications && Array.isArray(result.result.notifications)) {
                 content = result.result.notifications.map(n => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(n.subject.title)}</span>
                             <span class="email-card-date">${n.subject.type}</span>
@@ -1669,7 +1681,7 @@ function formatToolResults(results) {
                 // GitHub gists
             } else if (result.result.gists && Array.isArray(result.result.gists)) {
                 content = result.result.gists.map(g => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(g.description || g.files[0] || 'Untitled')}</span>
                             <span class="email-card-date">${g.public ? 'Public' : 'Secret'}</span>
@@ -1726,7 +1738,9 @@ async function openEmail(messageId, cardElement) {
         // Render content
         detailsDiv.classList.remove('loading');
 
-        // Prepare attachment HTML
+        const sender = data.from || 'Unknown';
+        const initials = (sender.replace(/["']/g, '').trim()[0] || '?').toUpperCase();
+
         let attachmentsHtml = '';
         if (data.attachments && data.attachments.length > 0) {
             attachmentsHtml = `
@@ -1745,18 +1759,23 @@ async function openEmail(messageId, cardElement) {
 
         detailsDiv.innerHTML = `
             <div class="email-details-content">
-                <div class="email-meta-row" style="margin-bottom:0.25rem">
-                    <strong>From:</strong> <span>${escapeHtml(data.from || 'Unknown')}</span>
+                <div class="email-details-header">
+                    <div style="flex:1">
+                        <div class="email-details-subject">${escapeHtml(data.subject || '(no subject)')}</div>
+                        <div class="email-details-meta">
+                            <div class="email-avatar">${escapeHtml(initials)}</div>
+                            <div class="email-details-sender-info">
+                                <span class="email-details-from">${escapeHtml(sender)}</span>
+                                <span class="email-details-to">to ${escapeHtml(data.to || 'me')}</span>
+                            </div>
+                            <div class="email-date" style="margin-left:auto">${new Date(data.date).toLocaleString()}</div>
+                        </div>
+                    </div>
                 </div>
-                <div class="email-meta-row" style="margin-bottom:0.25rem">
-                    <strong>Date:</strong> <span>${new Date(data.date).toLocaleString()}</span>
-                </div>
-                ${data.to ? `<div class="email-meta-row" style="margin-bottom:0.25rem"><strong>To:</strong> <span>${escapeHtml(data.to)}</span></div>` : ''}
-                ${data.cc ? `<div class="email-meta-row" style="margin-bottom:0.25rem"><strong>Cc:</strong> <span>${escapeHtml(data.cc)}</span></div>` : ''}
                 
                 <hr style="margin: 1rem 0; border: 0; border-top: 1px solid var(--border-color); opacity:0.5">
                 
-                <div class="email-body" style="white-space: pre-wrap; font-family: sans-serif; line-height: 1.6;">${data.bodyHtml || escapeHtml(data.body || '(No content)')}</div>
+                <div class="email-details-body">${data.bodyHtml || escapeHtml(data.body || '(No content)')}</div>
                 
                 ${attachmentsHtml}
 
@@ -1812,7 +1831,6 @@ function addTypingIndicator() {
             <div class="message-bubble">
                 <div class="typing-indicator">
                     <span></span><span></span><span></span>
-                    <span class="typing-text">Agent working...</span>
                 </div>
             </div>
         </div>
