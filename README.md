@@ -109,7 +109,7 @@ Open:
   - listing, creating, updating, moving, sharing, and downloading files
 - Google Sheets now supports:
   - listing spreadsheets/tabs, reading/writing ranges, appending rows, and tab management
-  - `update_timesheet_hours` for reliable date-based billing-hour updates
+  - `update_timesheet_hours` for reliable date-based row updates (billing hours, task details, project/module fields)
   - additional MCP fallback tools prefixed with `sheets_mcp__`
 
 ## Notes

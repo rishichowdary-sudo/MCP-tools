@@ -2089,6 +2089,10 @@ function normalizeSheetValuesInput(values) {
     return [values];
 }
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function normalizeSheetCellForCompare(value) {
     if (value === null || value === undefined) return '';
     if (typeof value === 'string') return value.trim();
@@ -2105,6 +2109,21 @@ function columnLettersToIndex(columnLetters) {
         value = value * 26 + (text.charCodeAt(i) - 64);
     }
     return value - 1;
+}
+
+function columnIndexToLetters(columnIndex) {
+    const index = Number(columnIndex);
+    if (!Number.isInteger(index) || index < 0) {
+        throw new Error(`Invalid column index: ${columnIndex}`);
+    }
+    let current = index + 1;
+    let letters = '';
+    while (current > 0) {
+        const rem = (current - 1) % 26;
+        letters = String.fromCharCode(65 + rem) + letters;
+        current = Math.floor((current - 1) / 26);
+    }
+    return letters;
 }
 
 function parseA1StartRow(a1Range) {
@@ -2258,6 +2277,52 @@ function sheetValuesMatch(expected, actual) {
         }
     }
     return true;
+}
+
+async function verifySheetWriteWithRetry({
+    spreadsheetId,
+    range,
+    expectedValues,
+    isFormulaWrite = false,
+    maxAttempts = 3
+}) {
+    const renderOptions = isFormulaWrite
+        ? ['FORMULA']
+        : ['UNFORMATTED_VALUE', 'FORMATTED_VALUE'];
+
+    let lastReadBackValues = [];
+    let lastRenderOption = renderOptions[0];
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        for (const renderOption of renderOptions) {
+            const verifyResponse = await sheetsClient.spreadsheets.values.get({
+                spreadsheetId,
+                range,
+                valueRenderOption: renderOption
+            });
+            const readBackValues = verifyResponse.data.values || [];
+            lastReadBackValues = readBackValues;
+            lastRenderOption = renderOption;
+            if (sheetValuesMatch(expectedValues, readBackValues)) {
+                return {
+                    verified: true,
+                    readBackValues,
+                    renderOption,
+                    attempts: attempt
+                };
+            }
+        }
+        if (attempt < maxAttempts) {
+            await sleep(150 * attempt);
+        }
+    }
+
+    return {
+        verified: false,
+        readBackValues: lastReadBackValues,
+        renderOption: lastRenderOption,
+        attempts: maxAttempts
+    };
 }
 
 async function listSpreadsheets({ query, maxResults = 100 }) {
@@ -2491,15 +2556,13 @@ async function updateSheetValues({ spreadsheetId, range, values, valueInputOptio
         throw new Error(`No cells were updated for ${range}. Verify sheet tab/range and try again.`);
     }
 
-    const verifyValueRenderOption = detectFormulaInValues(normalizedValues) ? 'FORMULA' : 'UNFORMATTED_VALUE';
-    const verifyResponse = await sheetsClient.spreadsheets.values.get({
+    const verification = await verifySheetWriteWithRetry({
         spreadsheetId,
         range,
-        valueRenderOption: verifyValueRenderOption
+        expectedValues: normalizedValues,
+        isFormulaWrite: detectFormulaInValues(normalizedValues)
     });
-    const readBackValues = verifyResponse.data.values || [];
-    const verified = sheetValuesMatch(normalizedValues, readBackValues);
-    if (!verified) {
+    if (!verification.verified) {
         throw new Error(`Sheets write verification failed for ${range}. Read-back values did not match the requested update.`);
     }
 
@@ -2510,8 +2573,10 @@ async function updateSheetValues({ spreadsheetId, range, values, valueInputOptio
         updatedRows: response.data.updatedRows || 0,
         updatedColumns: response.data.updatedColumns || 0,
         updatedCells,
-        verified,
-        readBackValues,
+        verified: true,
+        readBackValues: verification.readBackValues,
+        verificationRenderOption: verification.renderOption,
+        verificationAttempts: verification.attempts,
         message: `Updated and verified ${updatedCells} cell(s)`
     };
 }
@@ -2540,15 +2605,19 @@ async function appendSheetValues({ spreadsheetId, range, values, valueInputOptio
     const updatedRange = updates.updatedRange || '';
     let readBackValues = [];
     let verified = false;
+    let verificationRenderOption = '';
+    let verificationAttempts = 0;
     if (updatedRange) {
-        const verifyValueRenderOption = detectFormulaInValues(normalizedValues) ? 'FORMULA' : 'UNFORMATTED_VALUE';
-        const verifyResponse = await sheetsClient.spreadsheets.values.get({
+        const verification = await verifySheetWriteWithRetry({
             spreadsheetId,
             range: updatedRange,
-            valueRenderOption: verifyValueRenderOption
+            expectedValues: normalizedValues,
+            isFormulaWrite: detectFormulaInValues(normalizedValues)
         });
-        readBackValues = verifyResponse.data.values || [];
-        verified = sheetValuesMatch(normalizedValues, readBackValues);
+        readBackValues = verification.readBackValues;
+        verified = verification.verified;
+        verificationRenderOption = verification.renderOption;
+        verificationAttempts = verification.attempts;
         if (!verified) {
             throw new Error(`Sheets append verification failed for ${updatedRange}. Read-back values did not match appended rows.`);
         }
@@ -2564,6 +2633,8 @@ async function appendSheetValues({ spreadsheetId, range, values, valueInputOptio
         updatedCells,
         verified: updatedRange ? verified : true,
         readBackValues,
+        verificationRenderOption: updatedRange ? verificationRenderOption : '',
+        verificationAttempts: updatedRange ? verificationAttempts : 0,
         message: `Appended and verified ${updates.updatedRows || 0} row(s)`
     };
 }
@@ -2573,15 +2644,33 @@ async function updateTimesheetHours({
     sheetName = 'Tracker',
     date,
     billingHours,
+    taskDetails,
+    nonBillingHours,
+    projectName,
+    moduleName,
+    month,
     dateColumn = 'B',
+    taskDetailsColumn = 'C',
     billingHoursColumn = 'D',
+    nonBillingHoursColumn = 'E',
+    projectNameColumn = 'F',
+    moduleNameColumn = 'G',
+    monthColumn = 'A',
     searchRange = 'A1:Z3000',
     preferEmptyBilling = true
 }) {
     if (!sheetsClient) throw new Error('Google Sheets not authenticated');
     if (!spreadsheetId || !date) throw new Error('spreadsheetId and date are required');
-    if (billingHours === undefined || billingHours === null || billingHours === '') {
-        throw new Error('billingHours is required');
+    const billingProvided = !(billingHours === undefined || billingHours === null || billingHours === '');
+    const hasAnyUpdate =
+        billingProvided ||
+        taskDetails !== undefined ||
+        nonBillingHours !== undefined ||
+        projectName !== undefined ||
+        moduleName !== undefined ||
+        month !== undefined;
+    if (!hasAnyUpdate) {
+        throw new Error('Provide at least one field to update (billingHours/taskDetails/nonBillingHours/projectName/moduleName/month).');
     }
 
     const targetDateKey = tryParseDateKey(date);
@@ -2596,7 +2685,7 @@ async function updateTimesheetHours({
     const table = await readSheetValues({
         spreadsheetId,
         range: readRange,
-        valueRenderOption: 'FORMATTED_VALUE'
+        valueRenderOption: 'UNFORMATTED_VALUE'
     });
     const rows = table.values || [];
     const startRow = parseA1StartRow(table.range || readRange);
@@ -2618,26 +2707,73 @@ async function updateTimesheetHours({
     }
 
     let selected = matches[0];
-    if (preferEmptyBilling) {
+    if (preferEmptyBilling && billingProvided) {
         const emptyCandidate = matches.find(m => isEffectivelyEmptyTimesheetCell(m.existingBilling));
         if (emptyCandidate) selected = emptyCandidate;
     }
 
-    const targetCell = `${sheetName}!${billingHoursColumn.toUpperCase()}${selected.rowNumber}`;
-    const writeValue = Number.isFinite(Number(billingHours)) ? Number(billingHours) : String(billingHours);
-    const preWriteCell = await readSheetValues({
-        spreadsheetId,
-        range: targetCell,
-        valueRenderOption: 'UNFORMATTED_VALUE'
-    });
-    const existingUnformatted = Array.isArray(preWriteCell.values?.[0]) ? preWriteCell.values[0][0] : undefined;
-    if (sheetCellsEquivalent(writeValue, existingUnformatted)) {
-        const previewRange = `${sheetName}!A${selected.rowNumber}:G${selected.rowNumber}`;
-        const preview = await readSheetValues({
-            spreadsheetId,
-            range: previewRange,
-            valueRenderOption: 'FORMATTED_VALUE'
+    const updates = [];
+    if (billingProvided) {
+        updates.push({
+            field: 'billingHours',
+            column: billingHoursColumn,
+            value: Number.isFinite(Number(billingHours)) ? Number(billingHours) : String(billingHours)
         });
+    }
+    if (taskDetails !== undefined) updates.push({ field: 'taskDetails', column: taskDetailsColumn, value: taskDetails ?? '' });
+    if (nonBillingHours !== undefined) updates.push({ field: 'nonBillingHours', column: nonBillingHoursColumn, value: nonBillingHours ?? '' });
+    if (projectName !== undefined) updates.push({ field: 'projectName', column: projectNameColumn, value: projectName ?? '' });
+    if (moduleName !== undefined) updates.push({ field: 'moduleName', column: moduleNameColumn, value: moduleName ?? '' });
+    if (month !== undefined) updates.push({ field: 'month', column: monthColumn, value: month ?? '' });
+
+    const changedUpdates = [];
+    const unchangedFields = [];
+    for (const update of updates) {
+        const targetCell = `${sheetName}!${String(update.column).toUpperCase()}${selected.rowNumber}`;
+        const preWriteCell = await readSheetValues({
+            spreadsheetId,
+            range: targetCell,
+            valueRenderOption: 'UNFORMATTED_VALUE'
+        });
+        const existingUnformatted = Array.isArray(preWriteCell.values?.[0]) ? preWriteCell.values[0][0] : undefined;
+        if (sheetCellsEquivalent(update.value, existingUnformatted)) {
+            unchangedFields.push(update.field);
+            continue;
+        }
+        changedUpdates.push({
+            ...update,
+            targetCell,
+            previousValue: existingUnformatted ?? ''
+        });
+    }
+
+    const writeResults = [];
+    for (const update of changedUpdates) {
+        const writeResult = await updateSheetValues({
+            spreadsheetId,
+            range: update.targetCell,
+            values: [[update.value]],
+            valueInputOption: 'USER_ENTERED'
+        });
+        writeResults.push(writeResult);
+    }
+
+    const previewColumns = [
+        monthColumn,
+        dateColumn,
+        taskDetailsColumn,
+        billingHoursColumn,
+        nonBillingHoursColumn,
+        projectNameColumn,
+        moduleNameColumn
+    ];
+    const previewIndexes = previewColumns.map(columnLettersToIndex);
+    const previewStartCol = columnIndexToLetters(Math.min(...previewIndexes));
+    const previewEndCol = columnIndexToLetters(Math.max(...previewIndexes));
+    const previewRange = `${sheetName}!${previewStartCol}${selected.rowNumber}:${previewEndCol}${selected.rowNumber}`;
+    const preview = await readSheetValues({ spreadsheetId, range: previewRange, valueRenderOption: 'FORMATTED_VALUE' });
+
+    if (changedUpdates.length === 0) {
         return {
             success: true,
             spreadsheetId,
@@ -2646,28 +2782,14 @@ async function updateTimesheetHours({
             normalizedDate: targetDateKey,
             matchesFound: matches.length,
             rowNumber: selected.rowNumber,
-            updatedCell: targetCell,
-            previousBillingHours: existingUnformatted ?? '',
-            updatedBillingHours: writeValue,
             verified: true,
             noOp: true,
+            unchangedFields,
+            updatedFields: [],
             rowPreview: preview.values || [],
-            message: `Billing hours already set to ${writeValue} on row ${selected.rowNumber}; no update needed.`
+            message: `Timesheet row already up to date for ${date} on row ${selected.rowNumber}.`
         };
     }
-    const writeResult = await updateSheetValues({
-        spreadsheetId,
-        range: targetCell,
-        values: [[writeValue]],
-        valueInputOption: 'USER_ENTERED'
-    });
-
-    const previewRange = `${sheetName}!A${selected.rowNumber}:G${selected.rowNumber}`;
-    const preview = await readSheetValues({
-        spreadsheetId,
-        range: previewRange,
-        valueRenderOption: 'FORMATTED_VALUE'
-    });
 
     return {
         success: true,
@@ -2677,12 +2799,16 @@ async function updateTimesheetHours({
         normalizedDate: targetDateKey,
         matchesFound: matches.length,
         rowNumber: selected.rowNumber,
-        updatedCell: targetCell,
-        previousBillingHours: selected.existingBilling ?? '',
-        updatedBillingHours: writeValue,
-        verified: !!writeResult.verified,
+        updatedFields: changedUpdates.map(update => ({
+            field: update.field,
+            cell: update.targetCell,
+            previousValue: update.previousValue,
+            updatedValue: update.value
+        })),
+        unchangedFields,
+        verified: writeResults.every(result => !!result.verified),
         rowPreview: preview.values || [],
-        message: `Updated billing hours to ${writeValue} on row ${selected.rowNumber} (${targetCell}).`
+        message: `Updated ${changedUpdates.length} field(s) on row ${selected.rowNumber} for ${date}.`
     };
 }
 
@@ -3658,7 +3784,7 @@ const sheetsTools = [
     { type: "function", function: { name: "delete_sheet_tab", description: "Delete a tab sheet from a spreadsheet by sheetId.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetId: { type: "integer", description: "Numeric sheet ID" } }, required: ["spreadsheetId", "sheetId"] } } },
     { type: "function", function: { name: "read_sheet_values", description: "Read values from a spreadsheet range (A1 notation).", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range (e.g. Sheet1!A1:D20)" }, valueRenderOption: { type: "string", description: "FORMATTED_VALUE, UNFORMATTED_VALUE, or FORMULA" }, dateTimeRenderOption: { type: "string", description: "SERIAL_NUMBER or FORMATTED_STRING" } }, required: ["spreadsheetId", "range"] } } },
     { type: "function", function: { name: "update_sheet_values", description: "Overwrite values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to write" }, values: { type: "array", description: "2D array of rows, e.g. [[\"Name\",\"Role\"],[\"Rishi\",\"Lead\"]]", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, majorDimension: { type: "string", description: "ROWS or COLUMNS (default ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
-    { type: "function", function: { name: "update_timesheet_hours", description: "Find a timesheet row by date and update billing hours reliably.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetName: { type: "string", description: "Tab name (default Tracker)" }, date: { type: "string", description: "Date to match, e.g. 6-Feb-2026 or 2026-02-06" }, billingHours: { type: "number", description: "Billing hours value to set" }, dateColumn: { type: "string", description: "Date column letter (default B)" }, billingHoursColumn: { type: "string", description: "Billing hours column letter (default D)" }, searchRange: { type: "string", description: "A1 range to search (default A1:Z3000)" }, preferEmptyBilling: { type: "boolean", description: "Prefer row where billing cell is empty when duplicates exist (default true)" } }, required: ["spreadsheetId", "date", "billingHours"] } } },
+    { type: "function", function: { name: "update_timesheet_hours", description: "Find a timesheet row by date and reliably update one or more fields (billing hours, task details, non-billing hours, project/module/month).", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetName: { type: "string", description: "Tab name (default Tracker)" }, date: { type: "string", description: "Date to match, e.g. 6-Feb-2026 or 2026-02-06" }, billingHours: { type: "number", description: "Billing hours value to set" }, taskDetails: { type: "string", description: "Task details/description to set" }, nonBillingHours: { type: "number", description: "Non-billing hours value to set" }, projectName: { type: "string", description: "Project name to set" }, moduleName: { type: "string", description: "Module name to set" }, month: { type: "string", description: "Month label to set (e.g. February 2026)" }, dateColumn: { type: "string", description: "Date column letter (default B)" }, taskDetailsColumn: { type: "string", description: "Task Details column letter (default C)" }, billingHoursColumn: { type: "string", description: "Billing hours column letter (default D)" }, nonBillingHoursColumn: { type: "string", description: "Non-billing hours column letter (default E)" }, projectNameColumn: { type: "string", description: "Project name column letter (default F)" }, moduleNameColumn: { type: "string", description: "Module name column letter (default G)" }, monthColumn: { type: "string", description: "Month column letter (default A)" }, searchRange: { type: "string", description: "A1 range to search (default A1:Z3000)" }, preferEmptyBilling: { type: "boolean", description: "Prefer row where billing cell is empty when duplicates exist and billingHours is being updated (default true)" } }, required: ["spreadsheetId", "date"] } } },
     { type: "function", function: { name: "append_sheet_values", description: "Append rows to a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 target range (e.g. Sheet1!A:D)" }, values: { type: "array", description: "2D array of rows to append", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, insertDataOption: { type: "string", description: "INSERT_ROWS or OVERWRITE (default INSERT_ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
     { type: "function", function: { name: "clear_sheet_values", description: "Clear values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to clear" } }, required: ["spreadsheetId", "range"] } } }
 ];
@@ -4447,8 +4573,8 @@ Total Tools Available: ${availableTools.length}
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
 - Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access.
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
-- Sheets timesheets: For date-based hours updates, ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
-- Sheets timesheets row safety: Update the matching existing date row only; do not create a second date row unless the user explicitly asks to append.
+- Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
+- Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
 - Sheets MCP: MCP tools are prefixed with ${SHEETS_MCP_TOOL_PREFIX} and provide fallback read/update operations when needed.
 - Sheets write safety: Never claim a sheet update succeeded unless tool output indicates verification/read-back succeeded.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.
