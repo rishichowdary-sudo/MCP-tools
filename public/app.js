@@ -1022,7 +1022,7 @@ async function sendMessage() {
         removeTypingIndicator(typingId);
 
         if (data.error) {
-            addMessage('assistant', `<p style="color: #ef4444;">Error: ${escapeHtml(data.error)}</p>`);
+            addMessage('assistant', `<p style="color: #ef4444;">Error: ${escapeHtml(data.error)}</p>`, { allowHtml: true });
             turnsBadge.style.display = 'none';
         } else {
             if (data.turnsUsed > 0) {
@@ -1052,7 +1052,7 @@ async function sendMessage() {
                 responseHtml += formatToolResults(data.toolResults);
             }
 
-            addMessage('assistant', responseHtml);
+            addMessage('assistant', responseHtml, { allowHtml: true });
 
             chatHistory.push({ role: 'user', content: message });
             chatHistory.push({ role: 'assistant', content: data.response });
@@ -1063,7 +1063,7 @@ async function sendMessage() {
         }
     } catch (error) {
         removeTypingIndicator(typingId);
-        addMessage('assistant', `<p style="color: #ef4444;">Failed to send message. Please try again.</p>`);
+        addMessage('assistant', `<p style="color: #ef4444;">Failed to send message. Please try again.</p>`, { allowHtml: true });
         turnsBadge.style.display = 'none';
         console.error('Chat error:', error);
     }
@@ -1438,7 +1438,7 @@ async function openEmail(messageId, cardElement) {
 }
 
 // Add message to chat
-function addMessage(role, content) {
+function addMessage(role, content, { allowHtml = false } = {}) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
 
@@ -1446,10 +1446,14 @@ function addMessage(role, content) {
         ? '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>'
         : '<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="10" fill="none" stroke="#6366f1" stroke-width="2"/><path fill="none" stroke="#6366f1" stroke-width="2" d="M8 12l3 3 5-6"/></svg>';
 
+    const bubbleContent = allowHtml
+        ? String(content || '')
+        : escapeHtml(String(content || '')).replace(/\n/g, '<br>');
+
     messageDiv.innerHTML = `
         <div class="message-avatar">${avatar}</div>
         <div class="message-content">
-            <div class="message-bubble">${content}</div>
+            <div class="message-bubble">${bubbleContent}</div>
         </div>
     `;
 
