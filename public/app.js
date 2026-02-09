@@ -1037,7 +1037,16 @@ async function sendMessage() {
                 responseHtml += formatStepsPipeline(data.steps);
             }
 
-            responseHtml += formatResponse(data.response);
+            // Suppress text response for list-type tools (only show cards)
+            const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_prs', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
+            const isListToolOnly = data.toolResults &&
+                data.toolResults.length === 1 &&
+                LIST_TOOLS.includes(data.toolResults[0].tool) &&
+                data.toolResults[0].result;
+
+            if (!isListToolOnly) {
+                responseHtml += formatResponse(data.response);
+            }
 
             if (data.toolResults && data.toolResults.length > 0) {
                 responseHtml += formatToolResults(data.toolResults);
@@ -1129,7 +1138,7 @@ function formatToolResults(results) {
             // Email list results
             if (result.result.results && Array.isArray(result.result.results)) {
                 content = result.result.results.map(email => `
-                    <div class="email-card">
+                    <div class="email-card email-clickable" data-message-id="${escapeHtml(email.id || '')}" onclick="openEmail('${escapeHtml(email.id || '')}', this)">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(email.subject || '(no subject)')}</span>
                             <span class="email-card-date">${formatDate(email.date)}</span>
@@ -1138,7 +1147,7 @@ function formatToolResults(results) {
                         ${email.snippet ? `<div class="email-card-snippet">${escapeHtml(email.snippet.slice(0, 120))}...</div>` : ''}
                     </div>
                 `).join('');
-            // Email body
+                // Email body
             } else if (result.result.body) {
                 content = `
                     <div class="email-card">
@@ -1150,10 +1159,10 @@ function formatToolResults(results) {
                         <p style="margin-top: 0.5rem; white-space: pre-wrap; font-size:0.85rem; color:var(--text-secondary)">${escapeHtml((result.result.body || '').slice(0, 500))}${(result.result.body || '').length > 500 ? '...' : ''}</p>
                     </div>
                 `;
-            // Labels
+                // Labels
             } else if (result.result.labels && Array.isArray(result.result.labels)) {
                 content = `<div class="labels-list">${result.result.labels.map(l => `<span class="label-chip">${escapeHtml(l.name)}</span>`).join('')}</div>`;
-            // Drafts
+                // Drafts
             } else if (result.result.drafts && Array.isArray(result.result.drafts)) {
                 content = result.result.drafts.map(d => `
                     <div class="email-card">
@@ -1163,7 +1172,7 @@ function formatToolResults(results) {
                         <div class="email-card-from">To: ${escapeHtml(d.to || 'Not set')}</div>
                     </div>
                 `).join('');
-            // Google Chat spaces
+                // Google Chat spaces
             } else if (result.result.spaces && Array.isArray(result.result.spaces)) {
                 content = result.result.spaces.map(s => `
                     <div class="email-card">
@@ -1174,7 +1183,7 @@ function formatToolResults(results) {
                         <div class="email-card-from"><code>${escapeHtml(s.name || '')}</code></div>
                     </div>
                 `).join('');
-            // Google Chat messages
+                // Google Chat messages
             } else if (result.result.space && result.result.messages && Array.isArray(result.result.messages)) {
                 content = result.result.messages.map(msg => `
                     <div class="email-card thread-msg">
@@ -1185,7 +1194,7 @@ function formatToolResults(results) {
                         <div class="email-card-snippet">${escapeHtml(msg.text || '')}</div>
                     </div>
                 `).join('');
-            // Thread messages
+                // Thread messages
             } else if (result.result.messages && Array.isArray(result.result.messages)) {
                 content = result.result.messages.map(msg => `
                     <div class="email-card thread-msg">
@@ -1196,7 +1205,7 @@ function formatToolResults(results) {
                         <p style="margin-top:0.25rem;font-size:0.85rem;color:var(--text-secondary)">${escapeHtml((msg.body || msg.snippet || '').slice(0, 200))}...</p>
                     </div>
                 `).join('');
-            // Attachments
+                // Attachments
             } else if (result.result.attachments && Array.isArray(result.result.attachments)) {
                 content = result.result.attachments.map(a => `
                     <div class="attachment-card">
@@ -1207,7 +1216,7 @@ function formatToolResults(results) {
                         </div>
                     </div>
                 `).join('');
-            // Calendar events
+                // Calendar events
             } else if (result.result.events && Array.isArray(result.result.events)) {
                 content = result.result.events.map(e => `
                     <div class="email-card">
@@ -1220,7 +1229,7 @@ function formatToolResults(results) {
                         ${e.meetLink ? `<div class="email-card-snippet"><a href="${escapeHtml(e.meetLink)}" target="_blank" rel="noopener noreferrer">Open Meet Link</a></div>` : ''}
                     </div>
                 `).join('');
-            // Calendars list
+                // Calendars list
             } else if (result.result.calendars && Array.isArray(result.result.calendars)) {
                 content = result.result.calendars.map(c => `
                     <div class="email-card">
@@ -1231,7 +1240,7 @@ function formatToolResults(results) {
                         ${c.description ? `<div class="email-card-snippet">${escapeHtml(c.description)}</div>` : ''}
                     </div>
                 `).join('');
-            // Drive files
+                // Drive files
             } else if (result.result.files && Array.isArray(result.result.files)) {
                 content = result.result.files.map(f => `
                     <div class="email-card">
@@ -1243,7 +1252,7 @@ function formatToolResults(results) {
                         ${f.webViewLink ? `<div class="email-card-snippet"><a href="${escapeHtml(f.webViewLink)}" target="_blank" rel="noopener noreferrer">Open in Drive</a></div>` : ''}
                     </div>
                 `).join('');
-            // Spreadsheet list
+                // Spreadsheet list
             } else if (result.result.spreadsheets && Array.isArray(result.result.spreadsheets)) {
                 content = result.result.spreadsheets.map(s => `
                     <div class="email-card">
@@ -1255,14 +1264,14 @@ function formatToolResults(results) {
                         ${s.webViewLink ? `<div class="email-card-snippet"><a href="${escapeHtml(s.webViewLink)}" target="_blank" rel="noopener noreferrer">Open Spreadsheet</a></div>` : ''}
                     </div>
                 `).join('');
-            // Sheet tabs
+                // Sheet tabs
             } else if (result.result.tabs && Array.isArray(result.result.tabs)) {
                 content = `<div class="labels-list">${result.result.tabs.map(t => `<span class="label-chip">${escapeHtml(t.title || String(t.sheetId))}</span>`).join('')}</div>`;
-            // Sheet values
+                // Sheet values
             } else if (result.result.values && Array.isArray(result.result.values)) {
                 const preview = result.result.values.slice(0, 20);
                 content = `<pre style="font-size:0.8rem;max-height:180px;overflow:auto">${escapeHtml(JSON.stringify(preview, null, 2))}</pre>`;
-            // GitHub repos
+                // GitHub repos
             } else if (result.result.repos && Array.isArray(result.result.repos)) {
                 content = result.result.repos.map(r => `
                     <div class="email-card">
@@ -1274,7 +1283,7 @@ function formatToolResults(results) {
                         <div class="email-card-from" style="margin-top:0.25rem">&#11088; ${r.stars || 0} &middot; &#128204; ${r.forks || 0}${r.private ? ' &middot; Private' : ''}</div>
                     </div>
                 `).join('');
-            // GitHub issues
+                // GitHub issues
             } else if (result.result.issues && Array.isArray(result.result.issues)) {
                 content = result.result.issues.map(i => `
                     <div class="email-card">
@@ -1286,7 +1295,7 @@ function formatToolResults(results) {
                         ${i.labels && i.labels.length > 0 ? `<div class="labels-list" style="margin-top:0.25rem">${i.labels.map(l => `<span class="label-chip">${escapeHtml(l)}</span>`).join('')}</div>` : ''}
                     </div>
                 `).join('');
-            // GitHub PRs
+                // GitHub PRs
             } else if (result.result.pullRequests && Array.isArray(result.result.pullRequests)) {
                 content = result.result.pullRequests.map(p => `
                     <div class="email-card">
@@ -1297,10 +1306,10 @@ function formatToolResults(results) {
                         <div class="email-card-from">${escapeHtml(p.head)} &#8594; ${escapeHtml(p.base)} &middot; by ${escapeHtml(p.user || '')}</div>
                     </div>
                 `).join('');
-            // GitHub branches
+                // GitHub branches
             } else if (result.result.branches && Array.isArray(result.result.branches)) {
                 content = `<div class="labels-list">${result.result.branches.map(b => `<span class="label-chip">${escapeHtml(b.name)}${b.protected ? ' &#128274;' : ''}</span>`).join('')}</div>`;
-            // GitHub commits
+                // GitHub commits
             } else if (result.result.commits && Array.isArray(result.result.commits)) {
                 content = result.result.commits.map(c => `
                     <div class="email-card">
@@ -1312,7 +1321,7 @@ function formatToolResults(results) {
                         <div class="email-card-snippet">${escapeHtml(c.author || '')}</div>
                     </div>
                 `).join('');
-            // GitHub notifications
+                // GitHub notifications
             } else if (result.result.notifications && Array.isArray(result.result.notifications)) {
                 content = result.result.notifications.map(n => `
                     <div class="email-card">
@@ -1323,7 +1332,7 @@ function formatToolResults(results) {
                         <div class="email-card-from">${escapeHtml(n.repository)} &middot; ${n.reason}${n.unread ? ' &middot; Unread' : ''}</div>
                     </div>
                 `).join('');
-            // GitHub gists
+                // GitHub gists
             } else if (result.result.gists && Array.isArray(result.result.gists)) {
                 content = result.result.gists.map(g => `
                     <div class="email-card">
@@ -1334,7 +1343,7 @@ function formatToolResults(results) {
                         <div class="email-card-from">${g.files.join(', ')}</div>
                     </div>
                 `).join('');
-            // Generic JSON display
+                // Generic JSON display
             } else {
                 const summary = result.result.message || JSON.stringify(result.result, null, 2);
                 content = `<pre style="font-size:0.8rem;max-height:150px;overflow:auto">${escapeHtml(typeof summary === 'string' ? summary : JSON.stringify(summary, null, 2))}</pre>`;
@@ -1353,6 +1362,79 @@ function formatToolResults(results) {
             </div>
         `;
     }).join('');
+}
+
+// Open email when card is clicked
+async function openEmail(messageId, cardElement) {
+    if (!messageId || !cardElement) return;
+
+    // Check if already expanded
+    const existingDetails = cardElement.querySelector('.email-details');
+    if (existingDetails) {
+        existingDetails.remove();
+        cardElement.classList.remove('expanded');
+        return;
+    }
+
+    // Add loading placeholder
+    const detailsDiv = document.createElement('div');
+    detailsDiv.className = 'email-details loading';
+    detailsDiv.innerHTML = '<div class="spinner" style="width:20px;height:20px;border-width:2px;margin-right:10px"></div> Loading content...';
+    cardElement.appendChild(detailsDiv);
+    cardElement.classList.add('expanded');
+
+    try {
+        const response = await fetch(`/api/gmail/message/${messageId}`);
+        const data = await response.json();
+
+        if (data.error) throw new Error(data.error);
+
+        // Render content
+        detailsDiv.classList.remove('loading');
+
+        // Prepare attachment HTML
+        let attachmentsHtml = '';
+        if (data.attachments && data.attachments.length > 0) {
+            attachmentsHtml = `
+                <div class="email-attachments" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed var(--border-color);">
+                    <strong>Attachments:</strong>
+                    <div class="attachment-list" style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem">
+                        ${data.attachments.map(a => `
+                            <div class="attachment-chip" style="background:var(--bg-tertiary); padding:0.25rem 0.5rem; border-radius:4px; font-size:0.85rem; border:1px solid var(--border-color)">
+                                &#128206; ${escapeHtml(a.filename)} (${formatSize(a.size)})
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        detailsDiv.innerHTML = `
+            <div class="email-details-content">
+                <div class="email-meta-row" style="margin-bottom:0.25rem">
+                    <strong>From:</strong> <span>${escapeHtml(data.from || 'Unknown')}</span>
+                </div>
+                <div class="email-meta-row" style="margin-bottom:0.25rem">
+                    <strong>Date:</strong> <span>${new Date(data.date).toLocaleString()}</span>
+                </div>
+                ${data.to ? `<div class="email-meta-row" style="margin-bottom:0.25rem"><strong>To:</strong> <span>${escapeHtml(data.to)}</span></div>` : ''}
+                ${data.cc ? `<div class="email-meta-row" style="margin-bottom:0.25rem"><strong>Cc:</strong> <span>${escapeHtml(data.cc)}</span></div>` : ''}
+                
+                <hr style="margin: 1rem 0; border: 0; border-top: 1px solid var(--border-color); opacity:0.5">
+                
+                <div class="email-body" style="white-space: pre-wrap; font-family: sans-serif; line-height: 1.6;">${data.bodyHtml || escapeHtml(data.body || '(No content)')}</div>
+                
+                ${attachmentsHtml}
+
+                <div class="email-actions" style="margin-top: 1.5rem; display: flex; gap: 0.5rem;">
+                    <button class="action-btn" style="padding:0.5rem 1rem; background:var(--accent-primary); color:white; border:none; border-radius:6px; cursor:pointer" onclick="event.stopPropagation(); messageInput.value='Reply to email ${messageId} saying...'; messageInput.focus();">Reply</button>
+                    <button class="action-btn" style="padding:0.5rem 1rem; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; cursor:pointer" onclick="event.stopPropagation(); messageInput.value='Forward email ${messageId} to...'; messageInput.focus();">Forward</button>
+                </div>
+            </div>
+        `;
+    } catch (error) {
+        detailsDiv.innerHTML = `<div style="color:var(--error); padding:1rem">Error loading email: ${escapeHtml(error.message)}</div>`;
+    }
 }
 
 // Add message to chat

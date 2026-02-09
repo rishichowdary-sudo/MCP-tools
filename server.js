@@ -4357,6 +4357,21 @@ app.get('/outlook/callback', async (req, res) => {
 // ============================================================
 //  AGENTIC CHAT ENDPOINT — Robust multi-turn tool loop
 // ============================================================
+// Get single email content
+app.get('/api/gmail/message/:id', async (req, res) => {
+    try {
+        if (!gmailClient) {
+            return res.status(401).json({ error: 'Gmail not connected' });
+        }
+        const { id } = req.params;
+        const email = await readEmail({ messageId: id });
+        res.json(email);
+    } catch (error) {
+        console.error('Error fetching email:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/chat', async (req, res) => {
     const { message, history = [] } = req.body;
 
