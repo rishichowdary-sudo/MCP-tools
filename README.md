@@ -116,6 +116,26 @@ Open:
   - auto-running at configured `HH:MM` local time
   - run now, enable/disable, and delete actions from the UI
 
+## Agentic Prompting (One Command, Multiple Tools)
+
+Use a single goal-oriented command that clearly states:
+
+1. End goal
+2. Scope/time range
+3. Constraints (for example: "do not delete")
+4. Desired output format
+
+Examples:
+
+- `Find my 10 newest unread Gmail + Outlook emails, summarize each in 1 line, and draft one follow-up email for urgent items.`
+- `Check today's calendar, find open PRs assigned to me, and schedule 30-minute review blocks this week.`
+- `Create a Google Doc called Weekly Update, pull top action items from unread emails, and append them into the doc.`
+- `List my spreadsheets updated this week, summarize tab names, and post the summary to my first Google Chat space.`
+
+Tip:
+
+- Ask for full execution in one message: `Do all required tool calls automatically and return a final summary with what succeeded, what failed, and next actions.`
+
 ## Notes
 
 - Google tokens are saved locally at:
