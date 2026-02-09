@@ -53,6 +53,16 @@ const gchatBadge = document.getElementById('gchatBadge');
 const driveBadge = document.getElementById('driveBadge');
 const sheetsBadge = document.getElementById('sheetsBadge');
 const githubBadge = document.getElementById('githubBadge');
+const outlookNavItem = document.getElementById('outlookNavItem');
+const outlookPanel = document.getElementById('outlookPanel');
+const outlookAuthBtn = document.getElementById('outlookAuthBtn');
+const outlookDisconnectBtn = document.getElementById('outlookDisconnectBtn');
+const outlookReauthBtn = document.getElementById('outlookReauthBtn');
+const outlookAuthNote = document.getElementById('outlookAuthNote');
+const outlookAuthSection = document.getElementById('outlookAuthSection');
+const outlookConnectedSection = document.getElementById('outlookConnectedSection');
+const outlookStatus = document.getElementById('outlookStatus');
+const outlookBadge = document.getElementById('outlookBadge');
 const turnsBadge = document.getElementById('turnsBadge');
 const turnsCount = document.getElementById('turnsCount');
 const capabilitiesNavItem = document.getElementById('capabilitiesNavItem');
@@ -70,6 +80,7 @@ let isGchatConnected = false;
 let isDriveConnected = false;
 let isSheetsConnected = false;
 let isGithubConnected = false;
+let isOutlookConnected = false;
 let activeFilter = 'all';
 
 // Tool icon mapping
@@ -115,7 +126,17 @@ const TOOL_ICONS = {
     get_file_content: '&#128196;', create_or_update_file: '&#128196;',
     search_repos: '&#128269;', search_code: '&#128269;',
     list_commits: '&#128221;', get_user_profile: '&#128100;',
-    list_notifications: '&#128276;', list_gists: '&#128221;'
+    list_notifications: '&#128276;', list_gists: '&#128221;',
+    // Outlook (18)
+    outlook_send_email: '&#9993;', outlook_list_emails: '&#128203;',
+    outlook_read_email: '&#128214;', outlook_search_emails: '&#128269;',
+    outlook_reply_to_email: '&#8617;', outlook_forward_email: '&#10145;',
+    outlook_delete_email: '&#128465;', outlook_move_email: '&#10145;',
+    outlook_mark_as_read: '&#9745;', outlook_mark_as_unread: '&#9746;',
+    outlook_list_folders: '&#128193;', outlook_create_folder: '&#10133;',
+    outlook_get_attachments: '&#128206;', outlook_create_draft: '&#128221;',
+    outlook_send_draft: '&#128228;', outlook_list_drafts: '&#128196;',
+    outlook_flag_email: '&#127988;', outlook_get_user_profile: '&#128100;'
 };
 
 // Tool category mappings per service
@@ -161,6 +182,15 @@ const GITHUB_CATEGORIES = {
     'Activity': ['list_commits', 'get_user_profile', 'list_notifications', 'list_gists']
 };
 
+const OUTLOOK_CATEGORIES = {
+    'Core': ['outlook_send_email', 'outlook_search_emails', 'outlook_read_email', 'outlook_list_emails'],
+    'Actions': ['outlook_reply_to_email', 'outlook_forward_email', 'outlook_delete_email', 'outlook_move_email'],
+    'Status': ['outlook_mark_as_read', 'outlook_mark_as_unread', 'outlook_flag_email'],
+    'Folders': ['outlook_list_folders', 'outlook_create_folder'],
+    'Drafts': ['outlook_create_draft', 'outlook_list_drafts', 'outlook_send_draft'],
+    'Advanced': ['outlook_get_attachments', 'outlook_get_user_profile']
+};
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     checkAllStatuses();
@@ -189,6 +219,7 @@ function setupEventListeners() {
     driveNavItem.addEventListener('click', () => openPanel('drive'));
     sheetsNavItem.addEventListener('click', () => openPanel('sheets'));
     githubNavItem.addEventListener('click', () => openPanel('github'));
+    outlookNavItem.addEventListener('click', () => openPanel('outlook'));
 
     // Close panel buttons
     document.querySelectorAll('.close-panel-btn').forEach(btn => {
@@ -239,6 +270,9 @@ function setupEventListeners() {
     driveReauthBtn.addEventListener('click', initiateDriveAuth);
     sheetsReauthBtn.addEventListener('click', initiateSheetsAuth);
     githubReauthBtn.addEventListener('click', initiateGithubAuth);
+    outlookAuthBtn.addEventListener('click', initiateOutlookAuth);
+    outlookDisconnectBtn.addEventListener('click', disconnectOutlook);
+    outlookReauthBtn.addEventListener('click', initiateOutlookAuth);
 
     // Quick action buttons (all panels)
     document.querySelectorAll('.quick-action-btn').forEach(btn => {
@@ -267,8 +301,8 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, github: githubPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, github: githubNavItem };
+    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, github: githubPanel, outlook: outlookPanel };
+    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, github: githubNavItem, outlook: outlookNavItem };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -276,8 +310,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, githubPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, githubNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, githubPanel, outlookPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, githubNavItem, outlookNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -306,7 +340,8 @@ async function loadCapabilities() {
             gchat: { label: 'Google Chat', dot: 'gchat', categories: GCHAT_CATEGORIES },
             drive: { label: 'Google Drive', dot: 'drive', categories: DRIVE_CATEGORIES },
             sheets: { label: 'Google Sheets', dot: 'sheets', categories: SHEETS_CATEGORIES },
-            github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES }
+            github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES },
+            outlook: { label: 'Outlook', dot: 'outlook', categories: OUTLOOK_CATEGORIES }
         };
 
         for (const svc of services) {
@@ -373,6 +408,7 @@ async function checkAllStatuses() {
     checkDriveStatus();
     checkSheetsStatus();
     checkGitHubStatus();
+    checkOutlookStatus();
 
     setInterval(() => {
         checkGmailStatus();
@@ -381,6 +417,7 @@ async function checkAllStatuses() {
         checkDriveStatus();
         checkSheetsStatus();
         checkGitHubStatus();
+        checkOutlookStatus();
     }, 5000);
 }
 
@@ -864,6 +901,98 @@ async function disconnectGitHub() {
         checkGitHubStatus();
     } catch (error) {
         console.error('GitHub disconnect error:', error);
+    }
+}
+
+// Outlook status
+async function checkOutlookStatus() {
+    try {
+        const response = await fetch('/api/outlook/status');
+        const data = await response.json();
+        updateOutlookStatus(data);
+    } catch (error) {
+        updateOutlookStatus({ authenticated: false });
+    }
+}
+
+function updateOutlookStatus(data) {
+    const statusDot = outlookStatus.querySelector('.status-dot');
+    isOutlookConnected = data.authenticated;
+    const emailText = data.email ? `Connected as ${data.email}. 18 tools ready.` : '18 tools ready.';
+    document.getElementById('outlookUserEmailDisplay').textContent = emailText;
+
+    if (!data.oauthConfigured && outlookAuthNote) {
+        outlookAuthNote.textContent = 'Outlook OAuth is not configured. Add OUTLOOK_CLIENT_ID and OUTLOOK_CLIENT_SECRET to .env.';
+    } else if (outlookAuthNote) {
+        outlookAuthNote.textContent = 'Uses secure Microsoft OAuth. You can reauthenticate later to switch accounts.';
+    }
+
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        outlookAuthSection.style.display = 'none';
+        outlookConnectedSection.style.display = 'block';
+        outlookBadge.style.display = 'inline-flex';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        outlookAuthSection.style.display = 'block';
+        outlookConnectedSection.style.display = 'none';
+        outlookBadge.style.display = 'none';
+    }
+}
+
+async function initiateOutlookAuth() {
+    try {
+        outlookAuthBtn.disabled = true;
+        outlookAuthBtn.innerHTML = '<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...';
+
+        const response = await fetch('/api/outlook/auth');
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            throw new Error(`Unexpected response (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Outlook auth failed with status ${response.status}`);
+        }
+
+        if (data.authUrl) {
+            const popup = window.open(data.authUrl, 'Outlook Authentication', 'width=600,height=700,left=200,top=100');
+            const checkClosed = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(checkClosed);
+                    checkOutlookStatus();
+                    resetOutlookAuthButton();
+                }
+            }, 500);
+        } else if (data.setupRequired) {
+            alert('Please configure OUTLOOK_CLIENT_ID and OUTLOOK_CLIENT_SECRET in .env first.');
+            resetOutlookAuthButton();
+        } else {
+            alert(data.error || 'Failed to start Outlook authentication');
+            resetOutlookAuthButton();
+        }
+    } catch (error) {
+        console.error('Outlook OAuth error:', error);
+        alert(error.message || 'Failed to initiate Outlook authentication');
+        resetOutlookAuthButton();
+    }
+}
+
+function resetOutlookAuthButton() {
+    outlookAuthBtn.disabled = false;
+    outlookAuthBtn.innerHTML = '<svg viewBox="0 0 21 21" width="20" height="20"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg> Sign in with Microsoft';
+}
+
+async function disconnectOutlook() {
+    try {
+        await fetch('/api/outlook/disconnect', { method: 'POST' });
+        checkOutlookStatus();
+    } catch (error) {
+        console.error('Outlook disconnect error:', error);
     }
 }
 

@@ -11,6 +11,7 @@
     --google-blue: #4285f4;
     --google-green: #34a853;
     --google-yellow: #fbbc05;
+    --outlook-blue: #0078D4;
     --text-primary: #ffffff;
     --text-secondary: #a1a1aa;
     --text-muted: #71717a;
@@ -179,6 +180,10 @@ body {
 
 .nav-item-icon.sheets-icon {
     background: rgba(52, 168, 83, 0.2);
+}
+
+.nav-item-icon.outlook-icon {
+    background: rgba(0, 120, 212, 0.15);
 }
 
 .nav-item-status {
@@ -552,6 +557,12 @@ body {
     color: #16a34a;
 }
 
+.outlook-badge {
+    background: rgba(0, 120, 212, 0.15);
+    border: 1px solid rgba(0, 120, 212, 0.3);
+    color: #0078D4;
+}
+
 .badge-dot {
     width: 6px;
     height: 6px;
@@ -596,6 +607,14 @@ body {
 
 .github-auth-btn:hover {
     box-shadow: 0 15px 35px rgba(35, 134, 54, 0.4) !important;
+}
+
+.outlook-auth-btn {
+    background: linear-gradient(135deg, #0078D4, #005a9e) !important;
+}
+
+.outlook-auth-btn:hover {
+    box-shadow: 0 15px 35px rgba(0, 120, 212, 0.4) !important;
 }
 
 /* Disconnect Button */
