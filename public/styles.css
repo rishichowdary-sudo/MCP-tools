@@ -747,6 +747,32 @@ body {
 .email-card:hover {
     border-color: var(--accent-primary);
     transform: translateX(4px);
+    cursor: pointer;
+}
+
+.email-card.expanded {
+    background: var(--bg-tertiary);
+    border-color: var(--accent-primary);
+    transform: none;
+}
+
+.email-details {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .email-card-header {
