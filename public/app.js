@@ -1281,6 +1281,7 @@ function formatToolResults(results) {
                         </div>
                         ${r.description ? `<div class="email-card-snippet">${escapeHtml(r.description.slice(0, 100))}</div>` : ''}
                         <div class="email-card-from" style="margin-top:0.25rem">&#11088; ${r.stars || 0} &middot; &#128204; ${r.forks || 0}${r.private ? ' &middot; Private' : ''}</div>
+                        ${r.url ? `<div class="email-card-snippet" style="margin-top:0.5rem"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:none;font-weight:600">Go to Repo &rarr;</a></div>` : ''}
                     </div>
                 `).join('');
                 // GitHub issues
