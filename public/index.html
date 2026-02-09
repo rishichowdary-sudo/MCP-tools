@@ -128,6 +128,19 @@
                         </span>
                     </button>
 
+                    <!-- Timer Tasks Option -->
+                    <button class="nav-item" id="timerNavItem" data-service="timer">
+                        <div class="nav-item-icon timer-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#f59e0b" d="M15 1H9v2h6V1zm-3 4C7.58 5 4 8.58 4 13s3.58 8 8 8 8-3.58 8-8-3.58-8-8-8zm3.65 11.35-4.15-2.5V8h1.5v4.98l3.42 2.06-.77 1.31z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Timer Tasks</span>
+                        <span class="nav-item-status" id="timerStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
                     <!-- Capabilities Option -->
                     <button class="nav-item" id="capabilitiesNavItem">
                         <div class="nav-item-icon capabilities-icon">
@@ -718,6 +731,53 @@
                 </div>
             </div>
 
+            <!-- Timer Tasks Panel -->
+            <div class="service-panel" id="timerPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#f59e0b" d="M15 1H9v2h6V1zm-3 4C7.58 5 4 8.58 4 13s3.58 8 8 8 8-3.58 8-8-3.58-8-8-8zm3.65 11.35-4.15-2.5V8h1.5v4.98l3.42 2.06-.77 1.31z"/>
+                        </svg>
+                        <h2>Timer Tasks</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="timer">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="connected-section" style="display: block;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#f59e0b,#d97706)">&#9201;</div>
+                                <div>
+                                    <h3>Automate Timed Instructions</h3>
+                                    <p id="timerTaskStatusText">No tasks configured yet.</p>
+                                </div>
+                            </div>
+
+                            <div class="token-input-group">
+                                <input class="token-input" id="timerTaskNameInput" type="text" placeholder="Task name (e.g. Daily timesheet guard)">
+                                <input class="token-input" id="timerTaskTimeInput" type="time" value="17:00">
+                                <textarea class="token-input timer-task-textarea" id="timerTaskInstructionInput" rows="4" placeholder="Instruction to run at that time (e.g., Check today's timesheet row, and if empty, fill it using last 3 days context)."></textarea>
+                                <label class="timer-task-checkbox">
+                                    <input id="timerTaskEnabledInput" type="checkbox" checked>
+                                    Enable immediately
+                                </label>
+                            </div>
+
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" id="timerTaskSaveBtn">
+                                    &#128190; Save Timer Task
+                                </button>
+                                <button class="quick-action-btn" id="timerTaskRefreshBtn">
+                                    &#128260; Refresh Tasks
+                                </button>
+                            </div>
+
+                            <div id="timerTaskList" class="timer-task-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Chat Area -->
             <div class="chat-area" id="chatArea">
                 <div class="chat-header">
@@ -750,6 +810,10 @@
                         <span class="service-badge outlook-badge" id="outlookBadge" style="display: none;">
                             <span class="badge-dot"></span>
                             Outlook
+                        </span>
+                        <span class="service-badge timer-badge" id="timerBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Timer
                         </span>
                         <span class="turns-badge" id="turnsBadge" style="display: none;">
                             Steps: <span id="turnsCount">0</span>/15
