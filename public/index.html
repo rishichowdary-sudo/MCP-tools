@@ -115,6 +115,19 @@
                         </span>
                     </button>
 
+                    <!-- Outlook Option -->
+                    <button class="nav-item" id="outlookNavItem" data-service="outlook">
+                        <div class="nav-item-icon outlook-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#0078D4" d="M24 7.387v10.478c0 .23-.08.424-.238.582a.793.793 0 01-.582.238h-9.462V7.07l1.2.72 8.844-5.073c.158.05.29.147.396.293.106.147.159.312.159.494v.17L24 7.387zM13.718 7.07v12.078H1.077a.83.83 0 01-.618-.259A.861.861 0 010 18.25V4.387c0-.11.037-.18.11-.213l6.6-3.83L13.717 7.07z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Outlook</span>
+                        <span class="nav-item-status" id="outlookStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
                     <!-- Capabilities Option -->
                     <button class="nav-item" id="capabilitiesNavItem">
                         <div class="nav-item-icon capabilities-icon">
@@ -157,11 +170,15 @@
                         <div class="nav-item-icon"><span style="font-size:16px">&#11088;</span></div>
                         <span class="nav-item-text">Starred</span>
                     </button>
+                    <button class="nav-item quick-nav" data-prompt="Show my latest 10 Outlook emails">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128233;</span></div>
+                        <span class="nav-item-text">Outlook Inbox</span>
+                    </button>
                 </div>
             </nav>
 
             <div class="sidebar-footer">
-                <p>Powered by OpenAI + Google + GitHub APIs</p>
+                <p>Powered by OpenAI + Google + GitHub + Microsoft APIs</p>
             </div>
         </aside>
 
@@ -181,6 +198,7 @@
                         <button class="service-tab" data-filter="sheets">Sheets (10)</button>
                         <button class="service-tab" data-filter="github">GitHub (20)</button>
                         <button class="service-tab" data-filter="calendar">Calendar (19)</button>
+                        <button class="service-tab" data-filter="outlook">Outlook (18)</button>
                     </div>
                     <div class="capability-group">
                         <p class="capability-description"><span id="toolStatusText">Not connected</span></p>
@@ -631,6 +649,75 @@
                 </div>
             </div>
 
+            <!-- Outlook Panel -->
+            <div class="service-panel" id="outlookPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#0078D4" d="M24 7.387v10.478c0 .23-.08.424-.238.582a.793.793 0 01-.582.238h-9.462V7.07l1.2.72 8.844-5.073c.158.05.29.147.396.293.106.147.159.312.159.494v.17L24 7.387zM13.718 7.07v12.078H1.077a.83.83 0 01-.618-.259A.861.861 0 010 18.25V4.387c0-.11.037-.18.11-.213l6.6-3.83L13.717 7.07z"/>
+                        </svg>
+                        <h2>Outlook</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="outlook">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="auth-section" id="outlookAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#0078D4" d="M24 7.387v10.478c0 .23-.08.424-.238.582a.793.793 0 01-.582.238h-9.462V7.07l1.2.72 8.844-5.073c.158.05.29.147.396.293.106.147.159.312.159.494v.17L24 7.387zM13.718 7.07v12.078H1.077a.83.83 0 01-.618-.259A.861.861 0 010 18.25V4.387c0-.11.037-.18.11-.213l6.6-3.83L13.717 7.07z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Outlook</h3>
+                            <p>Sign in with Microsoft to unlock 18 Outlook email tools:</p>
+                            <ul class="feature-list">
+                                <li>Send, reply, forward emails</li>
+                                <li>Search, read, and organize</li>
+                                <li>Flag, folders, draft management</li>
+                                <li>Cross-service workflows with Gmail & GitHub</li>
+                            </ul>
+                            <button class="auth-btn outlook-auth-btn" id="outlookAuthBtn">
+                                <svg viewBox="0 0 21 21" width="20" height="20">
+                                    <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+                                    <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+                                    <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+                                    <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+                                </svg>
+                                Sign in with Microsoft
+                            </button>
+                            <p class="auth-note" id="outlookAuthNote">Configure <code>OUTLOOK_CLIENT_ID</code> and <code>OUTLOOK_CLIENT_SECRET</code> in <code>.env</code>.</p>
+                        </div>
+                    </div>
+                    <div class="connected-section" id="outlookConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#0078D4,#005a9e)">&#10003;</div>
+                                <div>
+                                    <h3>Outlook Connected</h3>
+                                    <p id="outlookUserEmailDisplay">18 tools ready.</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="Show my latest 10 Outlook emails">
+                                    &#128233; Inbox Emails
+                                </button>
+                                <button class="quick-action-btn" data-prompt="Search Outlook for emails with attachments from this week">
+                                    &#128206; Recent Attachments
+                                </button>
+                                <button class="quick-action-btn" data-prompt="List my Outlook folders">
+                                    &#128193; Mail Folders
+                                </button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="outlook">
+                                Start Chatting
+                            </button>
+                            <button class="disconnect-btn reauth-btn" id="outlookReauthBtn">Reauthenticate Outlook (Switch Account)</button>
+                            <button class="disconnect-btn" id="outlookDisconnectBtn">Disconnect Outlook</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Chat Area -->
             <div class="chat-area" id="chatArea">
                 <div class="chat-header">
@@ -659,6 +746,10 @@
                         <span class="service-badge sheets-badge" id="sheetsBadge" style="display: none;">
                             <span class="badge-dot"></span>
                             Sheets
+                        </span>
+                        <span class="service-badge outlook-badge" id="outlookBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Outlook
                         </span>
                         <span class="turns-badge" id="turnsBadge" style="display: none;">
                             Steps: <span id="turnsCount">0</span>/15

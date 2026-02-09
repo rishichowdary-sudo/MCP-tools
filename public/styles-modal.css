@@ -136,6 +136,7 @@
 .service-section-header .service-dot.drive { background: #0f9d58; }
 .service-section-header .service-dot.sheets { background: #16a34a; }
 .service-section-header .service-dot.github { background: #238636; }
+.service-section-header .service-dot.outlook { background: #0078D4; }
 
 .capability-group h3 {
     margin-bottom: 0.25rem;

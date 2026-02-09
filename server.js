@@ -57,8 +57,23 @@ const SHEETS_MCP_ARGS = process.env.SHEETS_MCP_ARGS
 const SHEETS_MCP_CREDS_DIR = process.env.SHEETS_MCP_CREDS_DIR ||
     path.join(process.env.USERPROFILE || process.env.HOME || '.', '.gmail-mcp', 'sheets-mcp');
 
+// Microsoft Outlook OAuth2
+const OUTLOOK_SCOPES = [
+    'openid',
+    'profile',
+    'offline_access',
+    'User.Read',
+    'Mail.Read',
+    'Mail.ReadWrite',
+    'Mail.Send'
+];
+const OUTLOOK_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const OUTLOOK_AUTHORITY = 'https://login.microsoftonline.com/common';
+const OUTLOOK_GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+
 const TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'token.json');
 const GITHUB_TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'github-token.json');
+const OUTLOOK_TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'outlook-token.json');
 
 let oauth2Client = null;
 let gmailClient = null;
@@ -75,6 +90,14 @@ let sheetsMcpTools = [];
 let sheetsMcpError = null;
 const githubOAuthStateStore = new Map();
 let cachedPrimaryEmail = null;
+
+// Outlook state
+let outlookAccessToken = null;
+let outlookRefreshToken = null;
+let outlookTokenExpiry = null;
+let outlookUserEmail = null;
+let outlookAuthMethod = 'oauth';
+const outlookOAuthStateStore = new Map();
 
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 const DISALLOWED_ATTENDEE_DOMAINS = new Set(['example.com', 'test.com', 'domain.com', 'email.com']);
@@ -229,6 +252,33 @@ function clearGitHubAuth() {
     githubUsername = null;
     githubAuthMethod = null;
     if (fs.existsSync(GITHUB_TOKEN_PATH)) fs.unlinkSync(GITHUB_TOKEN_PATH);
+}
+
+// Outlook OAuth helpers
+function isOutlookOAuthConfigured() {
+    const clientId = process.env.OUTLOOK_CLIENT_ID;
+    const clientSecret = process.env.OUTLOOK_CLIENT_SECRET;
+    if (!clientId || !clientSecret) return false;
+    if (clientId.includes('your_outlook_client_id_here')) return false;
+    return true;
+}
+
+function getOutlookRedirectUri() {
+    return process.env.OUTLOOK_REDIRECT_URI || `http://localhost:${PORT}/outlook/callback`;
+}
+
+function saveOutlookTokenData(data) {
+    const tokenDir = path.dirname(OUTLOOK_TOKEN_PATH);
+    if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+    fs.writeFileSync(OUTLOOK_TOKEN_PATH, JSON.stringify(data, null, 2));
+}
+
+function clearOutlookAuth() {
+    outlookAccessToken = null;
+    outlookRefreshToken = null;
+    outlookTokenExpiry = null;
+    outlookUserEmail = null;
+    if (fs.existsSync(OUTLOOK_TOKEN_PATH)) fs.unlinkSync(OUTLOOK_TOKEN_PATH);
 }
 
 function getGoogleOAuthCredentials() {
@@ -401,6 +451,27 @@ function consumeGithubOAuthState(state) {
     return (Date.now() - ts) <= GITHUB_OAUTH_STATE_TTL_MS;
 }
 
+function pruneOutlookOAuthStates() {
+    const now = Date.now();
+    for (const [s, ts] of outlookOAuthStateStore) {
+        if (now - ts > OUTLOOK_OAUTH_STATE_TTL_MS) outlookOAuthStateStore.delete(s);
+    }
+}
+
+function issueOutlookOAuthState() {
+    pruneOutlookOAuthStates();
+    const state = crypto.randomBytes(24).toString('hex');
+    outlookOAuthStateStore.set(state, Date.now());
+    return state;
+}
+
+function consumeOutlookOAuthState(state) {
+    if (!state || !outlookOAuthStateStore.has(state)) return false;
+    const ts = outlookOAuthStateStore.get(state);
+    outlookOAuthStateStore.delete(state);
+    return (Date.now() - ts) <= OUTLOOK_OAUTH_STATE_TTL_MS;
+}
+
 // Initialize OAuth client from environment variables
 function initOAuthClient() {
     const clientId = process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
@@ -473,6 +544,69 @@ function initGitHubClient() {
         console.error('Error initializing GitHub client:', error);
     }
     return false;
+}
+
+// Initialize Outlook client from saved token
+async function refreshOutlookToken() {
+    if (!outlookRefreshToken || !isOutlookOAuthConfigured()) return false;
+    try {
+        const params = new URLSearchParams({
+            client_id: process.env.OUTLOOK_CLIENT_ID,
+            client_secret: process.env.OUTLOOK_CLIENT_SECRET,
+            refresh_token: outlookRefreshToken,
+            grant_type: 'refresh_token',
+            scope: OUTLOOK_SCOPES.join(' ')
+        });
+        const resp = await fetch(`${OUTLOOK_AUTHORITY}/oauth2/v2.0/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString()
+        });
+        if (!resp.ok) {
+            console.error('Outlook token refresh failed:', resp.status);
+            return false;
+        }
+        const tokenData = await resp.json();
+        outlookAccessToken = tokenData.access_token;
+        if (tokenData.refresh_token) outlookRefreshToken = tokenData.refresh_token;
+        outlookTokenExpiry = Date.now() + (tokenData.expires_in * 1000) - 60000;
+        saveOutlookTokenData({
+            access_token: outlookAccessToken,
+            refresh_token: outlookRefreshToken,
+            expiry: outlookTokenExpiry,
+            email: outlookUserEmail,
+            connectedAt: new Date().toISOString()
+        });
+        return true;
+    } catch (error) {
+        console.error('Outlook token refresh error:', error.message);
+        return false;
+    }
+}
+
+async function initOutlookClient() {
+    try {
+        if (!fs.existsSync(OUTLOOK_TOKEN_PATH)) return false;
+        const data = JSON.parse(fs.readFileSync(OUTLOOK_TOKEN_PATH, 'utf8'));
+        if (!data.access_token || !data.refresh_token) return false;
+        outlookAccessToken = data.access_token;
+        outlookRefreshToken = data.refresh_token;
+        outlookTokenExpiry = data.expiry || 0;
+        outlookUserEmail = data.email || null;
+        outlookAuthMethod = 'oauth';
+        if (Date.now() >= outlookTokenExpiry) {
+            const refreshed = await refreshOutlookToken();
+            if (!refreshed) {
+                clearOutlookAuth();
+                return false;
+            }
+        }
+        console.log(`Outlook client initialized (${outlookUserEmail || 'unknown user'})`);
+        return true;
+    } catch (error) {
+        console.error('Error initializing Outlook client:', error);
+        return false;
+    }
 }
 
 // ============================================================
@@ -2824,6 +2958,294 @@ async function listGists({ perPage = 20 }) {
 }
 
 // ============================================================
+//  OUTLOOK (MICROSOFT GRAPH) TOOL IMPLEMENTATIONS
+// ============================================================
+
+async function outlookGraphFetch(endpoint, options = {}) {
+    if (!outlookAccessToken) throw new Error('Outlook not connected. Please authenticate first.');
+    if (outlookTokenExpiry && Date.now() >= outlookTokenExpiry) {
+        const refreshed = await refreshOutlookToken();
+        if (!refreshed) {
+            clearOutlookAuth();
+            throw new Error('Outlook session expired. Please reconnect.');
+        }
+    }
+    const url = endpoint.startsWith('http') ? endpoint : `${OUTLOOK_GRAPH_BASE}${endpoint}`;
+    const resp = await fetch(url, {
+        ...options,
+        headers: {
+            'Authorization': `Bearer ${outlookAccessToken}`,
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+    if (resp.status === 204) return null;
+    if (!resp.ok) {
+        const errorBody = await resp.text();
+        let parsed;
+        try { parsed = JSON.parse(errorBody); } catch { parsed = null; }
+        const msg = parsed?.error?.message || errorBody.slice(0, 200);
+        const err = new Error(`Microsoft Graph API error (${resp.status}): ${msg}`);
+        err.status = resp.status;
+        throw err;
+    }
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) return await resp.json();
+    return await resp.text();
+}
+
+// 1. Send Email
+async function outlookSendEmail({ to, subject, body, cc, bcc }) {
+    const toRecipients = (Array.isArray(to) ? to : [to]).map(addr => ({
+        emailAddress: { address: addr }
+    }));
+    const message = {
+        subject: subject || '',
+        body: { contentType: 'HTML', content: body || '' },
+        toRecipients
+    };
+    if (cc) {
+        message.ccRecipients = (Array.isArray(cc) ? cc : [cc]).map(addr => ({
+            emailAddress: { address: addr }
+        }));
+    }
+    if (bcc) {
+        message.bccRecipients = (Array.isArray(bcc) ? bcc : [bcc]).map(addr => ({
+            emailAddress: { address: addr }
+        }));
+    }
+    await outlookGraphFetch('/me/sendMail', {
+        method: 'POST',
+        body: JSON.stringify({ message, saveToSentItems: true })
+    });
+    return { success: true, message: `Email sent to ${Array.isArray(to) ? to.join(', ') : to}` };
+}
+
+// 2. List Emails
+async function outlookListEmails({ maxResults = 20, folder = 'inbox' }) {
+    const data = await outlookGraphFetch(
+        `/me/mailFolders/${folder}/messages?$top=${maxResults}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments&$orderby=receivedDateTime desc`
+    );
+    const emails = (data.value || []).map(m => ({
+        id: m.id,
+        subject: m.subject || '(no subject)',
+        from: m.from?.emailAddress?.address || 'unknown',
+        fromName: m.from?.emailAddress?.name || '',
+        date: m.receivedDateTime,
+        isRead: m.isRead,
+        snippet: m.bodyPreview,
+        hasAttachments: m.hasAttachments
+    }));
+    return { results: emails, message: `Listed ${emails.length} emails from ${folder}` };
+}
+
+// 3. Read Email
+async function outlookReadEmail({ messageId }) {
+    const m = await outlookGraphFetch(
+        `/me/messages/${messageId}?$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,bodyPreview,isRead,hasAttachments,conversationId,flag,importance`
+    );
+    return {
+        id: m.id,
+        subject: m.subject,
+        from: m.from?.emailAddress?.address,
+        fromName: m.from?.emailAddress?.name,
+        to: (m.toRecipients || []).map(r => r.emailAddress?.address),
+        cc: (m.ccRecipients || []).map(r => r.emailAddress?.address),
+        date: m.receivedDateTime,
+        body: m.body?.content || '',
+        snippet: m.bodyPreview,
+        isRead: m.isRead,
+        hasAttachments: m.hasAttachments,
+        conversationId: m.conversationId,
+        importance: m.importance,
+        flag: m.flag?.flagStatus
+    };
+}
+
+// 4. Search Emails
+async function outlookSearchEmails({ query, maxResults = 20 }) {
+    const data = await outlookGraphFetch(
+        `/me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments`
+    );
+    const emails = (data.value || []).map(m => ({
+        id: m.id,
+        subject: m.subject || '(no subject)',
+        from: m.from?.emailAddress?.address || 'unknown',
+        date: m.receivedDateTime,
+        isRead: m.isRead,
+        snippet: m.bodyPreview,
+        hasAttachments: m.hasAttachments
+    }));
+    return { results: emails, totalEstimate: emails.length, message: `Found ${emails.length} emails` };
+}
+
+// 5. Reply to Email
+async function outlookReplyToEmail({ messageId, body }) {
+    await outlookGraphFetch(`/me/messages/${messageId}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({ comment: body || '' })
+    });
+    return { success: true, message: `Reply sent for message ${messageId}` };
+}
+
+// 6. Forward Email
+async function outlookForwardEmail({ messageId, to, comment }) {
+    const toRecipients = (Array.isArray(to) ? to : [to]).map(addr => ({
+        emailAddress: { address: addr }
+    }));
+    await outlookGraphFetch(`/me/messages/${messageId}/forward`, {
+        method: 'POST',
+        body: JSON.stringify({ comment: comment || '', toRecipients })
+    });
+    return { success: true, message: `Email forwarded to ${Array.isArray(to) ? to.join(', ') : to}` };
+}
+
+// 7. Delete Email
+async function outlookDeleteEmail({ messageId }) {
+    await outlookGraphFetch(`/me/messages/${messageId}`, { method: 'DELETE' });
+    return { success: true, message: `Email ${messageId} deleted` };
+}
+
+// 8. Move Email
+async function outlookMoveEmail({ messageId, destinationFolderId }) {
+    const result = await outlookGraphFetch(`/me/messages/${messageId}/move`, {
+        method: 'POST',
+        body: JSON.stringify({ destinationId: destinationFolderId })
+    });
+    return { success: true, newId: result?.id, message: `Email moved to folder ${destinationFolderId}` };
+}
+
+// 9. Mark as Read
+async function outlookMarkAsRead({ messageId }) {
+    await outlookGraphFetch(`/me/messages/${messageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isRead: true })
+    });
+    return { success: true, message: `Email ${messageId} marked as read` };
+}
+
+// 10. Mark as Unread
+async function outlookMarkAsUnread({ messageId }) {
+    await outlookGraphFetch(`/me/messages/${messageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isRead: false })
+    });
+    return { success: true, message: `Email ${messageId} marked as unread` };
+}
+
+// 11. List Folders
+async function outlookListFolders() {
+    const data = await outlookGraphFetch(
+        '/me/mailFolders?$top=50&$select=id,displayName,totalItemCount,unreadItemCount'
+    );
+    const folders = (data.value || []).map(f => ({
+        id: f.id,
+        name: f.displayName,
+        totalCount: f.totalItemCount,
+        unreadCount: f.unreadItemCount
+    }));
+    return { folders, message: `Found ${folders.length} mail folders` };
+}
+
+// 12. Create Folder
+async function outlookCreateFolder({ name, parentFolderId }) {
+    const reqBody = { displayName: name };
+    const endpoint = parentFolderId
+        ? `/me/mailFolders/${parentFolderId}/childFolders`
+        : '/me/mailFolders';
+    const result = await outlookGraphFetch(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(reqBody)
+    });
+    return { success: true, folderId: result.id, name: result.displayName, message: `Folder "${name}" created` };
+}
+
+// 13. Get Attachments
+async function outlookGetAttachments({ messageId }) {
+    const data = await outlookGraphFetch(
+        `/me/messages/${messageId}/attachments?$select=id,name,contentType,size,isInline`
+    );
+    const attachments = (data.value || []).map(a => ({
+        id: a.id,
+        name: a.name,
+        contentType: a.contentType,
+        size: a.size,
+        isInline: a.isInline
+    }));
+    return { attachments, message: `Found ${attachments.length} attachment(s)` };
+}
+
+// 14. Create Draft
+async function outlookCreateDraft({ to, subject, body, cc, bcc }) {
+    const message = {
+        subject: subject || '',
+        body: { contentType: 'HTML', content: body || '' }
+    };
+    if (to) {
+        message.toRecipients = (Array.isArray(to) ? to : [to]).map(addr => ({
+            emailAddress: { address: addr }
+        }));
+    }
+    if (cc) {
+        message.ccRecipients = (Array.isArray(cc) ? cc : [cc]).map(addr => ({
+            emailAddress: { address: addr }
+        }));
+    }
+    if (bcc) {
+        message.bccRecipients = (Array.isArray(bcc) ? bcc : [bcc]).map(addr => ({
+            emailAddress: { address: addr }
+        }));
+    }
+    const result = await outlookGraphFetch('/me/messages', {
+        method: 'POST',
+        body: JSON.stringify(message)
+    });
+    return { success: true, draftId: result.id, message: `Draft created: ${subject || '(no subject)'}` };
+}
+
+// 15. Send Draft
+async function outlookSendDraft({ messageId }) {
+    await outlookGraphFetch(`/me/messages/${messageId}/send`, { method: 'POST' });
+    return { success: true, message: `Draft ${messageId} sent` };
+}
+
+// 16. List Drafts
+async function outlookListDrafts({ maxResults = 20 }) {
+    const data = await outlookGraphFetch(
+        `/me/mailFolders/drafts/messages?$top=${maxResults}&$select=id,subject,toRecipients,createdDateTime,bodyPreview&$orderby=createdDateTime desc`
+    );
+    const drafts = (data.value || []).map(m => ({
+        id: m.id,
+        subject: m.subject || '(no subject)',
+        to: (m.toRecipients || []).map(r => r.emailAddress?.address),
+        date: m.createdDateTime,
+        snippet: m.bodyPreview
+    }));
+    return { results: drafts, message: `Found ${drafts.length} draft(s)` };
+}
+
+// 17. Flag Email
+async function outlookFlagEmail({ messageId, flagStatus = 'flagged' }) {
+    await outlookGraphFetch(`/me/messages/${messageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ flag: { flagStatus } })
+    });
+    return { success: true, message: `Email ${messageId} flag set to ${flagStatus}` };
+}
+
+// 18. Get User Profile
+async function outlookGetUserProfile() {
+    const user = await outlookGraphFetch('/me?$select=displayName,mail,userPrincipalName,jobTitle,officeLocation');
+    return {
+        displayName: user.displayName,
+        email: user.mail || user.userPrincipalName,
+        jobTitle: user.jobTitle,
+        officeLocation: user.officeLocation,
+        message: `Outlook profile: ${user.displayName} (${user.mail || user.userPrincipalName})`
+    };
+}
+
+// ============================================================
 //  TOOL DEFINITIONS FOR OPENAI
 // ============================================================
 const gmailTools = [
@@ -3264,6 +3686,27 @@ const githubTools = [
     { type: "function", function: { name: "list_gists", description: "List your GitHub gists.", parameters: { type: "object", properties: { perPage: { type: "integer", description: "Results per page (default 20)" } } } } }
 ];
 
+const outlookTools = [
+    { type: "function", function: { name: "outlook_send_email", description: "Send an email via Outlook. Supports CC/BCC. Body can be plain text or HTML.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" }, subject: { type: "string", description: "Email subject line" }, body: { type: "string", description: "Email body (plain text or HTML)" }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } }, required: ["to", "subject", "body"] } } },
+    { type: "function", function: { name: "outlook_list_emails", description: "List recent emails from an Outlook folder (default: inbox).", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of emails to return (default 20)" }, folder: { type: "string", description: "Folder name: inbox, sentitems, drafts, deleteditems, junkemail (default: inbox)" } } } } },
+    { type: "function", function: { name: "outlook_read_email", description: "Read full content of an Outlook email by message ID.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Outlook message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_search_emails", description: "Search Outlook emails using Microsoft Search syntax (supports KQL: from:, subject:, hasAttachment:true, etc.).", parameters: { type: "object", properties: { query: { type: "string", description: "Search query (e.g., 'from:john subject:meeting')" }, maxResults: { type: "integer", description: "Number of results (default 20)" } }, required: ["query"] } } },
+    { type: "function", function: { name: "outlook_reply_to_email", description: "Reply to an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to reply to" }, body: { type: "string", description: "Reply body (HTML or text)" } }, required: ["messageId", "body"] } } },
+    { type: "function", function: { name: "outlook_forward_email", description: "Forward an Outlook email to new recipients.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to forward" }, to: { type: "array", items: { type: "string" }, description: "Forward recipient addresses" }, comment: { type: "string", description: "Comment to include" } }, required: ["messageId", "to"] } } },
+    { type: "function", function: { name: "outlook_delete_email", description: "Delete an Outlook email permanently.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to delete" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_move_email", description: "Move an Outlook email to a different folder.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to move" }, destinationFolderId: { type: "string", description: "Destination folder ID (use outlook_list_folders to find IDs)" } }, required: ["messageId", "destinationFolderId"] } } },
+    { type: "function", function: { name: "outlook_mark_as_read", description: "Mark an Outlook email as read.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_mark_as_unread", description: "Mark an Outlook email as unread.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_list_folders", description: "List all Outlook mail folders with item counts.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "outlook_create_folder", description: "Create a new Outlook mail folder.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder display name" }, parentFolderId: { type: "string", description: "Parent folder ID (omit for top-level)" } }, required: ["name"] } } },
+    { type: "function", function: { name: "outlook_get_attachments", description: "List attachments on an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_create_draft", description: "Create a draft email in Outlook.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient addresses" }, subject: { type: "string", description: "Subject line" }, body: { type: "string", description: "Email body (HTML or text)" }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } } } } },
+    { type: "function", function: { name: "outlook_send_draft", description: "Send an existing Outlook draft.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Draft message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_list_drafts", description: "List Outlook draft emails.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of drafts to return (default 20)" } } } } },
+    { type: "function", function: { name: "outlook_flag_email", description: "Set or clear a flag on an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" }, flagStatus: { type: "string", description: "Flag status: flagged, complete, notFlagged (default: flagged)" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_get_user_profile", description: "Get the connected Outlook/Microsoft user's profile information.", parameters: { type: "object", properties: {} } } }
+];
+
 // ============================================================
 //  TOOL EXECUTION ROUTERS
 // ============================================================
@@ -3275,6 +3718,7 @@ const gchatToolNames = new Set(gchatTools.map(t => t.function.name));
 const driveToolNames = new Set(driveTools.map(t => t.function.name));
 const sheetsToolNames = new Set(sheetsTools.map(t => t.function.name));
 const githubToolNames = new Set(githubTools.map(t => t.function.name));
+const outlookToolNames = new Set(outlookTools.map(t => t.function.name));
 
 async function executeGmailTool(toolName, args) {
     if (!gmailClient) throw new Error('Gmail not connected. Please authenticate first.');
@@ -3417,6 +3861,34 @@ async function executeGitHubTool(toolName, args) {
     return await fn(args);
 }
 
+async function executeOutlookTool(toolName, args) {
+    if (!outlookAccessToken) throw new Error('Outlook not connected. Please authenticate first.');
+    const toolMap = {
+        outlook_send_email: outlookSendEmail, outlook_list_emails: outlookListEmails,
+        outlook_read_email: outlookReadEmail, outlook_search_emails: outlookSearchEmails,
+        outlook_reply_to_email: outlookReplyToEmail, outlook_forward_email: outlookForwardEmail,
+        outlook_delete_email: outlookDeleteEmail, outlook_move_email: outlookMoveEmail,
+        outlook_mark_as_read: outlookMarkAsRead, outlook_mark_as_unread: outlookMarkAsUnread,
+        outlook_list_folders: outlookListFolders, outlook_create_folder: outlookCreateFolder,
+        outlook_get_attachments: outlookGetAttachments, outlook_create_draft: outlookCreateDraft,
+        outlook_send_draft: outlookSendDraft, outlook_list_drafts: outlookListDrafts,
+        outlook_flag_email: outlookFlagEmail, outlook_get_user_profile: outlookGetUserProfile
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown Outlook tool: ${toolName}`);
+    try {
+        return await fn(args);
+    } catch (error) {
+        const status = error?.status || error?.code;
+        const message = String(error?.message || '');
+        if (status === 401 || /unauthorized|invalid.*token|expired/i.test(message)) {
+            clearOutlookAuth();
+            throw new Error('Outlook authentication expired. Please reconnect Outlook.');
+        }
+        throw error;
+    }
+}
+
 // Master dispatcher
 async function executeTool(toolName, args) {
     console.log(`[Tool] ${toolName}`, JSON.stringify(args).slice(0, 200));
@@ -3427,6 +3899,7 @@ async function executeTool(toolName, args) {
     if (sheetsToolNames.has(toolName)) return await executeSheetsTool(toolName, args);
     if (toolName.startsWith(SHEETS_MCP_TOOL_PREFIX)) return await executeSheetsMcpTool(toolName, args);
     if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, args);
+    if (outlookToolNames.has(toolName)) return await executeOutlookTool(toolName, args);
     throw new Error(`Unknown tool: ${toolName}`);
 }
 
@@ -3450,9 +3923,10 @@ app.get('/api/tools', (req, res) => {
         tools: [...sheetsTools, ...sheetsMcpTools].map(t => ({ function: t.function }))
     };
     const github = { service: 'github', connected: !!octokitClient, tools: githubTools.map(t => ({ function: t.function })) };
-    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length;
+    const outlook = { service: 'outlook', connected: !!outlookAccessToken, tools: outlookTools.map(t => ({ function: t.function })) };
+    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length;
     res.json({
-        services: [gmail, calendar, gchat, drive, sheets, github],
+        services: [gmail, calendar, gchat, drive, sheets, github, outlook],
         totalTools
     });
 });
@@ -3777,6 +4251,109 @@ app.get('/oauth2callback', async (req, res) => {
     }
 });
 
+// Outlook authentication status
+app.get('/api/outlook/status', (req, res) => {
+    res.json({
+        authenticated: !!outlookAccessToken,
+        oauthConfigured: isOutlookOAuthConfigured(),
+        email: outlookUserEmail,
+        authMethod: outlookAuthMethod,
+        toolCount: outlookTools.length
+    });
+});
+
+// Outlook OAuth connect
+app.get('/api/outlook/auth', (req, res) => {
+    if (!isOutlookOAuthConfigured()) {
+        return res.status(400).json({
+            error: 'Outlook OAuth credentials are not configured in .env file',
+            setupRequired: true
+        });
+    }
+    const state = issueOutlookOAuthState();
+    const params = new URLSearchParams({
+        client_id: process.env.OUTLOOK_CLIENT_ID,
+        response_type: 'code',
+        redirect_uri: getOutlookRedirectUri(),
+        scope: OUTLOOK_SCOPES.join(' '),
+        response_mode: 'query',
+        state
+    });
+    const authUrl = `${OUTLOOK_AUTHORITY}/oauth2/v2.0/authorize?${params.toString()}`;
+    res.json({ authUrl });
+});
+
+// Outlook disconnect
+app.post('/api/outlook/disconnect', (req, res) => {
+    clearOutlookAuth();
+    res.json({ success: true, message: 'Outlook disconnected' });
+});
+
+// Outlook OAuth callback
+app.get('/outlook/callback', async (req, res) => {
+    const { code, state, error, error_description: errorDescription } = req.query;
+
+    if (error) {
+        return res.status(400).send(`Outlook authentication failed: ${errorDescription || error}`);
+    }
+    if (!code || !state) {
+        return res.status(400).send('Missing Outlook authorization code or state');
+    }
+    if (!consumeOutlookOAuthState(state)) {
+        return res.status(400).send('Invalid or expired Outlook OAuth state. Please try connecting again.');
+    }
+    if (!isOutlookOAuthConfigured()) {
+        return res.status(400).send('Outlook OAuth credentials are not configured in server .env');
+    }
+
+    try {
+        const tokenParams = new URLSearchParams({
+            client_id: process.env.OUTLOOK_CLIENT_ID,
+            client_secret: process.env.OUTLOOK_CLIENT_SECRET,
+            code,
+            redirect_uri: getOutlookRedirectUri(),
+            grant_type: 'authorization_code',
+            scope: OUTLOOK_SCOPES.join(' ')
+        });
+        const tokenResponse = await fetch(`${OUTLOOK_AUTHORITY}/oauth2/v2.0/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: tokenParams.toString()
+        });
+        const tokenData = await tokenResponse.json();
+
+        if (!tokenResponse.ok || tokenData.error || !tokenData.access_token) {
+            const details = tokenData.error_description || tokenData.error || tokenResponse.statusText;
+            return res.status(401).send(`Outlook token exchange failed: ${details}`);
+        }
+
+        outlookAccessToken = tokenData.access_token;
+        outlookRefreshToken = tokenData.refresh_token || null;
+        outlookTokenExpiry = Date.now() + (tokenData.expires_in * 1000) - 60000;
+
+        // Fetch user profile
+        const userResp = await fetch(`${OUTLOOK_GRAPH_BASE}/me?$select=displayName,mail,userPrincipalName`, {
+            headers: { 'Authorization': `Bearer ${outlookAccessToken}` }
+        });
+        const userData = userResp.ok ? await userResp.json() : {};
+        outlookUserEmail = userData.mail || userData.userPrincipalName || null;
+
+        saveOutlookTokenData({
+            access_token: outlookAccessToken,
+            refresh_token: outlookRefreshToken,
+            expiry: outlookTokenExpiry,
+            email: outlookUserEmail,
+            displayName: userData.displayName || '',
+            connectedAt: new Date().toISOString()
+        });
+
+        res.send('<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Outlook Connected!</h1><p>Outlook tools are ready. You can close this window.</p></div></body></html>');
+    } catch (oauthError) {
+        console.error('Outlook OAuth callback error:', oauthError);
+        res.status(500).send(`Outlook authentication failed: ${oauthError.message}`);
+    }
+});
+
 // ============================================================
 //  AGENTIC CHAT ENDPOINT — Robust multi-turn tool loop
 // ============================================================
@@ -3802,6 +4379,7 @@ app.post('/api/chat', async (req, res) => {
         const sheetsMcpConnected = !!sheetsMcpClient && sheetsMcpTools.length > 0;
         if (sheetsMcpConnected) availableTools.push(...sheetsMcpTools);
         if (octokitClient) availableTools.push(...githubTools);
+        if (outlookAccessToken) availableTools.push(...outlookTools);
 
         const connectedServices = [];
         if (gmailClient) connectedServices.push('Gmail (25 tools)');
@@ -3811,10 +4389,11 @@ app.post('/api/chat', async (req, res) => {
         if (sheetsConnected) connectedServices.push(`Google Sheets (${sheetsTools.length} tools)`);
         if (sheetsMcpConnected) connectedServices.push(`Google Sheets MCP (${sheetsMcpTools.length} tools)`);
         if (octokitClient) connectedServices.push('GitHub (20 tools)');
+        if (outlookAccessToken) connectedServices.push(`Outlook (${outlookTools.length} tools)`);
         const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
         const dateContext = getCurrentDateContext();
 
-        const systemPrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, and GitHub. You can perform complex, multi-step operations across all connected services.
+        const systemPrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, GitHub, and Outlook. You can perform complex, multi-step operations across all connected services.
 
 Connected Services: ${statusText}
 Total Tools Available: ${availableTools.length}
@@ -3857,7 +4436,8 @@ Total Tools Available: ${availableTools.length}
 - Sheets timesheets row safety: Update the matching existing date row only; do not create a second date row unless the user explicitly asks to append.
 - Sheets MCP: MCP tools are prefixed with ${SHEETS_MCP_TOOL_PREFIX} and provide fallback read/update operations when needed.
 - Sheets write safety: Never claim a sheet update succeeded unless tool output indicates verification/read-back succeeded.
-- GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.`;
+- GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.
+- Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.`;
 
         const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
 - Current timestamp (UTC): ${dateContext.nowIso}
@@ -3980,11 +4560,14 @@ initGitHubClient();
 initSheetsMcpClient().catch(error => {
     console.error('Sheets MCP bootstrap failed:', error?.message || error);
 });
+initOutlookClient().catch(error => {
+    console.error('Outlook init failed:', error?.message || error);
+});
 
-const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length;
+const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length;
 app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
-    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, GitHub: ${githubTools.length})`);
+    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
     console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Chat: ${gchatClient && hasGchatScopes() ? 'Connected' : 'Not connected'}`);
@@ -3992,6 +4575,7 @@ app.listen(PORT, () => {
     console.log(`Google Sheets: ${sheetsClient && hasSheetsScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Sheets MCP: ${sheetsMcpClient ? `Connected (${sheetsMcpTools.length} tools)` : `Not connected${sheetsMcpError ? ` (${sheetsMcpError})` : ''}`}`);
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
+    console.log(`Outlook: ${outlookAccessToken ? `Connected (${outlookUserEmail || 'unknown'})` : 'Not connected'}`);
 });
 
 process.on('SIGINT', async () => {
