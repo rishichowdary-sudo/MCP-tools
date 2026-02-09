@@ -29,6 +29,7 @@ const gchatReauthBtn = document.getElementById('gchatReauthBtn');
 const driveReauthBtn = document.getElementById('driveReauthBtn');
 const sheetsReauthBtn = document.getElementById('sheetsReauthBtn');
 const githubReauthBtn = document.getElementById('githubReauthBtn');
+const docsReauthBtn = document.getElementById('docsReauthBtn');
 const githubAuthNote = document.getElementById('githubAuthNote');
 const authSection = document.getElementById('authSection');
 const connectedSection = document.getElementById('connectedSection');
@@ -328,6 +329,7 @@ function setupEventListeners() {
     gchatReauthBtn.addEventListener('click', initiateGchatAuth);
     driveReauthBtn.addEventListener('click', initiateDriveAuth);
     sheetsReauthBtn.addEventListener('click', initiateSheetsAuth);
+    docsReauthBtn.addEventListener('click', initiateGoogleAuth);
     githubReauthBtn.addEventListener('click', initiateGithubAuth);
     teamsAuthBtn.addEventListener('click', initiateTeamsAuth);
     teamsDisconnectBtn.addEventListener('click', disconnectTeams);
