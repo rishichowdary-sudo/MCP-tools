@@ -57,6 +57,22 @@ const driveBadge = document.getElementById('driveBadge');
 const sheetsBadge = document.getElementById('sheetsBadge');
 const githubBadge = document.getElementById('githubBadge');
 const timerBadge = document.getElementById('timerBadge');
+const docsNavItem = document.getElementById('docsNavItem');
+const docsPanel = document.getElementById('docsPanel');
+const docsAuthSection = document.getElementById('docsAuthSection');
+const docsConnectedSection = document.getElementById('docsConnectedSection');
+const docsStatus = document.getElementById('docsStatus');
+const docsBadge = document.getElementById('docsBadge');
+const teamsNavItem = document.getElementById('teamsNavItem');
+const teamsPanel = document.getElementById('teamsPanel');
+const teamsAuthBtn = document.getElementById('teamsAuthBtn');
+const teamsDisconnectBtn = document.getElementById('teamsDisconnectBtn');
+const teamsAuthSection = document.getElementById('teamsAuthSection');
+const teamsConnectedSection = document.getElementById('teamsConnectedSection');
+const teamsSetupSection = document.getElementById('teamsSetupSection');
+const teamsStatus = document.getElementById('teamsStatus');
+const teamsBadge = document.getElementById('teamsBadge');
+const teamsUserInfo = document.getElementById('teamsUserInfo');
 const outlookNavItem = document.getElementById('outlookNavItem');
 const outlookPanel = document.getElementById('outlookPanel');
 const outlookAuthBtn = document.getElementById('outlookAuthBtn');
@@ -93,6 +109,8 @@ let isDriveConnected = false;
 let isSheetsConnected = false;
 let isGithubConnected = false;
 let isOutlookConnected = false;
+let isDocsConnected = false;
+let isTeamsConnected = false;
 let isTimerConnected = false;
 let activeFilter = 'all';
 
@@ -149,7 +167,17 @@ const TOOL_ICONS = {
     outlook_list_folders: '&#128193;', outlook_create_folder: '&#10133;',
     outlook_get_attachments: '&#128206;', outlook_create_draft: '&#128221;',
     outlook_send_draft: '&#128228;', outlook_list_drafts: '&#128196;',
-    outlook_flag_email: '&#127988;', outlook_get_user_profile: '&#128100;'
+    outlook_flag_email: '&#127988;', outlook_get_user_profile: '&#128100;',
+    // Google Docs (8)
+    list_documents: '&#128196;', get_document: '&#128196;', create_document: '&#10133;',
+    insert_text: '&#9998;', replace_text: '&#128260;', delete_content: '&#128465;',
+    append_text: '&#128228;', get_document_text: '&#128214;',
+    // Microsoft Teams (10)
+    teams_list_teams: '&#128101;', teams_get_team: '&#128196;',
+    teams_list_channels: '&#128193;', teams_send_channel_message: '&#9993;',
+    teams_list_channel_messages: '&#128221;', teams_list_chats: '&#128172;',
+    teams_send_chat_message: '&#9993;', teams_list_chat_messages: '&#128221;',
+    teams_create_chat: '&#10133;', teams_get_chat_members: '&#128101;'
 };
 
 // Tool category mappings per service
@@ -204,6 +232,18 @@ const OUTLOOK_CATEGORIES = {
     'Advanced': ['outlook_get_attachments', 'outlook_get_user_profile']
 };
 
+const DOCS_CATEGORIES = {
+    'Core': ['list_documents', 'get_document', 'create_document'],
+    'Edit': ['insert_text', 'replace_text', 'delete_content', 'append_text'],
+    'Read': ['get_document_text']
+};
+
+const TEAMS_CATEGORIES = {
+    'Teams': ['teams_list_teams', 'teams_get_team'],
+    'Channels': ['teams_list_channels', 'teams_send_channel_message', 'teams_list_channel_messages'],
+    'Chats': ['teams_list_chats', 'teams_send_chat_message', 'teams_list_chat_messages', 'teams_create_chat', 'teams_get_chat_members']
+};
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     checkAllStatuses();
@@ -232,6 +272,8 @@ function setupEventListeners() {
     driveNavItem.addEventListener('click', () => openPanel('drive'));
     sheetsNavItem.addEventListener('click', () => openPanel('sheets'));
     githubNavItem.addEventListener('click', () => openPanel('github'));
+    docsNavItem.addEventListener('click', () => openPanel('docs'));
+    teamsNavItem.addEventListener('click', () => openPanel('teams'));
     outlookNavItem.addEventListener('click', () => openPanel('outlook'));
     timerNavItem.addEventListener('click', () => {
         openPanel('timer');
@@ -287,6 +329,8 @@ function setupEventListeners() {
     driveReauthBtn.addEventListener('click', initiateDriveAuth);
     sheetsReauthBtn.addEventListener('click', initiateSheetsAuth);
     githubReauthBtn.addEventListener('click', initiateGithubAuth);
+    teamsAuthBtn.addEventListener('click', initiateTeamsAuth);
+    teamsDisconnectBtn.addEventListener('click', disconnectTeams);
     outlookAuthBtn.addEventListener('click', initiateOutlookAuth);
     outlookDisconnectBtn.addEventListener('click', disconnectOutlook);
     outlookReauthBtn.addEventListener('click', initiateOutlookAuth);
@@ -341,8 +385,8 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, github: githubPanel, outlook: outlookPanel, timer: timerPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, github: githubNavItem, outlook: outlookNavItem, timer: timerNavItem };
+    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, docs: docsPanel, github: githubPanel, outlook: outlookPanel, teams: teamsPanel, timer: timerPanel };
+    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, docs: docsNavItem, github: githubNavItem, outlook: outlookNavItem, teams: teamsNavItem, timer: timerNavItem };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -350,8 +394,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, githubPanel, outlookPanel, timerPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, githubNavItem, outlookNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, docsPanel, githubPanel, outlookPanel, teamsPanel, timerPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, docsNavItem, githubNavItem, outlookNavItem, teamsNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -381,7 +425,9 @@ async function loadCapabilities() {
             drive: { label: 'Google Drive', dot: 'drive', categories: DRIVE_CATEGORIES },
             sheets: { label: 'Google Sheets', dot: 'sheets', categories: SHEETS_CATEGORIES },
             github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES },
-            outlook: { label: 'Outlook', dot: 'outlook', categories: OUTLOOK_CATEGORIES }
+            outlook: { label: 'Outlook', dot: 'outlook', categories: OUTLOOK_CATEGORIES },
+            docs: { label: 'Google Docs', dot: 'docs', categories: DOCS_CATEGORIES },
+            teams: { label: 'Microsoft Teams', dot: 'teams', categories: TEAMS_CATEGORIES }
         };
 
         for (const svc of services) {
@@ -447,8 +493,10 @@ async function checkAllStatuses() {
     checkGchatStatus();
     checkDriveStatus();
     checkSheetsStatus();
+    checkDocsStatus();
     checkGitHubStatus();
     checkOutlookStatus();
+    checkTeamsStatus();
     checkTimerStatus();
 
     setInterval(() => {
@@ -457,8 +505,10 @@ async function checkAllStatuses() {
         checkGchatStatus();
         checkDriveStatus();
         checkSheetsStatus();
+        checkDocsStatus();
         checkGitHubStatus();
         checkOutlookStatus();
+        checkTeamsStatus();
         checkTimerStatus();
     }, 5000);
 }
@@ -1035,6 +1085,102 @@ async function disconnectOutlook() {
         checkOutlookStatus();
     } catch (error) {
         console.error('Outlook disconnect error:', error);
+    }
+}
+
+// Google Docs status
+async function checkDocsStatus() {
+    try {
+        const response = await fetch('/api/docs/status');
+        const data = await response.json();
+        updateDocsStatus(data);
+    } catch (error) {
+        updateDocsStatus({ authenticated: false });
+    }
+}
+
+function updateDocsStatus(data) {
+    const statusDot = docsStatus.querySelector('.status-dot');
+    isDocsConnected = data.authenticated;
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        docsAuthSection.style.display = 'none';
+        docsConnectedSection.style.display = 'block';
+        docsBadge.style.display = 'inline-flex';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        docsAuthSection.style.display = 'block';
+        docsConnectedSection.style.display = 'none';
+        docsBadge.style.display = 'none';
+    }
+}
+
+// Microsoft Teams status
+async function checkTeamsStatus() {
+    try {
+        const response = await fetch('/api/teams/status');
+        const data = await response.json();
+        updateTeamsStatus(data);
+    } catch (error) {
+        updateTeamsStatus({ authenticated: false, oauthConfigured: false });
+    }
+}
+
+function updateTeamsStatus(data) {
+    const statusDot = teamsStatus.querySelector('.status-dot');
+    isTeamsConnected = data.authenticated;
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        teamsAuthSection.style.display = 'none';
+        teamsConnectedSection.style.display = 'block';
+        teamsSetupSection.style.display = 'none';
+        teamsBadge.style.display = 'inline-flex';
+        if (data.email) teamsUserInfo.textContent = `Connected as ${data.email}. 10 team tools ready!`;
+    } else if (!data.oauthConfigured) {
+        statusDot.className = 'status-dot disconnected';
+        teamsAuthSection.style.display = 'none';
+        teamsConnectedSection.style.display = 'none';
+        teamsSetupSection.style.display = 'block';
+        teamsBadge.style.display = 'none';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        teamsAuthSection.style.display = 'block';
+        teamsConnectedSection.style.display = 'none';
+        teamsSetupSection.style.display = 'none';
+        teamsBadge.style.display = 'none';
+    }
+}
+
+async function initiateTeamsAuth() {
+    try {
+        const response = await fetch('/api/teams/auth');
+        const data = await response.json();
+        if (data.authUrl) {
+            const popup = window.open(data.authUrl, 'TeamsAuth', 'width=600,height=700');
+            const pollInterval = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(pollInterval);
+                    setTimeout(() => {
+                        checkTeamsStatus();
+                        checkOutlookStatus();
+                    }, 1000);
+                }
+            }, 500);
+        } else {
+            alert(data.error || 'Failed to get Teams auth URL');
+        }
+    } catch (error) {
+        alert('Failed to initiate Teams authentication: ' + error.message);
+    }
+}
+
+async function disconnectTeams() {
+    try {
+        await fetch('/api/outlook/disconnect', { method: 'POST' });
+        checkTeamsStatus();
+        checkOutlookStatus();
+    } catch (error) {
+        console.error('Teams disconnect error:', error);
     }
 }
 
