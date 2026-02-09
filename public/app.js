@@ -8,12 +8,14 @@ const gchatNavItem = document.getElementById('gchatNavItem');
 const driveNavItem = document.getElementById('driveNavItem');
 const sheetsNavItem = document.getElementById('sheetsNavItem');
 const githubNavItem = document.getElementById('githubNavItem');
+const timerNavItem = document.getElementById('timerNavItem');
 const gmailPanel = document.getElementById('gmailPanel');
 const calendarPanel = document.getElementById('calendarPanel');
 const gchatPanel = document.getElementById('gchatPanel');
 const drivePanel = document.getElementById('drivePanel');
 const sheetsPanel = document.getElementById('sheetsPanel');
 const githubPanel = document.getElementById('githubPanel');
+const timerPanel = document.getElementById('timerPanel');
 const authenticateBtn = document.getElementById('authenticateBtn');
 const calendarAuthBtn = document.getElementById('calendarAuthBtn');
 const gchatAuthBtn = document.getElementById('gchatAuthBtn');
@@ -47,12 +49,14 @@ const gchatStatus = document.getElementById('gchatStatus');
 const driveStatus = document.getElementById('driveStatus');
 const sheetsStatus = document.getElementById('sheetsStatus');
 const githubStatus = document.getElementById('githubStatus');
+const timerStatus = document.getElementById('timerStatus');
 const gmailBadge = document.getElementById('gmailBadge');
 const calendarBadge = document.getElementById('calendarBadge');
 const gchatBadge = document.getElementById('gchatBadge');
 const driveBadge = document.getElementById('driveBadge');
 const sheetsBadge = document.getElementById('sheetsBadge');
 const githubBadge = document.getElementById('githubBadge');
+const timerBadge = document.getElementById('timerBadge');
 const outlookNavItem = document.getElementById('outlookNavItem');
 const outlookPanel = document.getElementById('outlookPanel');
 const outlookAuthBtn = document.getElementById('outlookAuthBtn');
@@ -71,6 +75,14 @@ const closeCapabilitiesBtn = document.getElementById('closeCapabilitiesBtn');
 const toolCountBadge = document.getElementById('toolCountBadge');
 const toolStatusText = document.getElementById('toolStatusText');
 const modalTitle = document.getElementById('modalTitle');
+const timerTaskNameInput = document.getElementById('timerTaskNameInput');
+const timerTaskTimeInput = document.getElementById('timerTaskTimeInput');
+const timerTaskInstructionInput = document.getElementById('timerTaskInstructionInput');
+const timerTaskEnabledInput = document.getElementById('timerTaskEnabledInput');
+const timerTaskSaveBtn = document.getElementById('timerTaskSaveBtn');
+const timerTaskRefreshBtn = document.getElementById('timerTaskRefreshBtn');
+const timerTaskList = document.getElementById('timerTaskList');
+const timerTaskStatusText = document.getElementById('timerTaskStatusText');
 
 // State
 let chatHistory = [];
@@ -81,6 +93,7 @@ let isDriveConnected = false;
 let isSheetsConnected = false;
 let isGithubConnected = false;
 let isOutlookConnected = false;
+let isTimerConnected = false;
 let activeFilter = 'all';
 
 // Tool icon mapping
@@ -220,6 +233,10 @@ function setupEventListeners() {
     sheetsNavItem.addEventListener('click', () => openPanel('sheets'));
     githubNavItem.addEventListener('click', () => openPanel('github'));
     outlookNavItem.addEventListener('click', () => openPanel('outlook'));
+    timerNavItem.addEventListener('click', () => {
+        openPanel('timer');
+        loadTimerTasks();
+    });
 
     // Close panel buttons
     document.querySelectorAll('.close-panel-btn').forEach(btn => {
@@ -273,11 +290,34 @@ function setupEventListeners() {
     outlookAuthBtn.addEventListener('click', initiateOutlookAuth);
     outlookDisconnectBtn.addEventListener('click', disconnectOutlook);
     outlookReauthBtn.addEventListener('click', initiateOutlookAuth);
+    timerTaskSaveBtn.addEventListener('click', createTimerTask);
+    timerTaskRefreshBtn.addEventListener('click', loadTimerTasks);
+    timerTaskList.addEventListener('click', async (event) => {
+        const button = event.target.closest('.timer-task-action-btn');
+        if (!button) return;
+        const taskId = button.dataset.taskId;
+        const action = button.dataset.action;
+        if (!taskId || !action) return;
+
+        if (action === 'run') {
+            await runTimerTaskNow(taskId);
+            return;
+        }
+        if (action === 'toggle') {
+            const enabled = button.dataset.enabled === 'true';
+            await updateTimerTask(taskId, { enabled: !enabled });
+            return;
+        }
+        if (action === 'delete') {
+            await deleteTimerTask(taskId);
+        }
+    });
 
     // Quick action buttons (all panels)
     document.querySelectorAll('.quick-action-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const prompt = btn.dataset.prompt;
+            if (!prompt) return;
             closeAllPanels();
             messageInput.value = prompt;
             autoResizeTextarea();
@@ -301,8 +341,8 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, github: githubPanel, outlook: outlookPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, github: githubNavItem, outlook: outlookNavItem };
+    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, github: githubPanel, outlook: outlookPanel, timer: timerPanel };
+    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, github: githubNavItem, outlook: outlookNavItem, timer: timerNavItem };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -310,8 +350,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, githubPanel, outlookPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, githubNavItem, outlookNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, githubPanel, outlookPanel, timerPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, githubNavItem, outlookNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -409,6 +449,7 @@ async function checkAllStatuses() {
     checkSheetsStatus();
     checkGitHubStatus();
     checkOutlookStatus();
+    checkTimerStatus();
 
     setInterval(() => {
         checkGmailStatus();
@@ -418,6 +459,7 @@ async function checkAllStatuses() {
         checkSheetsStatus();
         checkGitHubStatus();
         checkOutlookStatus();
+        checkTimerStatus();
     }, 5000);
 }
 
@@ -993,6 +1035,152 @@ async function disconnectOutlook() {
         checkOutlookStatus();
     } catch (error) {
         console.error('Outlook disconnect error:', error);
+    }
+}
+
+async function checkTimerStatus() {
+    try {
+        const response = await fetch('/api/timer-tasks/status');
+        const data = await response.json();
+        updateTimerStatus(data);
+    } catch (error) {
+        updateTimerStatus({ connected: false, taskCount: 0, enabledCount: 0, runningCount: 0 });
+    }
+}
+
+function updateTimerStatus(data) {
+    const statusDot = timerStatus.querySelector('.status-dot');
+    const enabledCount = Number(data.enabledCount || 0);
+    const taskCount = Number(data.taskCount || 0);
+    isTimerConnected = !!data.connected;
+
+    statusDot.className = `status-dot ${enabledCount > 0 ? 'connected' : 'disconnected'}`;
+    timerBadge.style.display = enabledCount > 0 ? 'inline-flex' : 'none';
+
+    if (timerTaskStatusText) {
+        if (taskCount === 0) {
+            timerTaskStatusText.textContent = 'No tasks configured yet.';
+        } else {
+            timerTaskStatusText.textContent = `${taskCount} task(s), ${enabledCount} enabled, ${Number(data.runningCount || 0)} running now.`;
+        }
+    }
+}
+
+async function loadTimerTasks() {
+    try {
+        const response = await fetch('/api/timer-tasks');
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || `Failed to load timer tasks (${response.status})`);
+        }
+        renderTimerTaskList(Array.isArray(data.tasks) ? data.tasks : []);
+        await checkTimerStatus();
+    } catch (error) {
+        console.error('Timer task load error:', error);
+        timerTaskList.innerHTML = `<div class="timer-task-meta" style="color: var(--error);">Failed to load tasks: ${escapeHtml(error.message)}</div>`;
+    }
+}
+
+function renderTimerTaskList(tasks) {
+    if (!tasks || tasks.length === 0) {
+        timerTaskList.innerHTML = '<div class="timer-task-meta">No timer tasks yet. Create one above.</div>';
+        return;
+    }
+    timerTaskList.innerHTML = tasks.map(task => `
+        <div class="timer-task-card">
+            <div class="timer-task-header">
+                <span class="timer-task-name">${escapeHtml(task.name || 'Untitled task')}</span>
+                <span class="timer-task-time">${escapeHtml(task.time || '')}</span>
+            </div>
+            <div class="timer-task-meta">Status: ${escapeHtml(task.lastStatus || 'never')} ${task.lastRunAt ? `- Last run ${escapeHtml(formatDate(task.lastRunAt))}` : ''} ${task.running ? '- Running...' : ''}</div>
+            ${task.lastError ? `<div class="timer-task-meta" style="color: var(--error);">Error: ${escapeHtml(task.lastError)}</div>` : ''}
+            <div class="timer-task-instruction">${escapeHtml(task.instruction || '')}</div>
+            <div class="timer-task-actions">
+                <button class="timer-task-action-btn" data-action="run" data-task-id="${escapeHtml(task.id)}">Run Now</button>
+                <button class="timer-task-action-btn" data-action="toggle" data-enabled="${task.enabled ? 'true' : 'false'}" data-task-id="${escapeHtml(task.id)}">${task.enabled ? 'Disable' : 'Enable'}</button>
+                <button class="timer-task-action-btn" data-action="delete" data-task-id="${escapeHtml(task.id)}">Delete</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function createTimerTask() {
+    const instruction = (timerTaskInstructionInput.value || '').trim();
+    const time = (timerTaskTimeInput.value || '').trim();
+    const name = (timerTaskNameInput.value || '').trim();
+    const enabled = !!timerTaskEnabledInput.checked;
+
+    if (!instruction) {
+        alert('Please enter task instructions.');
+        return;
+    }
+    if (!time) {
+        alert('Please choose a daily time.');
+        return;
+    }
+
+    timerTaskSaveBtn.disabled = true;
+    const originalLabel = timerTaskSaveBtn.innerHTML;
+    timerTaskSaveBtn.innerHTML = '&#9201; Saving...';
+    try {
+        const response = await fetch('/api/timer-tasks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, instruction, time, enabled })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Failed to create task (${response.status})`);
+
+        timerTaskNameInput.value = '';
+        timerTaskInstructionInput.value = '';
+        timerTaskEnabledInput.checked = true;
+        await loadTimerTasks();
+    } catch (error) {
+        alert(error.message || 'Failed to create timer task');
+    } finally {
+        timerTaskSaveBtn.disabled = false;
+        timerTaskSaveBtn.innerHTML = originalLabel;
+    }
+}
+
+async function updateTimerTask(taskId, patch) {
+    try {
+        const response = await fetch(`/api/timer-tasks/${encodeURIComponent(taskId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Failed to update task (${response.status})`);
+        await loadTimerTasks();
+    } catch (error) {
+        alert(error.message || 'Failed to update timer task');
+    }
+}
+
+async function deleteTimerTask(taskId) {
+    if (!confirm('Delete this timer task?')) return;
+    try {
+        const response = await fetch(`/api/timer-tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Failed to delete task (${response.status})`);
+        await loadTimerTasks();
+    } catch (error) {
+        alert(error.message || 'Failed to delete timer task');
+    }
+}
+
+async function runTimerTaskNow(taskId) {
+    try {
+        const response = await fetch(`/api/timer-tasks/${encodeURIComponent(taskId)}/run`, { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Failed to run task (${response.status})`);
+        await loadTimerTasks();
+        if (data.skipped) {
+            alert('Task is already running.');
+        }
+    } catch (error) {
+        alert(error.message || 'Failed to run timer task');
     }
 }
 

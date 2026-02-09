@@ -74,6 +74,7 @@ const OUTLOOK_GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'token.json');
 const GITHUB_TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'github-token.json');
 const OUTLOOK_TOKEN_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'outlook-token.json');
+const SCHEDULED_TASKS_PATH = path.join(process.env.USERPROFILE || process.env.HOME, '.gmail-mcp', 'scheduled-tasks.json');
 
 let oauth2Client = null;
 let gmailClient = null;
@@ -90,6 +91,9 @@ let sheetsMcpTools = [];
 let sheetsMcpError = null;
 const githubOAuthStateStore = new Map();
 let cachedPrimaryEmail = null;
+let scheduledTasks = [];
+let schedulerInterval = null;
+let schedulerTickInProgress = false;
 
 // Outlook state
 let outlookAccessToken = null;
@@ -239,6 +243,98 @@ function isGitHubOAuthConfigured() {
 
 function getGitHubRedirectUri() {
     return process.env.GITHUB_REDIRECT_URI || `http://localhost:${PORT}/github/callback`;
+}
+
+function ensureParentDirectory(filePath) {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function makeId(prefix = 'id') {
+    if (typeof crypto.randomUUID === 'function') {
+        return `${prefix}_${crypto.randomUUID()}`;
+    }
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isValidDailyTime(value) {
+    return /^\d{2}:\d{2}$/.test(String(value || '')) &&
+        Number(value.slice(0, 2)) >= 0 &&
+        Number(value.slice(0, 2)) <= 23 &&
+        Number(value.slice(3, 5)) >= 0 &&
+        Number(value.slice(3, 5)) <= 59;
+}
+
+function schedulerDateParts(now = new Date()) {
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const minute = String(now.getMinutes()).padStart(2, '0');
+    return {
+        date: `${year}-${month}-${day}`,
+        hhmm: `${hour}:${minute}`,
+        timestamp: now.toISOString()
+    };
+}
+
+function sanitizeScheduledTask(task, { forCreate = false } = {}) {
+    const normalized = {
+        id: String(task.id || '').trim() || makeId('task'),
+        name: String(task.name || '').trim() || 'Untitled task',
+        instruction: String(task.instruction || '').trim(),
+        time: String(task.time || '').trim(),
+        enabled: task.enabled !== undefined ? !!task.enabled : true,
+        createdAt: task.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastRunAt: task.lastRunAt || null,
+        lastRunDate: task.lastRunDate || null,
+        lastStatus: task.lastStatus || 'never',
+        lastError: task.lastError || '',
+        lastResponse: task.lastResponse || ''
+    };
+
+    if (!normalized.instruction) {
+        throw new Error('instruction is required');
+    }
+    if (!isValidDailyTime(normalized.time)) {
+        throw new Error('time must be in HH:MM 24-hour format');
+    }
+
+    if (!forCreate) {
+        normalized.createdAt = task.createdAt || normalized.createdAt;
+    }
+    return normalized;
+}
+
+function loadScheduledTasksFromDisk() {
+    try {
+        if (!fs.existsSync(SCHEDULED_TASKS_PATH)) {
+            scheduledTasks = [];
+            return;
+        }
+        const raw = fs.readFileSync(SCHEDULED_TASKS_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        const list = Array.isArray(parsed) ? parsed : [];
+        scheduledTasks = list
+            .map(task => {
+                try {
+                    return sanitizeScheduledTask(task);
+                } catch (error) {
+                    console.warn(`Skipping invalid scheduled task: ${error.message}`);
+                    return null;
+                }
+            })
+            .filter(Boolean);
+    } catch (error) {
+        console.error('Failed to load scheduled tasks:', error.message);
+        scheduledTasks = [];
+    }
+}
+
+function saveScheduledTasksToDisk() {
+    ensureParentDirectory(SCHEDULED_TASKS_PATH);
+    fs.writeFileSync(SCHEDULED_TASKS_PATH, JSON.stringify(scheduledTasks, null, 2));
 }
 
 function saveGitHubTokenData(data) {
@@ -4057,6 +4153,78 @@ app.get('/api/tools', (req, res) => {
     });
 });
 
+app.get('/api/timer-tasks/status', (req, res) => {
+    const enabledCount = scheduledTasks.filter(task => task.enabled).length;
+    const runningCount = scheduledTasks.filter(task => runningScheduledTaskIds.has(task.id)).length;
+    res.json({
+        connected: true,
+        taskCount: scheduledTasks.length,
+        enabledCount,
+        runningCount
+    });
+});
+
+app.get('/api/timer-tasks', (req, res) => {
+    const tasks = scheduledTasks
+        .map(task => ({
+            ...task,
+            running: runningScheduledTaskIds.has(task.id)
+        }))
+        .sort((a, b) => a.time.localeCompare(b.time));
+    res.json({ tasks, count: tasks.length });
+});
+
+app.post('/api/timer-tasks', (req, res) => {
+    try {
+        const task = sanitizeScheduledTask({ ...req.body }, { forCreate: true });
+        scheduledTasks.push(task);
+        saveScheduledTasksToDisk();
+        res.status(201).json({ success: true, task });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.patch('/api/timer-tasks/:id', (req, res) => {
+    try {
+        const index = scheduledTasks.findIndex(task => task.id === req.params.id);
+        if (index < 0) return res.status(404).json({ error: 'Task not found' });
+
+        const existing = scheduledTasks[index];
+        const merged = sanitizeScheduledTask({
+            ...existing,
+            ...req.body,
+            id: existing.id,
+            createdAt: existing.createdAt
+        });
+        scheduledTasks[index] = merged;
+        saveScheduledTasksToDisk();
+        res.json({ success: true, task: merged });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.delete('/api/timer-tasks/:id', (req, res) => {
+    const before = scheduledTasks.length;
+    scheduledTasks = scheduledTasks.filter(task => task.id !== req.params.id);
+    if (scheduledTasks.length === before) {
+        return res.status(404).json({ error: 'Task not found' });
+    }
+    saveScheduledTasksToDisk();
+    res.json({ success: true });
+});
+
+app.post('/api/timer-tasks/:id/run', async (req, res) => {
+    const task = scheduledTasks.find(item => item.id === req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const result = await runScheduledTask(task.id, 'manual');
+    if (!result.success && !result.skipped) {
+        return res.status(500).json(result);
+    }
+    return res.json(result);
+});
+
 // Gmail authentication status
 app.get('/api/gmail/status', (req, res) => {
     const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
@@ -4483,76 +4651,56 @@ app.get('/outlook/callback', async (req, res) => {
 // ============================================================
 //  AGENTIC CHAT ENDPOINT — Robust multi-turn tool loop
 // ============================================================
-// Get single email content
-app.get('/api/gmail/message/:id', async (req, res) => {
-    try {
-        if (!gmailClient) {
-            return res.status(401).json({ error: 'Gmail not connected' });
-        }
-        const { id } = req.params;
-        const email = await readEmail({ messageId: id });
-        res.json(email);
-    } catch (error) {
-        console.error('Error fetching email:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+function getConnectedToolContext() {
+    const availableTools = [];
+    if (gmailClient) availableTools.push(...gmailTools);
+    const calendarConnected = !!calendarClient && hasCalendarScope();
+    if (calendarConnected) availableTools.push(...calendarTools);
+    const gchatConnected = !!gchatClient && hasGchatScopes();
+    if (gchatConnected) availableTools.push(...gchatTools);
+    const driveConnected = !!driveClient && hasDriveScope();
+    if (driveConnected) availableTools.push(...driveTools);
+    const sheetsConnected = !!sheetsClient && hasSheetsScope();
+    if (sheetsConnected) availableTools.push(...sheetsTools);
+    const sheetsMcpConnected = !!sheetsMcpClient && sheetsMcpTools.length > 0;
+    if (sheetsMcpConnected) availableTools.push(...sheetsMcpTools);
+    if (octokitClient) availableTools.push(...githubTools);
+    if (outlookAccessToken) availableTools.push(...outlookTools);
 
-app.post('/api/chat', async (req, res) => {
-    const { message, history = [] } = req.body;
+    const connectedServices = [];
+    if (gmailClient) connectedServices.push('Gmail (25 tools)');
+    if (calendarConnected) connectedServices.push(`Google Calendar (${calendarTools.length} tools)`);
+    if (gchatConnected) connectedServices.push(`Google Chat (${gchatTools.length} tools)`);
+    if (driveConnected) connectedServices.push(`Google Drive (${driveTools.length} tools)`);
+    if (sheetsConnected) connectedServices.push(`Google Sheets (${sheetsTools.length} tools)`);
+    if (sheetsMcpConnected) connectedServices.push(`Google Sheets MCP (${sheetsMcpTools.length} tools)`);
+    if (octokitClient) connectedServices.push('GitHub (20 tools)');
+    if (outlookAccessToken) connectedServices.push(`Outlook (${outlookTools.length} tools)`);
 
-    if (!process.env.OPENAI_API_KEY) {
-        return res.status(500).json({ error: 'OpenAI API key missing' });
-    }
+    const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
+    return { availableTools, statusText };
+}
 
-    try {
-        // Dynamically assemble available tools
-        const availableTools = [];
-        if (gmailClient) availableTools.push(...gmailTools);
-        const calendarConnected = !!calendarClient && hasCalendarScope();
-        if (calendarConnected) availableTools.push(...calendarTools);
-        const gchatConnected = !!gchatClient && hasGchatScopes();
-        if (gchatConnected) availableTools.push(...gchatTools);
-        const driveConnected = !!driveClient && hasDriveScope();
-        if (driveConnected) availableTools.push(...driveTools);
-        const sheetsConnected = !!sheetsClient && hasSheetsScope();
-        if (sheetsConnected) availableTools.push(...sheetsTools);
-        const sheetsMcpConnected = !!sheetsMcpClient && sheetsMcpTools.length > 0;
-        if (sheetsMcpConnected) availableTools.push(...sheetsMcpTools);
-        if (octokitClient) availableTools.push(...githubTools);
-        if (outlookAccessToken) availableTools.push(...outlookTools);
-
-        const connectedServices = [];
-        if (gmailClient) connectedServices.push('Gmail (25 tools)');
-        if (calendarConnected) connectedServices.push(`Google Calendar (${calendarTools.length} tools)`);
-        if (gchatConnected) connectedServices.push(`Google Chat (${gchatTools.length} tools)`);
-        if (driveConnected) connectedServices.push(`Google Drive (${driveTools.length} tools)`);
-        if (sheetsConnected) connectedServices.push(`Google Sheets (${sheetsTools.length} tools)`);
-        if (sheetsMcpConnected) connectedServices.push(`Google Sheets MCP (${sheetsMcpTools.length} tools)`);
-        if (octokitClient) connectedServices.push('GitHub (20 tools)');
-        if (outlookAccessToken) connectedServices.push(`Outlook (${outlookTools.length} tools)`);
-        const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
-        const dateContext = getCurrentDateContext();
-
-        const systemPrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, GitHub, and Outlook. You can perform complex, multi-step operations across all connected services.
+function buildAgentSystemPrompt({ statusText, toolCount, dateContext }) {
+    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, GitHub, and Outlook. You can perform complex, multi-step operations across all connected services.
 
 Connected Services: ${statusText}
-Total Tools Available: ${availableTools.length}
+Total Tools Available: ${toolCount}
 
-## CORE RULES — Follow these STRICTLY:
+## CORE RULES - Follow these STRICTLY:
 
 1. **ALWAYS SEARCH FIRST**: When the user refers to an email by description, you MUST use search_emails first. When referring to repos/issues, use list/search tools first. NEVER guess IDs or fabricate email addresses.
 
 2. **CHAIN TOOLS FOR COMPLEX TASKS**: Break down complex requests into steps and execute them one by one.
-   - "Read and reply to John's latest email" → search_emails → read_email → reply_to_email
-   - "Create an issue for the bug and email the team" → create_issue → send_email
-   - "Find calendar events for today and email the attendees" → list_events → send_email
+   - "Read and reply to John's latest email" -> search_emails -> read_email -> reply_to_email
+   - "Create an issue for the bug and email the team" -> create_issue -> send_email
+   - "Find calendar events for today and email the attendees" -> list_events -> send_email
    - "Check if Meghan is free today between 1pm and 5pm" -> check_person_availability
    - "Find a 30-minute slot for me, Meghan, and Rahul tomorrow" -> find_common_free_slots
    - "List my spreadsheets and summarize tabs" -> list_spreadsheets -> list_sheet_tabs
    - "Create a Drive folder and upload notes" -> create_drive_folder -> create_drive_file
    - "Archive all unread emails from newsletters" -> search_emails -> batch_modify_emails
-   - "Check my PRs and create calendar events for reviews" → list_pull_requests → create_event
+   - "Check my PRs and create calendar events for reviews" -> list_pull_requests -> create_event
 
 2b. **PERSON AVAILABILITY SAFETY**: For a named person, NEVER infer availability from get_free_busy on your default primary calendar. Use check_person_availability (single person) or find_common_free_slots (multiple people).
 
@@ -4580,7 +4728,7 @@ Total Tools Available: ${availableTools.length}
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.
 - Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.`;
 
-        const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
+    const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
 - Current timestamp (UTC): ${dateContext.nowIso}
 - Local timezone: ${dateContext.timeZone}
 - Today: ${dateContext.today} (${dateContext.weekday})
@@ -4591,8 +4739,22 @@ Rules:
 - Resolve relative date words (today, tomorrow, yesterday, this week, next week) using this context.
 - For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events, get_free_busy, check_person_availability, and find_common_free_slots.`;
 
-        const enrichedSystemPrompt = `${systemPrompt}\n\n${dateContextPrompt}`;
-        const enrichedUserMessage = `${message}
+    return `${basePrompt}\n\n${dateContextPrompt}`;
+}
+
+async function runAgentConversation({ message, history = [] }) {
+    if (!process.env.OPENAI_API_KEY) {
+        throw new Error('OpenAI API key missing');
+    }
+
+    const { availableTools, statusText } = getConnectedToolContext();
+    const dateContext = getCurrentDateContext();
+    const systemPrompt = buildAgentSystemPrompt({
+        statusText,
+        toolCount: availableTools.length,
+        dateContext
+    });
+    const enrichedUserMessage = `${message}
 
 [Runtime Date Context]
 - Current timestamp (UTC): ${dateContext.nowIso}
@@ -4601,92 +4763,185 @@ Rules:
 - Tomorrow: ${dateContext.tomorrow}
 - Yesterday: ${dateContext.yesterday}`;
 
-        const messages = [
-            { role: 'system', content: enrichedSystemPrompt },
-            ...history,
-            { role: 'user', content: enrichedUserMessage }
-        ];
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history,
+        { role: 'user', content: enrichedUserMessage }
+    ];
 
-        let response = await openai.chat.completions.create({
+    let response = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages,
+        tools: availableTools.length > 0 ? availableTools : undefined,
+        tool_choice: availableTools.length > 0 ? 'auto' : undefined
+    });
+
+    let assistantMessage = response.choices[0].message;
+    const allToolResults = [];
+    const allSteps = [];
+    const MAX_TURNS = 15;
+    let turnCount = 0;
+
+    while (assistantMessage.tool_calls && turnCount < MAX_TURNS) {
+        turnCount += 1;
+        messages.push(assistantMessage);
+
+        const toolPromises = assistantMessage.tool_calls.map(async (toolCall) => {
+            const toolName = toolCall.function.name;
+            let args;
+            try {
+                args = JSON.parse(toolCall.function.arguments);
+            } catch (error) {
+                return { toolCall, error: `Invalid arguments: ${error.message}` };
+            }
+
+            const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
+            try {
+                const result = await executeTool(toolName, args);
+                step.result = result;
+                step.success = true;
+                return { toolCall, result, step };
+            } catch (error) {
+                step.error = error.message;
+                step.success = false;
+                return { toolCall, error: error.message, step };
+            }
+        });
+
+        const toolResults = await Promise.all(toolPromises);
+        for (const { toolCall, result, error, step } of toolResults) {
+            if (step) allSteps.push(step);
+            allToolResults.push(error
+                ? { tool: toolCall.function.name, error }
+                : { tool: toolCall.function.name, result });
+
+            messages.push({
+                role: 'tool',
+                tool_call_id: toolCall.id,
+                content: JSON.stringify(error ? { error } : result)
+            });
+        }
+
+        response = await openai.chat.completions.create({
             model: 'gpt-4o',
             messages,
             tools: availableTools.length > 0 ? availableTools : undefined,
             tool_choice: availableTools.length > 0 ? 'auto' : undefined
         });
+        assistantMessage = response.choices[0].message;
+    }
 
-        let assistantMessage = response.choices[0].message;
-        let allToolResults = [];
-        let allSteps = [];
+    let finalResponse = assistantMessage.content || '';
+    if (turnCount >= MAX_TURNS && assistantMessage.tool_calls) {
+        finalResponse += '\n\n(Reached maximum steps for this request. Some operations may still be pending.)';
+    }
 
-        const MAX_TURNS = 15;
-        let turnCount = 0;
+    return {
+        response: finalResponse,
+        toolResults: allToolResults,
+        steps: allSteps,
+        turnsUsed: turnCount
+    };
+}
 
-        while (assistantMessage.tool_calls && turnCount < MAX_TURNS) {
-            turnCount++;
-            messages.push(assistantMessage);
+const runningScheduledTaskIds = new Set();
 
-            const toolPromises = assistantMessage.tool_calls.map(async (toolCall) => {
-                const toolName = toolCall.function.name;
-                let args;
-                try {
-                    args = JSON.parse(toolCall.function.arguments);
-                } catch (e) {
-                    return { toolCall, error: `Invalid arguments: ${e.message}` };
-                }
+async function runScheduledTask(taskId, trigger = 'scheduled') {
+    const task = scheduledTasks.find(item => item.id === taskId);
+    if (!task) throw new Error('Task not found');
+    if (runningScheduledTaskIds.has(taskId)) {
+        return { success: false, skipped: true, message: 'Task is already running.' };
+    }
 
-                const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
+    runningScheduledTaskIds.add(taskId);
+    const now = schedulerDateParts(new Date());
+    try {
+        const scheduledMessage = `${task.instruction}
 
-                try {
-                    const result = await executeTool(toolName, args);
-                    step.result = result;
-                    step.success = true;
-                    return { toolCall, result, step };
-                } catch (error) {
-                    step.error = error.message;
-                    step.success = false;
-                    return { toolCall, error: error.message, step };
-                }
-            });
+[Scheduled Task Context]
+- Trigger: ${trigger}
+- Task Name: ${task.name}
+- Scheduled Time: ${task.time}
+- Execution Timestamp (UTC): ${now.timestamp}
+- Run this task fully now.`;
 
-            const toolResults = await Promise.all(toolPromises);
+        const result = await runAgentConversation({ message: scheduledMessage, history: [] });
+        task.lastRunAt = now.timestamp;
+        task.lastRunDate = now.date;
+        task.lastStatus = 'success';
+        task.lastError = '';
+        task.lastResponse = String(result.response || '').slice(0, 1500);
+        task.updatedAt = new Date().toISOString();
+        saveScheduledTasksToDisk();
+        return { success: true, taskId, result };
+    } catch (error) {
+        task.lastRunAt = now.timestamp;
+        task.lastRunDate = now.date;
+        task.lastStatus = 'failed';
+        task.lastError = error.message;
+        task.updatedAt = new Date().toISOString();
+        saveScheduledTasksToDisk();
+        return { success: false, taskId, error: error.message };
+    } finally {
+        runningScheduledTaskIds.delete(taskId);
+    }
+}
 
-            for (const { toolCall, result, error, step } of toolResults) {
-                if (step) allSteps.push(step);
-
-                const resultObj = error
-                    ? { tool: toolCall.function.name, error }
-                    : { tool: toolCall.function.name, result };
-                allToolResults.push(resultObj);
-
-                messages.push({
-                    role: 'tool',
-                    tool_call_id: toolCall.id,
-                    content: JSON.stringify(error ? { error } : result)
-                });
+async function runSchedulerTick() {
+    if (schedulerTickInProgress) return;
+    schedulerTickInProgress = true;
+    try {
+        const now = schedulerDateParts(new Date());
+        const dueTasks = scheduledTasks.filter(task =>
+            task.enabled &&
+            task.time === now.hhmm &&
+            task.lastRunDate !== now.date
+        );
+        for (const task of dueTasks) {
+            const result = await runScheduledTask(task.id, 'scheduled');
+            if (!result.success && !result.skipped) {
+                console.error(`Scheduled task "${task.name}" failed: ${result.error || result.message}`);
+            } else if (result.success) {
+                console.log(`Scheduled task "${task.name}" executed at ${now.hhmm}`);
             }
-
-            response = await openai.chat.completions.create({
-                model: 'gpt-4o',
-                messages,
-                tools: availableTools.length > 0 ? availableTools : undefined,
-                tool_choice: availableTools.length > 0 ? 'auto' : undefined
-            });
-
-            assistantMessage = response.choices[0].message;
         }
+    } finally {
+        schedulerTickInProgress = false;
+    }
+}
 
-        let finalResponse = assistantMessage.content || '';
-        if (turnCount >= MAX_TURNS && assistantMessage.tool_calls) {
-            finalResponse += '\n\n(Reached maximum steps for this request. Some operations may still be pending.)';
-        }
-
-        res.json({
-            response: finalResponse,
-            toolResults: allToolResults,
-            steps: allSteps,
-            turnsUsed: turnCount
+function startScheduledTaskRunner() {
+    if (schedulerInterval) clearInterval(schedulerInterval);
+    schedulerInterval = setInterval(() => {
+        runSchedulerTick().catch(error => {
+            console.error('Scheduler tick failed:', error.message);
         });
+    }, 30000);
+    runSchedulerTick().catch(error => {
+        console.error('Initial scheduler tick failed:', error.message);
+    });
+}
 
+// Get single email content
+app.get('/api/gmail/message/:id', async (req, res) => {
+    try {
+        if (!gmailClient) {
+            return res.status(401).json({ error: 'Gmail not connected' });
+        }
+        const { id } = req.params;
+        const email = await readEmail({ messageId: id });
+        res.json(email);
+    } catch (error) {
+        console.error('Error fetching email:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/chat', async (req, res) => {
+    const { message, history = [] } = req.body;
+    try {
+        const result = await runAgentConversation({ message, history });
+        res.json(result);
     } catch (error) {
         console.error('Chat error:', error);
         res.status(500).json({ error: error.message });
@@ -4704,6 +4959,8 @@ initSheetsMcpClient().catch(error => {
 initOutlookClient().catch(error => {
     console.error('Outlook init failed:', error?.message || error);
 });
+loadScheduledTasksFromDisk();
+startScheduledTaskRunner();
 
 const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length;
 app.listen(PORT, () => {
@@ -4717,17 +4974,21 @@ app.listen(PORT, () => {
     console.log(`Google Sheets MCP: ${sheetsMcpClient ? `Connected (${sheetsMcpTools.length} tools)` : `Not connected${sheetsMcpError ? ` (${sheetsMcpError})` : ''}`}`);
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
     console.log(`Outlook: ${outlookAccessToken ? `Connected (${outlookUserEmail || 'unknown'})` : 'Not connected'}`);
+    console.log(`Timer Tasks: ${scheduledTasks.length} configured (${scheduledTasks.filter(task => task.enabled).length} enabled)`);
 });
 
 process.on('SIGINT', async () => {
+    if (schedulerInterval) clearInterval(schedulerInterval);
     await closeSheetsMcpClient();
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
+    if (schedulerInterval) clearInterval(schedulerInterval);
     await closeSheetsMcpClient();
     process.exit(0);
 });
+
 
 
 
