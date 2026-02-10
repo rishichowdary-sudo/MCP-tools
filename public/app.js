@@ -104,6 +104,8 @@ const timerTaskStatusText = document.getElementById('timerTaskStatusText');
 
 // State
 let chatHistory = [];
+const CHAT_HISTORY_MAX_MESSAGES = 24;
+const CHAT_HISTORY_MAX_MESSAGE_CHARS = 3000;
 let isGmailConnected = false;
 let isCalendarConnected = false;
 let isGchatConnected = false;
@@ -117,6 +119,22 @@ let isTimerConnected = false;
 let isRecording = false;
 let recognition = null;
 let activeFilter = 'all';
+
+function truncateHistoryText(text, maxChars = CHAT_HISTORY_MAX_MESSAGE_CHARS) {
+    const value = String(text ?? '');
+    if (value.length <= maxChars) return value;
+    if (maxChars <= 20) return value.slice(0, Math.max(0, maxChars));
+    return `${value.slice(0, maxChars - 20)}\n...[truncated]`;
+}
+
+function pushChatHistoryEntry(role, content) {
+    const clean = truncateHistoryText(String(content ?? '').trim(), CHAT_HISTORY_MAX_MESSAGE_CHARS);
+    if (!clean) return;
+    chatHistory.push({ role, content: clean });
+    if (chatHistory.length > CHAT_HISTORY_MAX_MESSAGES) {
+        chatHistory = chatHistory.slice(-CHAT_HISTORY_MAX_MESSAGES);
+    }
+}
 
 // Tool icon mapping
 const TOOL_ICONS = {
@@ -1438,6 +1456,10 @@ async function sendMessage() {
         if (data.error) {
             addMessage('assistant', `<p style="color: #ef4444;">Error: ${escapeHtml(data.error)}</p>`, { allowHtml: true });
             turnsBadge.style.display = 'none';
+            if (/maximum context length|too many tokens|context length/i.test(String(data.error))) {
+                chatHistory = chatHistory.slice(-6);
+                addMessage('assistant', '<p style="color: var(--text-secondary);">I trimmed old chat context. Please retry that request now.</p>', { allowHtml: true });
+            }
         } else {
             if (data.turnsUsed > 0) {
                 turnsCount.textContent = data.turnsUsed;
@@ -1468,12 +1490,8 @@ async function sendMessage() {
 
             addMessage('assistant', responseHtml, { allowHtml: true });
 
-            chatHistory.push({ role: 'user', content: message });
-            chatHistory.push({ role: 'assistant', content: data.response });
-
-            if (chatHistory.length > 30) {
-                chatHistory = chatHistory.slice(-30);
-            }
+            pushChatHistoryEntry('user', message);
+            pushChatHistoryEntry('assistant', data.response || '');
         }
     } catch (error) {
         console.error('Chat error:', error);
