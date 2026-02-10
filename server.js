@@ -2185,6 +2185,81 @@ function buildDriveQueryClause(query) {
     return buildDriveKeywordClause(trimmed);
 }
 
+const DRIVE_EXPORT_FORMATS = {
+    'application/vnd.google-apps.document': {
+        defaultFormat: 'docx',
+        formats: {
+            docx: { mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', extension: '.docx' },
+            pdf: { mimeType: 'application/pdf', extension: '.pdf' },
+            txt: { mimeType: 'text/plain', extension: '.txt' }
+        }
+    },
+    'application/vnd.google-apps.spreadsheet': {
+        defaultFormat: 'xlsx',
+        formats: {
+            xlsx: { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', extension: '.xlsx' },
+            pdf: { mimeType: 'application/pdf', extension: '.pdf' },
+            csv: { mimeType: 'text/csv', extension: '.csv' }
+        }
+    },
+    'application/vnd.google-apps.presentation': {
+        defaultFormat: 'pptx',
+        formats: {
+            pptx: { mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', extension: '.pptx' },
+            pdf: { mimeType: 'application/pdf', extension: '.pdf' },
+            txt: { mimeType: 'text/plain', extension: '.txt' }
+        }
+    },
+    'application/vnd.google-apps.drawing': {
+        defaultFormat: 'pdf',
+        formats: {
+            pdf: { mimeType: 'application/pdf', extension: '.pdf' },
+            png: { mimeType: 'image/png', extension: '.png' },
+            svg: { mimeType: 'image/svg+xml', extension: '.svg' }
+        }
+    }
+};
+
+function sanitizeDownloadFilename(name, fallback = 'download') {
+    const value = String(name || '').trim();
+    const sanitized = value
+        .replace(/[\\/:*?"<>|]+/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return sanitized || fallback;
+}
+
+function ensureFilenameExtension(filename, extension) {
+    const safeName = sanitizeDownloadFilename(filename, 'download');
+    const ext = String(extension || '').trim();
+    if (!ext) return safeName;
+    if (safeName.toLowerCase().endsWith(ext.toLowerCase())) return safeName;
+    return `${safeName}${ext.startsWith('.') ? ext : `.${ext}`}`;
+}
+
+function resolveDriveExportFormat(mimeType, requestedFormat) {
+    const profile = DRIVE_EXPORT_FORMATS[String(mimeType || '')];
+    if (!profile) return null;
+
+    const formatKey = String(requestedFormat || profile.defaultFormat).trim().toLowerCase() || profile.defaultFormat;
+    const selected = profile.formats[formatKey] || profile.formats[profile.defaultFormat];
+    if (!selected) return null;
+    return {
+        format: profile.formats[formatKey] ? formatKey : profile.defaultFormat,
+        mimeType: selected.mimeType,
+        extension: selected.extension
+    };
+}
+
+function buildDriveDownloadUrl(fileId, { format, filename } = {}) {
+    const encodedFileId = encodeURIComponent(String(fileId || '').trim());
+    const params = new URLSearchParams();
+    if (format) params.set('format', String(format));
+    if (filename) params.set('filename', String(filename));
+    const query = params.toString();
+    return `/api/drive/download/${encodedFileId}${query ? `?${query}` : ''}`;
+}
+
 async function extractPdfTextViaDriveConversion({ fileId, originalName = 'document.pdf' }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
     let tempDocId = null;
@@ -2407,12 +2482,57 @@ async function shareDriveFile({ fileId, emailAddress, role = 'reader', sendNotif
     };
 }
 
-async function downloadDriveFile({ fileId, maxBytes = 40000 }) {
+async function downloadDriveFile({ fileId, format, filename }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
     if (!fileId) throw new Error('fileId is required');
 
     const meta = await driveClient.files.get({
         fileId,
+        supportsAllDrives: true,
+        fields: 'id,name,mimeType,size,webViewLink'
+    });
+    const sourceName = sanitizeDownloadFilename(meta.data.name || 'download');
+    const mimeType = String(meta.data.mimeType || 'application/octet-stream');
+
+    let resolvedFormat = 'raw';
+    let exportMimeType = mimeType;
+    let downloadName = sanitizeDownloadFilename(filename || sourceName, sourceName);
+    if (mimeType.startsWith('application/vnd.google-apps.')) {
+        const exportInfo = resolveDriveExportFormat(mimeType, format);
+        if (!exportInfo) {
+            throw new Error(`Google Workspace file type "${mimeType}" is not supported for export download.`);
+        }
+        resolvedFormat = exportInfo.format;
+        exportMimeType = exportInfo.mimeType;
+        downloadName = ensureFilenameExtension(downloadName, exportInfo.extension);
+    }
+
+    const downloadUrl = buildDriveDownloadUrl(fileId, {
+        format: resolvedFormat === 'raw' ? undefined : resolvedFormat,
+        filename: downloadName
+    });
+
+    return {
+        fileId,
+        name: meta.data.name,
+        mimeType,
+        size: meta.data.size ? Number(meta.data.size) : null,
+        format: resolvedFormat,
+        exportMimeType,
+        downloadName,
+        downloadUrl,
+        webViewLink: meta.data.webViewLink || null,
+        message: `Download ready for "${meta.data.name}". Use the provided link to save the file.`
+    };
+}
+
+async function extractDriveFileText({ fileId, maxBytes = 40000 }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    const meta = await driveClient.files.get({
+        fileId,
+        supportsAllDrives: true,
         fields: 'id,name,mimeType,size,webViewLink'
     });
 
@@ -2438,7 +2558,7 @@ async function downloadDriveFile({ fileId, maxBytes = 40000 }) {
             extractionMethod = 'drive_pdf_to_text';
         } catch {
             const fileResponse = await driveClient.files.get(
-                { fileId, alt: 'media' },
+                { fileId, alt: 'media', supportsAllDrives: true },
                 { responseType: 'arraybuffer' }
             );
             const rawBytes = Buffer.from(fileResponse.data);
@@ -2461,7 +2581,7 @@ async function downloadDriveFile({ fileId, maxBytes = 40000 }) {
         extractionMethod = 'google_workspace_export';
     } else {
         const fileResponse = await driveClient.files.get(
-            { fileId, alt: 'media' },
+            { fileId, alt: 'media', supportsAllDrives: true },
             { responseType: 'arraybuffer' }
         );
         const rawBytes = Buffer.from(fileResponse.data);
@@ -2504,6 +2624,139 @@ async function downloadDriveFile({ fileId, maxBytes = 40000 }) {
             ? `Downloaded truncated readable content for "${meta.data.name}" using ${extractionMethod} (${returnedBytes}/${rawByteLength || returnedBytes} bytes).`
             : `Downloaded readable content for "${meta.data.name}" using ${extractionMethod}.`
     };
+}
+
+async function convertFileToGoogleDoc({ fileId, title, parentId, downloadConverted = false, downloadFormat = 'docx' }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    const source = await driveClient.files.get({
+        fileId,
+        supportsAllDrives: true,
+        fields: 'id,name,mimeType,webViewLink,size'
+    });
+    const sourceMimeType = String(source.data.mimeType || '');
+    if (sourceMimeType === 'application/vnd.google-apps.folder') {
+        throw new Error('Cannot convert a folder to Google Docs.');
+    }
+
+    const desiredName = sanitizeDownloadFilename(
+        title || `${String(source.data.name || 'Converted Document').replace(/\.[^.]+$/, '')} (Converted)`
+    );
+    const requestBody = {
+        name: desiredName,
+        mimeType: 'application/vnd.google-apps.document'
+    };
+    if (parentId) requestBody.parents = [parentId];
+
+    const converted = await driveClient.files.copy({
+        fileId,
+        supportsAllDrives: true,
+        requestBody,
+        fields: 'id,name,mimeType,webViewLink,parents,modifiedTime'
+    });
+
+    const result = {
+        success: true,
+        sourceFileId: fileId,
+        sourceName: source.data.name,
+        sourceMimeType,
+        sourceWebViewLink: source.data.webViewLink || null,
+        documentId: converted.data.id,
+        name: converted.data.name,
+        mimeType: converted.data.mimeType,
+        webViewLink: converted.data.webViewLink || null,
+        parents: converted.data.parents || [],
+        modifiedTime: converted.data.modifiedTime,
+        message: `Converted "${source.data.name}" to Google Doc "${converted.data.name}".`
+    };
+
+    if (downloadConverted) {
+        const exportInfo = resolveDriveExportFormat('application/vnd.google-apps.document', downloadFormat);
+        if (!exportInfo) {
+            throw new Error(`Unsupported download format "${downloadFormat}" for converted Google Doc.`);
+        }
+        const downloadName = ensureFilenameExtension(converted.data.name, exportInfo.extension);
+        result.downloadFormat = exportInfo.format;
+        result.downloadName = downloadName;
+        result.downloadUrl = buildDriveDownloadUrl(converted.data.id, {
+            format: exportInfo.format,
+            filename: downloadName
+        });
+    }
+
+    return result;
+}
+
+async function convertFileToGoogleSheet({ fileId, title, parentId, downloadConverted = false, downloadFormat = 'xlsx' }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    const source = await driveClient.files.get({
+        fileId,
+        supportsAllDrives: true,
+        fields: 'id,name,mimeType,webViewLink,size'
+    });
+    const sourceMimeType = String(source.data.mimeType || '');
+    if (sourceMimeType === 'application/vnd.google-apps.folder') {
+        throw new Error('Cannot convert a folder to Google Sheets.');
+    }
+
+    const desiredName = sanitizeDownloadFilename(
+        title || `${String(source.data.name || 'Converted Spreadsheet').replace(/\.[^.]+$/, '')} (Converted)`
+    );
+    const requestBody = {
+        name: desiredName,
+        mimeType: 'application/vnd.google-apps.spreadsheet'
+    };
+    if (parentId) requestBody.parents = [parentId];
+
+    let converted;
+    try {
+        converted = await driveClient.files.copy({
+            fileId,
+            supportsAllDrives: true,
+            requestBody,
+            fields: 'id,name,mimeType,webViewLink,parents,modifiedTime'
+        });
+    } catch (error) {
+        const message = String(error?.message || '').toLowerCase();
+        if (message.includes('convert') || message.includes('mime')) {
+            throw new Error('Google Drive could not convert this file into a Google Sheet. Try CSV/XLSX input or convert to a Google Doc instead.');
+        }
+        throw error;
+    }
+
+    const result = {
+        success: true,
+        sourceFileId: fileId,
+        sourceName: source.data.name,
+        sourceMimeType,
+        sourceWebViewLink: source.data.webViewLink || null,
+        spreadsheetId: converted.data.id,
+        name: converted.data.name,
+        mimeType: converted.data.mimeType,
+        webViewLink: converted.data.webViewLink || null,
+        parents: converted.data.parents || [],
+        modifiedTime: converted.data.modifiedTime,
+        message: `Converted "${source.data.name}" to Google Sheet "${converted.data.name}".`
+    };
+
+    if (downloadConverted) {
+        const exportInfo = resolveDriveExportFormat('application/vnd.google-apps.spreadsheet', downloadFormat);
+        if (!exportInfo) {
+            throw new Error(`Unsupported download format "${downloadFormat}" for converted Google Sheet.`);
+        }
+        const downloadName = ensureFilenameExtension(converted.data.name, exportInfo.extension);
+        result.downloadFormat = exportInfo.format;
+        result.downloadName = downloadName;
+        result.downloadUrl = buildDriveDownloadUrl(converted.data.id, {
+            format: exportInfo.format,
+            filename: downloadName
+        });
+    }
+
+    return result;
 }
 
 // ============================================================
@@ -4458,7 +4711,10 @@ const driveTools = [
     { type: "function", function: { name: "copy_drive_file", description: "Copy an existing Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID" }, name: { type: "string", description: "Optional new file name" }, parentId: { type: "string", description: "Optional parent folder for copy" } }, required: ["fileId"] } } },
     { type: "function", function: { name: "move_drive_file", description: "Move a Drive file to another folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, newParentId: { type: "string", description: "Destination folder ID" } }, required: ["fileId", "newParentId"] } } },
     { type: "function", function: { name: "share_drive_file", description: "Share a Drive file with a user email.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, emailAddress: { type: "string", description: "User email address to share with" }, role: { type: "string", description: "Permission role: reader, commenter, writer, organizer, fileOrganizer (default reader)" }, sendNotificationEmail: { type: "boolean", description: "Send share email notification (default true)" } }, required: ["fileId", "emailAddress"] } } },
-    { type: "function", function: { name: "download_drive_file", description: "Download readable content for a Drive file (truncated for large files; PDFs attempt text extraction).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum text bytes to return (default 40000, max 120000)" } }, required: ["fileId"] } } }
+    { type: "function", function: { name: "download_drive_file", description: "Prepare a real browser download link for a Drive file. For Google Workspace files, choose export format (docx/pdf/txt/xlsx/etc.).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Optional export format for Google Workspace files (e.g. docx, pdf, txt, xlsx, csv)." }, filename: { type: "string", description: "Optional custom downloaded file name." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "extract_drive_file_text", description: "Extract readable text from a Drive file (best for summarization/Q&A; PDFs attempt conversion to text).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum text bytes to return (default 40000, max 120000)." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "convert_file_to_google_doc", description: "Convert a file (like PDF) into a Google Doc stored in Drive. Optionally return a download link for the converted doc.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. a PDF)." }, title: { type: "string", description: "Optional title for the converted Google Doc." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted doc." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted document." }, downloadFormat: { type: "string", description: "Optional export format for converted doc (docx, pdf, txt). Default docx." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "convert_file_to_google_sheet", description: "Convert a file (like CSV/XLSX) into a Google Sheet stored in Drive. Optionally return a download link for the converted sheet.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. CSV/XLSX)." }, title: { type: "string", description: "Optional title for the converted Google Sheet." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted sheet." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted spreadsheet." }, downloadFormat: { type: "string", description: "Optional export format for converted sheet (xlsx, csv, pdf). Default xlsx." } }, required: ["fileId"] } } }
 ];
 
 const sheetsTools = [
@@ -4637,7 +4893,10 @@ async function executeDriveTool(toolName, args) {
         copy_drive_file: copyDriveFile,
         move_drive_file: moveDriveFile,
         share_drive_file: shareDriveFile,
-        download_drive_file: downloadDriveFile
+        download_drive_file: downloadDriveFile,
+        extract_drive_file_text: extractDriveFileText,
+        convert_file_to_google_doc: convertFileToGoogleDoc,
+        convert_file_to_google_sheet: convertFileToGoogleSheet
     };
     const fn = toolMap[toolName];
     if (!fn) throw new Error(`Unknown Google Drive tool: ${toolName}`);
@@ -4944,6 +5203,69 @@ app.get('/api/drive/status', (req, res) => {
         requiresReconnect: hasToken && !driveScopeGranted,
         toolCount: driveTools.length
     });
+});
+
+// Stream/download a Drive file (raw bytes for normal files, export for Google Workspace files)
+app.get('/api/drive/download/:fileId', async (req, res) => {
+    try {
+        if (!driveClient) {
+            return res.status(401).json({ error: 'Google Drive not connected' });
+        }
+        const fileId = String(req.params.fileId || '').trim();
+        if (!fileId) return res.status(400).json({ error: 'fileId is required' });
+
+        const requestedFormat = String(req.query.format || '').trim().toLowerCase();
+        const requestedFilename = String(req.query.filename || '').trim();
+
+        const meta = await driveClient.files.get({
+            fileId,
+            supportsAllDrives: true,
+            fields: 'id,name,mimeType,size'
+        });
+        const sourceMimeType = String(meta.data.mimeType || 'application/octet-stream');
+        let contentType = sourceMimeType;
+        let payload;
+        let downloadName = sanitizeDownloadFilename(requestedFilename || meta.data.name || 'download');
+
+        if (sourceMimeType.startsWith('application/vnd.google-apps.')) {
+            const exportInfo = resolveDriveExportFormat(sourceMimeType, requestedFormat);
+            if (!exportInfo) {
+                return res.status(400).json({
+                    error: `File type "${sourceMimeType}" does not support requested export format "${requestedFormat || 'default'}".`
+                });
+            }
+            const exportResponse = await driveClient.files.export(
+                { fileId, mimeType: exportInfo.mimeType },
+                { responseType: 'arraybuffer' }
+            );
+            payload = Buffer.from(exportResponse.data);
+            contentType = exportInfo.mimeType;
+            downloadName = ensureFilenameExtension(downloadName, exportInfo.extension);
+        } else {
+            const fileResponse = await driveClient.files.get(
+                { fileId, alt: 'media', supportsAllDrives: true },
+                { responseType: 'arraybuffer' }
+            );
+            payload = Buffer.from(fileResponse.data);
+        }
+
+        const asciiFileName = downloadName
+            .replace(/[^\x20-\x7E]/g, '_')
+            .replace(/["\\]/g, '_');
+        res.setHeader('Content-Type', contentType || 'application/octet-stream');
+        res.setHeader('Content-Length', String(payload.length));
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Content-Disposition', `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`);
+        return res.status(200).send(payload);
+    } catch (error) {
+        console.error('Drive download error:', error?.message || error);
+        const permissionError = getDrivePermissionError(error);
+        if (permissionError) {
+            driveClient = null;
+            return res.status(401).json({ error: permissionError });
+        }
+        return res.status(500).json({ error: error.message || 'Failed to download Drive file' });
+    }
 });
 
 // Google Sheets authentication status (same Google OAuth, separate scope)
@@ -5479,7 +5801,7 @@ Total Tools Available: ${toolCount}
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
-- Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access.
+- Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access. Use download_drive_file for real file downloads, extract_drive_file_text for summarization/Q&A, convert_file_to_google_doc to convert PDFs/files into Docs stored in Drive, and convert_file_to_google_sheet to convert CSV/XLSX/files into Sheets stored in Drive.
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
 - Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
 - Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
