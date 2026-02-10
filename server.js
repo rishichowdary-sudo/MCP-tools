@@ -328,6 +328,15 @@ function truncateText(value, maxChars = 2000) {
     return `${text.slice(0, maxChars - 20)}\n...[truncated]`;
 }
 
+function shouldRequestUserInputForToolError(errorMessage) {
+    const text = String(errorMessage || '').toLowerCase();
+    if (!text) return false;
+    if (text.includes('please provide exact email address')) return true;
+    if (text.includes('could not resolve') && text.includes('email')) return true;
+    if (text.includes('no valid') && text.includes('email')) return true;
+    return false;
+}
+
 function sanitizeHistoryText(value) {
     return String(value ?? '')
         .replace(/\u0000/g, '')
@@ -1037,12 +1046,15 @@ async function getEmailMetadata(messageId) {
 // 1. Send Email
 async function sendEmail({ to, subject, body, cc, bcc }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const raw = buildRawMessage({ to, subject, body, cc, bcc });
+    const toRecipients = await normalizeMessageRecipients(to, { fieldName: 'to', requireAtLeastOne: true });
+    const ccRecipients = await normalizeMessageRecipients(cc, { fieldName: 'cc' });
+    const bccRecipients = await normalizeMessageRecipients(bcc, { fieldName: 'bcc' });
+    const raw = buildRawMessage({ to: toRecipients, subject, body, cc: ccRecipients, bcc: bccRecipients });
     const result = await gmailClient.users.messages.send({
         userId: 'me',
         requestBody: { raw }
     });
-    return { success: true, messageId: result.data.id, message: `Email sent to ${Array.isArray(to) ? to.join(', ') : to}` };
+    return { success: true, messageId: result.data.id, message: `Email sent to ${toRecipients.join(', ')}` };
 }
 
 // 2. Search Emails
@@ -1117,12 +1129,15 @@ async function modifyLabels({ messageId, addLabelIds = [], removeLabelIds = [] }
 // 7. Create Draft
 async function createDraft({ to, subject, body, cc, bcc }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const raw = buildRawMessage({ to, subject, body, cc, bcc });
+    const toRecipients = await normalizeMessageRecipients(to, { fieldName: 'to', requireAtLeastOne: true });
+    const ccRecipients = await normalizeMessageRecipients(cc, { fieldName: 'cc' });
+    const bccRecipients = await normalizeMessageRecipients(bcc, { fieldName: 'bcc' });
+    const raw = buildRawMessage({ to: toRecipients, subject, body, cc: ccRecipients, bcc: bccRecipients });
     const result = await gmailClient.users.drafts.create({
         userId: 'me',
         requestBody: { message: { raw } }
     });
-    return { success: true, draftId: result.data.id, message: 'Draft created successfully' };
+    return { success: true, draftId: result.data.id, message: `Draft created for ${toRecipients.join(', ')}` };
 }
 
 // 8. Reply to Email
@@ -1138,8 +1153,9 @@ async function replyToEmail({ messageId, body, cc }) {
     }
     const originalSubject = (h.subject || '').trim() || '(no subject)';
     const subject = /^re:/i.test(originalSubject) ? originalSubject : `Re: ${originalSubject}`;
+    const ccRecipients = await normalizeMessageRecipients(cc, { fieldName: 'cc' });
     const raw = buildRawMessage({
-        to: replyTo, subject, body, cc,
+        to: replyTo, subject, body, cc: ccRecipients,
         inReplyTo: h['message-id'],
         references: h['message-id']
     });
@@ -1162,9 +1178,10 @@ async function forwardEmail({ messageId, to, additionalMessage }) {
     const originalSubject = (h.subject || '').trim() || '(no subject)';
     const subject = /^fwd?:/i.test(originalSubject) ? originalSubject : `Fwd: ${originalSubject}`;
 
-    const raw = buildRawMessage({ to, subject, body: forwardBody });
+    const toRecipients = await normalizeMessageRecipients(to, { fieldName: 'to', requireAtLeastOne: true });
+    const raw = buildRawMessage({ to: toRecipients, subject, body: forwardBody });
     const result = await gmailClient.users.messages.send({ userId: 'me', requestBody: { raw } });
-    return { success: true, messageId: result.data.id, message: `Email forwarded to ${Array.isArray(to) ? to.join(', ') : to}` };
+    return { success: true, messageId: result.data.id, message: `Email forwarded to ${toRecipients.join(', ')}` };
 }
 
 // 10. List Labels
@@ -1385,6 +1402,69 @@ function isDisallowedAttendeeEmail(email) {
     if (DISALLOWED_ATTENDEE_DOMAINS.has(domain)) return true;
     if (NO_REPLY_PATTERN.test(email)) return true;
     return false;
+}
+
+function splitRecipientTokens(input) {
+    const values = Array.isArray(input) ? input : [input];
+    const tokens = [];
+    for (const value of values) {
+        const text = String(value ?? '').trim();
+        if (!text) continue;
+        if (/[<>]/.test(text)) {
+            tokens.push(text);
+            continue;
+        }
+        const parts = text.split(/[,;\n]+/).map(part => part.trim()).filter(Boolean);
+        if (parts.length > 0) tokens.push(...parts);
+        else tokens.push(text);
+    }
+    return tokens;
+}
+
+async function normalizeMessageRecipients(recipientsInput, { fieldName = 'recipient', requireAtLeastOne = false } = {}) {
+    const tokens = splitRecipientTokens(recipientsInput);
+    if (tokens.length === 0) {
+        if (requireAtLeastOne) {
+            throw new Error(`No valid ${fieldName} email addresses provided. Please provide exact email address(es).`);
+        }
+        return [];
+    }
+
+    const resolved = [];
+    const unresolved = [];
+
+    for (const token of tokens) {
+        const raw = String(token || '').trim();
+        if (!raw) continue;
+
+        if (isValidEmail(raw) && !isDisallowedAttendeeEmail(raw)) {
+            resolved.push(raw.toLowerCase());
+            continue;
+        }
+
+        const extracted = extractEmailsFromText(raw).filter(email => !isDisallowedAttendeeEmail(email));
+        if (extracted.length > 0) {
+            resolved.push(...extracted.map(email => email.toLowerCase()));
+            continue;
+        }
+
+        const found = await resolveEmailFromGmailHistory(raw);
+        if (found) {
+            resolved.push(found.toLowerCase());
+            continue;
+        }
+
+        unresolved.push(raw);
+    }
+
+    const deduped = [...new Set(resolved)];
+    if (requireAtLeastOne && deduped.length === 0) {
+        throw new Error(`No valid ${fieldName} email addresses could be resolved. Please provide exact email address(es).`);
+    }
+    if (unresolved.length > 0) {
+        throw new Error(`Could not resolve ${fieldName} email(s) from Gmail history: ${unresolved.join(', ')}. Please provide exact email address(es).`);
+    }
+    return deduped;
 }
 
 async function getPrimaryEmailAddress() {
@@ -4087,7 +4167,10 @@ async function outlookGraphFetch(endpoint, options = {}) {
 
 // 1. Send Email
 async function outlookSendEmail({ to, subject, body, cc, bcc }) {
-    const toRecipients = (Array.isArray(to) ? to : [to]).map(addr => ({
+    const normalizedTo = await normalizeMessageRecipients(to, { fieldName: 'to', requireAtLeastOne: true });
+    const normalizedCc = await normalizeMessageRecipients(cc, { fieldName: 'cc' });
+    const normalizedBcc = await normalizeMessageRecipients(bcc, { fieldName: 'bcc' });
+    const toRecipients = normalizedTo.map(addr => ({
         emailAddress: { address: addr }
     }));
     const message = {
@@ -4095,13 +4178,13 @@ async function outlookSendEmail({ to, subject, body, cc, bcc }) {
         body: { contentType: 'HTML', content: body || '' },
         toRecipients
     };
-    if (cc) {
-        message.ccRecipients = (Array.isArray(cc) ? cc : [cc]).map(addr => ({
+    if (normalizedCc.length > 0) {
+        message.ccRecipients = normalizedCc.map(addr => ({
             emailAddress: { address: addr }
         }));
     }
-    if (bcc) {
-        message.bccRecipients = (Array.isArray(bcc) ? bcc : [bcc]).map(addr => ({
+    if (normalizedBcc.length > 0) {
+        message.bccRecipients = normalizedBcc.map(addr => ({
             emailAddress: { address: addr }
         }));
     }
@@ -4109,7 +4192,7 @@ async function outlookSendEmail({ to, subject, body, cc, bcc }) {
         method: 'POST',
         body: JSON.stringify({ message, saveToSentItems: true })
     });
-    return { success: true, message: `Email sent to ${Array.isArray(to) ? to.join(', ') : to}` };
+    return { success: true, message: `Email sent to ${normalizedTo.join(', ')}` };
 }
 
 // 2. List Emails
@@ -4183,14 +4266,15 @@ async function outlookReplyToEmail({ messageId, body }) {
 
 // 6. Forward Email
 async function outlookForwardEmail({ messageId, to, comment }) {
-    const toRecipients = (Array.isArray(to) ? to : [to]).map(addr => ({
+    const normalizedTo = await normalizeMessageRecipients(to, { fieldName: 'to', requireAtLeastOne: true });
+    const toRecipients = normalizedTo.map(addr => ({
         emailAddress: { address: addr }
     }));
     await outlookGraphFetch(`/me/messages/${messageId}/forward`, {
         method: 'POST',
         body: JSON.stringify({ comment: comment || '', toRecipients })
     });
-    return { success: true, message: `Email forwarded to ${Array.isArray(to) ? to.join(', ') : to}` };
+    return { success: true, message: `Email forwarded to ${normalizedTo.join(', ')}` };
 }
 
 // 7. Delete Email
@@ -4270,22 +4354,25 @@ async function outlookGetAttachments({ messageId }) {
 
 // 14. Create Draft
 async function outlookCreateDraft({ to, subject, body, cc, bcc }) {
+    const normalizedTo = await normalizeMessageRecipients(to, { fieldName: 'to' });
+    const normalizedCc = await normalizeMessageRecipients(cc, { fieldName: 'cc' });
+    const normalizedBcc = await normalizeMessageRecipients(bcc, { fieldName: 'bcc' });
     const message = {
         subject: subject || '',
         body: { contentType: 'HTML', content: body || '' }
     };
-    if (to) {
-        message.toRecipients = (Array.isArray(to) ? to : [to]).map(addr => ({
+    if (normalizedTo.length > 0) {
+        message.toRecipients = normalizedTo.map(addr => ({
             emailAddress: { address: addr }
         }));
     }
-    if (cc) {
-        message.ccRecipients = (Array.isArray(cc) ? cc : [cc]).map(addr => ({
+    if (normalizedCc.length > 0) {
+        message.ccRecipients = normalizedCc.map(addr => ({
             emailAddress: { address: addr }
         }));
     }
-    if (bcc) {
-        message.bccRecipients = (Array.isArray(bcc) ? bcc : [bcc]).map(addr => ({
+    if (normalizedBcc.length > 0) {
+        message.bccRecipients = normalizedBcc.map(addr => ({
             emailAddress: { address: addr }
         }));
     }
@@ -6037,6 +6124,7 @@ Total Tools Available: ${toolCount}
 - Gmail: search_emails supports full Gmail query syntax (from:, to:, subject:, is:unread, has:attachment, etc.)
 - Calendar: Use list_events with timeMin/timeMax for date ranges. Use create_meet_event or create_event with createMeetLink=true for Google Meet.
 - Calendar attendees: If the user gives a person name (not exact email), resolve it from Gmail history first and do not use placeholder domains like example.com.
+- Email recipients: For send_email/create_draft/forward_email and Outlook equivalents, resolve person names from Gmail history first. If an email cannot be resolved, ask the user for the exact email address and do not use placeholder domains (example.com/test.com/etc.).
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
@@ -6334,6 +6422,17 @@ ${routingHintBlock}
                 tool_call_id: toolCall.id,
                 content: safeJsonStringify(toolPayloadForModel)
             });
+        }
+
+        const userInputRequiredResult = toolResults.find(item => item?.error && shouldRequestUserInputForToolError(item.error));
+        if (userInputRequiredResult) {
+            return {
+                response: userInputRequiredResult.error,
+                toolResults: allToolResults,
+                steps: allSteps,
+                turnsUsed: turnCount,
+                model: activeModel
+            };
         }
 
         completion = await createCompletionWithRetry({
