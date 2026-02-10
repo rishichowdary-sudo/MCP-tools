@@ -3950,6 +3950,58 @@ async function listCommits({ owner, repo, sha, perPage = 20 }) {
     return { commits, message: `Found ${commits.length} commits` };
 }
 
+// 18. Revert Commit
+async function revertCommit({ owner, repo, commitSha, branch = 'main' }) {
+    if (!octokitClient) throw new Error('GitHub not connected');
+    if (!commitSha) throw new Error('commitSha is required');
+
+    // 1. Get the commit to revert
+    const { data: commitData } = await octokitClient.rest.git.getCommit({
+        owner, repo, commit_sha: commitSha
+    });
+
+    if (!commitData.parents || commitData.parents.length === 0) {
+        throw new Error('Cannot revert the initial commit (no parent).');
+    }
+
+    // 2. Get the parent commit's tree (the state before the bad commit)
+    const parentSha = commitData.parents[0].sha;
+    const { data: parentCommit } = await octokitClient.rest.git.getCommit({
+        owner, repo, commit_sha: parentSha
+    });
+    const parentTreeSha = parentCommit.tree.sha;
+
+    // 3. Get the current branch HEAD
+    const { data: refData } = await octokitClient.rest.git.getRef({
+        owner, repo, ref: `heads/${branch}`
+    });
+    const currentHeadSha = refData.object.sha;
+
+    // 4. Create a new commit on top of HEAD using the parent's tree
+    const shortSha = commitSha.slice(0, 7);
+    const { data: newCommit } = await octokitClient.rest.git.createCommit({
+        owner, repo,
+        message: `Revert "${commitData.message}"\n\nThis reverts commit ${shortSha}.`,
+        tree: parentTreeSha,
+        parents: [currentHeadSha]
+    });
+
+    // 5. Update the branch ref to point to the new revert commit
+    await octokitClient.rest.git.updateRef({
+        owner, repo,
+        ref: `heads/${branch}`,
+        sha: newCommit.sha
+    });
+
+    return {
+        success: true,
+        message: `Successfully reverted commit ${shortSha} on branch '${branch}'.`,
+        revertCommitSha: newCommit.sha.slice(0, 7),
+        revertedCommitMessage: commitData.message,
+        branch
+    };
+}
+
 // 18. Get User Profile
 async function getUserProfile({ username }) {
     if (!octokitClient) throw new Error('GitHub not connected');
@@ -4832,6 +4884,7 @@ const githubTools = [
     { type: "function", function: { name: "search_repos", description: "Search GitHub repositories by keyword, language, stars, etc.", parameters: { type: "object", properties: { query: { type: "string", description: "Search query (e.g. 'react language:javascript stars:>1000')" }, sort: { type: "string", description: "Sort by: stars, forks, updated (default: stars)" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["query"] } } },
     { type: "function", function: { name: "search_code", description: "Search code across GitHub repositories.", parameters: { type: "object", properties: { query: { type: "string", description: "Code search query (e.g. 'useState repo:facebook/react')" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["query"] } } },
     { type: "function", function: { name: "list_commits", description: "List recent commits for a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, sha: { type: "string", description: "Branch name or commit SHA" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["owner", "repo"] } } },
+    { type: "function", function: { name: "revert_commit", description: "Revert a specific commit by creating a new commit that undoes its changes. Works like 'git revert'.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, commitSha: { type: "string", description: "Full or short SHA of the commit to revert" }, branch: { type: "string", description: "Branch to revert on (default: main)" } }, required: ["owner", "repo", "commitSha"] } } },
     { type: "function", function: { name: "get_user_profile", description: "Get a GitHub user's profile. Omit username to get your own profile.", parameters: { type: "object", properties: { username: { type: "string", description: "GitHub username (omit for your own)" } } } } },
     { type: "function", function: { name: "list_notifications", description: "List your GitHub notifications.", parameters: { type: "object", properties: { all: { type: "boolean", description: "Show all including read (default: false)" }, perPage: { type: "integer", description: "Results per page (default 20)" } } } } },
     { type: "function", function: { name: "list_gists", description: "List your GitHub gists.", parameters: { type: "object", properties: { perPage: { type: "integer", description: "Results per page (default 20)" } } } } }
@@ -5134,6 +5187,7 @@ async function executeGitHubTool(toolName, args) {
         list_branches: listBranches, create_branch: createBranch,
         get_file_content: getFileContent, create_or_update_file: createOrUpdateFile,
         search_repos: searchRepos, search_code: searchCode, list_commits: listCommits,
+        revert_commit: revertCommit,
         get_user_profile: getUserProfile, list_notifications: listNotifications,
         list_gists: listGists
     };

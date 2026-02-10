@@ -195,7 +195,7 @@ const TOOL_ICONS = {
     list_branches: '&#128204;', create_branch: '&#128204;',
     get_file_content: '&#128196;', create_or_update_file: '&#128196;',
     search_repos: '&#128269;', search_code: '&#128269;',
-    list_commits: '&#128221;', get_user_profile: '&#128100;',
+    list_commits: '&#128221;', revert_commit: '&#9194;', get_user_profile: '&#128100;',
     list_notifications: '&#128276;', list_gists: '&#128221;',
     // Outlook (18)
     outlook_send_email: '&#9993;', outlook_list_emails: '&#128203;',
@@ -260,7 +260,7 @@ const GITHUB_CATEGORIES = {
     'Issues': ['list_issues', 'create_issue', 'update_issue'],
     'Pull Requests': ['list_pull_requests', 'get_pull_request', 'create_pull_request', 'merge_pull_request'],
     'Code & Branches': ['list_branches', 'create_branch', 'get_file_content', 'create_or_update_file', 'search_code'],
-    'Activity': ['list_commits', 'get_user_profile', 'list_notifications', 'list_gists']
+    'Activity': ['list_commits', 'revert_commit', 'get_user_profile', 'list_notifications', 'list_gists']
 };
 
 const OUTLOOK_CATEGORIES = {
