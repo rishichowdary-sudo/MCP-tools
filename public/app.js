@@ -136,6 +136,23 @@ function pushChatHistoryEntry(role, content) {
     }
 }
 
+function triggerBrowserDownload(url, filename) {
+    const href = String(url || '').trim();
+    if (!href) return;
+    try {
+        const anchor = document.createElement('a');
+        anchor.href = href;
+        if (filename) anchor.setAttribute('download', String(filename));
+        anchor.rel = 'noopener noreferrer';
+        anchor.style.display = 'none';
+        document.body.appendChild(anchor);
+        anchor.click();
+        setTimeout(() => anchor.remove(), 0);
+    } catch (error) {
+        console.warn('Download trigger failed:', error);
+    }
+}
+
 // Tool icon mapping
 const TOOL_ICONS = {
     // Gmail (25)
@@ -163,7 +180,7 @@ const TOOL_ICONS = {
     list_drive_files: '&#128193;', get_drive_file: '&#128196;', create_drive_folder: '&#128193;',
     create_drive_file: '&#10133;', update_drive_file: '&#9998;', delete_drive_file: '&#128465;',
     copy_drive_file: '&#128209;', move_drive_file: '&#10145;', share_drive_file: '&#128101;',
-    download_drive_file: '&#128229;',
+    download_drive_file: '&#128229;', extract_drive_file_text: '&#128214;', convert_file_to_google_doc: '&#128260;', convert_file_to_google_sheet: '&#128202;',
     // Google Sheets
     list_spreadsheets: '&#128202;', create_spreadsheet: '&#10133;', get_spreadsheet: '&#128196;',
     list_sheet_tabs: '&#128203;', add_sheet_tab: '&#10133;', delete_sheet_tab: '&#10134;',
@@ -226,8 +243,9 @@ const GCHAT_CATEGORIES = {
 };
 
 const DRIVE_CATEGORIES = {
-    'Browse': ['list_drive_files', 'get_drive_file', 'download_drive_file'],
-    'Create & Edit': ['create_drive_folder', 'create_drive_file', 'update_drive_file'],
+    'Browse': ['list_drive_files', 'get_drive_file'],
+    'Download & Extract': ['download_drive_file', 'extract_drive_file_text'],
+    'Create & Convert': ['create_drive_folder', 'create_drive_file', 'convert_file_to_google_doc', 'convert_file_to_google_sheet', 'update_drive_file'],
     'Manage': ['copy_drive_file', 'move_drive_file', 'share_drive_file', 'delete_drive_file']
 };
 
@@ -1467,6 +1485,18 @@ async function sendMessage() {
                 turnsBadge.style.display = 'none';
             }
 
+            const automaticDownloads = (data.toolResults || [])
+                .filter(result =>
+                    result &&
+                    !result.error &&
+                    (result.tool === 'download_drive_file' || result.tool === 'convert_file_to_google_doc' || result.tool === 'convert_file_to_google_sheet') &&
+                    result.result &&
+                    result.result.downloadUrl
+                );
+            for (const item of automaticDownloads) {
+                triggerBrowserDownload(item.result.downloadUrl, item.result.downloadName || item.result.name || 'download');
+            }
+
             let responseHtml = '';
 
             if (data.steps && data.steps.length > 0) {
@@ -1854,6 +1884,66 @@ function formatToolResults(results) {
                         ${f.webViewLink ? `<div class="email-card-snippet"><a href="${escapeHtml(f.webViewLink)}" target="_blank" rel="noopener noreferrer">Open in Drive</a></div>` : ''}
                     </div>
                 `).join('');
+                // Drive download payload
+            } else if (result.tool === 'download_drive_file' && result.result.downloadUrl) {
+                const downloadHref = escapeHtml(result.result.downloadUrl);
+                const downloadName = escapeHtml(result.result.downloadName || result.result.name || 'download');
+                const formatLabel = escapeHtml(result.result.format || 'raw');
+                content = `
+                    <div class="email-card vertical">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(result.result.name || 'Drive file')}</span>
+                            <span class="email-card-date">${formatLabel.toUpperCase()}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(result.result.fileId || '')}</code></div>
+                        <div class="email-card-snippet" style="margin-top:0.6rem;display:flex;gap:0.6rem;flex-wrap:wrap">
+                            <a href="${downloadHref}" download="${downloadName}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;text-decoration:none">Download File</a>
+                            ${result.result.webViewLink ? `<a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--text-secondary);text-decoration:none">Open in Drive</a>` : ''}
+                        </div>
+                    </div>
+                `;
+                // Extracted Drive text
+            } else if (result.tool === 'extract_drive_file_text' && result.result.content) {
+                const preview = String(result.result.content || '');
+                content = `
+                    <div class="email-card vertical">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(result.result.name || 'Extracted text')}</span>
+                            <span class="email-card-date">${escapeHtml(result.result.extractionMethod || '')}</span>
+                        </div>
+                        <pre style="max-height:260px;overflow:auto;white-space:pre-wrap">${escapeHtml(preview)}</pre>
+                    </div>
+                `;
+                // Converted file to Google Doc
+            } else if (result.tool === 'convert_file_to_google_doc' && result.result.documentId) {
+                content = `
+                    <div class="email-card vertical">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(result.result.name || 'Converted Google Doc')}</span>
+                            <span class="email-card-date">Google Doc</span>
+                        </div>
+                        <div class="email-card-from">Source: ${escapeHtml(result.result.sourceName || result.result.sourceFileId || '')}</div>
+                        <div class="email-card-snippet" style="margin-top:0.6rem;display:flex;gap:0.6rem;flex-wrap:wrap">
+                            ${result.result.webViewLink ? `<a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;text-decoration:none">Open Converted Doc</a>` : ''}
+                            ${result.result.downloadUrl ? `<a href="${escapeHtml(result.result.downloadUrl)}" download="${escapeHtml(result.result.downloadName || result.result.name || 'converted-document')}" target="_blank" rel="noopener noreferrer" style="color:var(--text-secondary);text-decoration:none">Download Converted File</a>` : ''}
+                        </div>
+                    </div>
+                `;
+                // Converted file to Google Sheet
+            } else if (result.tool === 'convert_file_to_google_sheet' && result.result.spreadsheetId) {
+                content = `
+                    <div class="email-card vertical">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(result.result.name || 'Converted Google Sheet')}</span>
+                            <span class="email-card-date">Google Sheet</span>
+                        </div>
+                        <div class="email-card-from">Source: ${escapeHtml(result.result.sourceName || result.result.sourceFileId || '')}</div>
+                        <div class="email-card-snippet" style="margin-top:0.6rem;display:flex;gap:0.6rem;flex-wrap:wrap">
+                            ${result.result.webViewLink ? `<a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;text-decoration:none">Open Converted Sheet</a>` : ''}
+                            ${result.result.downloadUrl ? `<a href="${escapeHtml(result.result.downloadUrl)}" download="${escapeHtml(result.result.downloadName || result.result.name || 'converted-sheet')}" target="_blank" rel="noopener noreferrer" style="color:var(--text-secondary);text-decoration:none">Download Converted File</a>` : ''}
+                        </div>
+                    </div>
+                `;
                 // Spreadsheet list
             } else if (result.result.spreadsheets && Array.isArray(result.result.spreadsheets)) {
                 content = result.result.spreadsheets.map(s => `
