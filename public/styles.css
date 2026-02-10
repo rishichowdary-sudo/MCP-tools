@@ -14,6 +14,7 @@
     --outlook-blue: #0078D4;
     --docs-blue: #4285F4;
     --teams-purple: #6264A7;
+    --gcs-orange: #FF6D00;
     --text-primary: #ffffff;
     --text-secondary: #a1a1aa;
     --text-muted: #71717a;
@@ -194,6 +195,10 @@ body {
 
 .nav-item-icon.teams-icon {
     background: rgba(98, 100, 167, 0.18);
+}
+
+.nav-item-icon.gcs-icon {
+    background: rgba(255, 109, 0, 0.18);
 }
 
 .nav-item-icon.timer-icon {
@@ -589,6 +594,12 @@ body {
     background: rgba(98, 100, 167, 0.15);
     border: 1px solid rgba(98, 100, 167, 0.3);
     color: #6264A7;
+}
+
+.gcs-badge {
+    background: rgba(255, 109, 0, 0.15);
+    border: 1px solid rgba(255, 109, 0, 0.3);
+    color: #FF6D00;
 }
 
 .timer-badge {

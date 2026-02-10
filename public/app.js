@@ -75,6 +75,13 @@ const teamsSetupSection = document.getElementById('teamsSetupSection');
 const teamsStatus = document.getElementById('teamsStatus');
 const teamsBadge = document.getElementById('teamsBadge');
 const teamsUserInfo = document.getElementById('teamsUserInfo');
+const gcsNavItem = document.getElementById('gcsNavItem');
+const gcsPanel = document.getElementById('gcsPanel');
+const gcsSetupSection = document.getElementById('gcsSetupSection');
+const gcsConnectedSection = document.getElementById('gcsConnectedSection');
+const gcsStatus = document.getElementById('gcsStatus');
+const gcsBadge = document.getElementById('gcsBadge');
+const gcsProjectInfo = document.getElementById('gcsProjectInfo');
 const outlookNavItem = document.getElementById('outlookNavItem');
 const outlookPanel = document.getElementById('outlookPanel');
 const outlookAuthBtn = document.getElementById('outlookAuthBtn');
@@ -115,6 +122,7 @@ let isGithubConnected = false;
 let isOutlookConnected = false;
 let isDocsConnected = false;
 let isTeamsConnected = false;
+let isGcsConnected = false;
 let isTimerConnected = false;
 let isRecording = false;
 let recognition = null;
@@ -216,7 +224,13 @@ const TOOL_ICONS = {
     teams_list_channels: '&#128193;', teams_send_channel_message: '&#9993;',
     teams_list_channel_messages: '&#128221;', teams_list_chats: '&#128172;',
     teams_send_chat_message: '&#9993;', teams_list_chat_messages: '&#128221;',
-    teams_create_chat: '&#10133;', teams_get_chat_members: '&#128101;'
+    teams_create_chat: '&#10133;', teams_get_chat_members: '&#128101;',
+    // GCS (10)
+    gcs_list_buckets: '&#128230;', gcs_get_bucket: '&#128196;',
+    gcs_create_bucket: '&#10133;', gcs_delete_bucket: '&#128465;',
+    gcs_list_objects: '&#128193;', gcs_upload_object: '&#128228;',
+    gcs_download_object: '&#128229;', gcs_delete_object: '&#128465;',
+    gcs_copy_object: '&#128209;', gcs_get_object_metadata: '&#128196;'
 };
 
 // Tool category mappings per service
@@ -284,6 +298,11 @@ const TEAMS_CATEGORIES = {
     'Chats': ['teams_list_chats', 'teams_send_chat_message', 'teams_list_chat_messages', 'teams_create_chat', 'teams_get_chat_members']
 };
 
+const GCS_CATEGORIES = {
+    'Buckets': ['gcs_list_buckets', 'gcs_get_bucket', 'gcs_create_bucket', 'gcs_delete_bucket'],
+    'Objects': ['gcs_list_objects', 'gcs_upload_object', 'gcs_download_object', 'gcs_delete_object', 'gcs_copy_object', 'gcs_get_object_metadata']
+};
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     checkAllStatuses();
@@ -317,6 +336,7 @@ function setupEventListeners() {
     docsNavItem.addEventListener('click', () => openPanel('docs'));
     teamsNavItem.addEventListener('click', () => openPanel('teams'));
     outlookNavItem.addEventListener('click', () => openPanel('outlook'));
+    gcsNavItem.addEventListener('click', () => openPanel('gcs'));
     timerNavItem.addEventListener('click', () => {
         openPanel('timer');
         loadTimerTasks();
@@ -428,8 +448,8 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, docs: docsPanel, github: githubPanel, outlook: outlookPanel, teams: teamsPanel, timer: timerPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, docs: docsNavItem, github: githubNavItem, outlook: outlookNavItem, teams: teamsNavItem, timer: timerNavItem };
+    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, docs: docsPanel, github: githubPanel, outlook: outlookPanel, teams: teamsPanel, gcs: gcsPanel, timer: timerPanel };
+    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, docs: docsNavItem, github: githubNavItem, outlook: outlookNavItem, teams: teamsNavItem, gcs: gcsNavItem, timer: timerNavItem };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -437,8 +457,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, docsPanel, githubPanel, outlookPanel, teamsPanel, timerPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, docsNavItem, githubNavItem, outlookNavItem, teamsNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, docsPanel, githubPanel, outlookPanel, teamsPanel, gcsPanel, timerPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, docsNavItem, githubNavItem, outlookNavItem, teamsNavItem, gcsNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -470,7 +490,8 @@ async function loadCapabilities() {
             github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES },
             outlook: { label: 'Outlook', dot: 'outlook', categories: OUTLOOK_CATEGORIES },
             docs: { label: 'Google Docs', dot: 'docs', categories: DOCS_CATEGORIES },
-            teams: { label: 'Microsoft Teams', dot: 'teams', categories: TEAMS_CATEGORIES }
+            teams: { label: 'Microsoft Teams', dot: 'teams', categories: TEAMS_CATEGORIES },
+            gcs: { label: 'GCP Cloud Storage', dot: 'gcs', categories: GCS_CATEGORIES }
         };
 
         for (const svc of services) {
@@ -540,6 +561,7 @@ async function checkAllStatuses() {
     checkGitHubStatus();
     checkOutlookStatus();
     checkTeamsStatus();
+    checkGcsStatus();
     checkTimerStatus();
 
     setInterval(() => {
@@ -552,6 +574,7 @@ async function checkAllStatuses() {
         checkGitHubStatus();
         checkOutlookStatus();
         checkTeamsStatus();
+        checkGcsStatus();
         checkTimerStatus();
     }, 5000);
 }
@@ -1297,6 +1320,33 @@ async function disconnectTeams() {
         checkOutlookStatus();
     } catch (error) {
         console.error('Teams disconnect error:', error);
+    }
+}
+
+async function checkGcsStatus() {
+    try {
+        const response = await fetch('/api/gcs/status');
+        const data = await response.json();
+        updateGcsStatus(data);
+    } catch (error) {
+        updateGcsStatus({ authenticated: false });
+    }
+}
+
+function updateGcsStatus(data) {
+    const statusDot = gcsStatus.querySelector('.status-dot');
+    isGcsConnected = data.authenticated;
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        gcsSetupSection.style.display = 'none';
+        gcsConnectedSection.style.display = 'block';
+        gcsBadge.style.display = 'inline-flex';
+        if (data.projectId) gcsProjectInfo.textContent = `Project: ${data.projectId}. 10 bucket/object tools ready!`;
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        gcsSetupSection.style.display = 'block';
+        gcsConnectedSection.style.display = 'none';
+        gcsBadge.style.display = 'none';
     }
 }
 
