@@ -22,6 +22,12 @@ Create a `.env` file in the project root:
 
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
+# Optional model tuning (defaults are optimized for tool-heavy flows)
+# OPENAI_MODEL=gpt-4o-mini
+# OPENAI_FALLBACK_MODEL=gpt-4o
+# OPENAI_CHAT_MAX_RETRIES=2
+# OPENAI_TEMPERATURE=0.2
+# OPENAI_MAX_OUTPUT_TOKENS=1800
 PORT=3000
 
 # Google OAuth (required for Gmail/Calendar/Chat/Drive/Sheets)
