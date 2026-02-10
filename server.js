@@ -21,8 +21,23 @@ app.use(express.static('public'));
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
+const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
+const OPENAI_MODEL = String(process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
+const OPENAI_FALLBACK_MODEL = String(process.env.OPENAI_FALLBACK_MODEL || '').trim();
+const OPENAI_CHAT_MAX_RETRIES = Math.min(
+    4,
+    Math.max(0, Number.parseInt(process.env.OPENAI_CHAT_MAX_RETRIES || '2', 10) || 2)
+);
+const parsedOpenAiTemperature = Number.parseFloat(process.env.OPENAI_TEMPERATURE ?? '0.2');
+const OPENAI_TEMPERATURE = Number.isFinite(parsedOpenAiTemperature)
+    ? Math.min(1, Math.max(0, parsedOpenAiTemperature))
+    : 0.2;
+const parsedOpenAiMaxOutput = Number.parseInt(process.env.OPENAI_MAX_OUTPUT_TOKENS || '', 10);
+const OPENAI_MAX_OUTPUT_TOKENS = Number.isFinite(parsedOpenAiMaxOutput) && parsedOpenAiMaxOutput > 0
+    ? parsedOpenAiMaxOutput
+    : null;
 
-// Google OAuth scopes setup (Gmail, Calendar, Chat, Drive, Sheets)
+// Google OAuth scopes setup (Gmail, Calendar, Chat, Drive, Sheets, Docs)
 const SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.send',
@@ -33,6 +48,7 @@ const SCOPES = [
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/documents',
     'https://www.googleapis.com/auth/chat.spaces.readonly',
     'https://www.googleapis.com/auth/chat.messages.create',
     'https://www.googleapis.com/auth/chat.messages.readonly'
@@ -40,6 +56,7 @@ const SCOPES = [
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+const DOCS_SCOPE = 'https://www.googleapis.com/auth/documents';
 const GCHAT_REQUIRED_SCOPES = [
     'https://www.googleapis.com/auth/chat.spaces.readonly',
     'https://www.googleapis.com/auth/chat.messages.create',
@@ -48,6 +65,7 @@ const GCHAT_REQUIRED_SCOPES = [
 const GOOGLE_OAUTH_PROMPT = 'consent select_account';
 const GITHUB_OAUTH_SCOPES = ['repo', 'read:user', 'user:email', 'notifications', 'gist'];
 const GITHUB_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const GOOGLE_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const SHEETS_MCP_TOOL_PREFIX = 'sheets_mcp__';
 const SHEETS_MCP_ENABLED = String(process.env.SHEETS_MCP_ENABLED || 'true').toLowerCase() !== 'false';
 const SHEETS_MCP_COMMAND = process.env.SHEETS_MCP_COMMAND || 'node';
@@ -65,8 +83,16 @@ const OUTLOOK_SCOPES = [
     'User.Read',
     'Mail.Read',
     'Mail.ReadWrite',
-    'Mail.Send'
+    'Mail.Send',
+    'Team.ReadBasic.All',
+    'Channel.ReadBasic.All',
+    'ChannelMessage.Read.All',
+    'ChannelMessage.Send',
+    'Chat.Read',
+    'Chat.ReadWrite',
+    'ChatMessage.Send'
 ];
+const TEAMS_REQUIRED_SCOPES = ['Team.ReadBasic.All', 'Channel.ReadBasic.All', 'Chat.Read'];
 const OUTLOOK_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const OUTLOOK_AUTHORITY = 'https://login.microsoftonline.com/common';
 const OUTLOOK_GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
@@ -82,6 +108,7 @@ let calendarClient = null;
 let gchatClient = null;
 let driveClient = null;
 let sheetsClient = null;
+let docsClient = null;
 let octokitClient = null;
 let githubUsername = null;
 let githubAuthMethod = null;
@@ -90,6 +117,7 @@ let sheetsMcpTransport = null;
 let sheetsMcpTools = [];
 let sheetsMcpError = null;
 const githubOAuthStateStore = new Map();
+const googleOAuthStateStore = new Map();
 let cachedPrimaryEmail = null;
 let scheduledTasks = [];
 let schedulerInterval = null;
@@ -163,6 +191,14 @@ function hasSheetsScope() {
     }
     const savedToken = readSavedToken();
     return tokenHasScope(savedToken, SHEETS_SCOPE);
+}
+
+function hasDocsScope() {
+    if (oauth2Client && tokenHasScope(oauth2Client.credentials, DOCS_SCOPE)) {
+        return true;
+    }
+    const savedToken = readSavedToken();
+    return tokenHasScope(savedToken, DOCS_SCOPE);
 }
 
 function getCalendarPermissionError(error) {
@@ -265,6 +301,17 @@ function isValidDailyTime(value) {
         Number(value.slice(3, 5)) <= 59;
 }
 
+function dailyTimeToMinutes(value) {
+    if (!isValidDailyTime(value)) return null;
+    return (Number(value.slice(0, 2)) * 60) + Number(value.slice(3, 5));
+}
+
+function clampPagination(value, { fallback = 20, min = 1, max = 100 } = {}) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+}
+
 function schedulerDateParts(now = new Date()) {
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -356,6 +403,7 @@ function isOutlookOAuthConfigured() {
     const clientSecret = process.env.OUTLOOK_CLIENT_SECRET;
     if (!clientId || !clientSecret) return false;
     if (clientId.includes('your_outlook_client_id_here')) return false;
+    if (clientSecret.includes('your_outlook_client_secret_here')) return false;
     return true;
 }
 
@@ -377,10 +425,32 @@ function clearOutlookAuth() {
     if (fs.existsSync(OUTLOOK_TOKEN_PATH)) fs.unlinkSync(OUTLOOK_TOKEN_PATH);
 }
 
+function hasTeamsScopes() {
+    try {
+        if (!fs.existsSync(OUTLOOK_TOKEN_PATH)) return false;
+        const data = JSON.parse(fs.readFileSync(OUTLOOK_TOKEN_PATH, 'utf8'));
+        if (!data.scope) return false;
+        const granted = new Set(data.scope.split(/\s+/).filter(Boolean));
+        return TEAMS_REQUIRED_SCOPES.every(s => granted.has(s));
+    } catch {
+        return false;
+    }
+}
+
 function getGoogleOAuthCredentials() {
     const clientId = process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
     const clientSecret = process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
     return { clientId, clientSecret };
+}
+
+function isGoogleOAuthConfigured() {
+    const { clientId, clientSecret } = getGoogleOAuthCredentials();
+    if (!clientId || !clientSecret) return false;
+    const idLower = clientId.toLowerCase();
+    const secretLower = clientSecret.toLowerCase();
+    if (idLower.includes('your_google_client_id') || idLower.includes('your_gmail_client_id')) return false;
+    if (secretLower.includes('your_google_client_secret') || secretLower.includes('your_gmail_client_secret')) return false;
+    return true;
 }
 
 function ensureSheetsMcpOAuthKeyfile(clientId, clientSecret) {
@@ -526,6 +596,27 @@ async function closeSheetsMcpClient() {
     }
 }
 
+function pruneGoogleOAuthStates() {
+    const now = Date.now();
+    for (const [state, ts] of googleOAuthStateStore.entries()) {
+        if (now - ts > GOOGLE_OAUTH_STATE_TTL_MS) googleOAuthStateStore.delete(state);
+    }
+}
+
+function issueGoogleOAuthState() {
+    pruneGoogleOAuthStates();
+    const state = crypto.randomBytes(24).toString('hex');
+    googleOAuthStateStore.set(state, Date.now());
+    return state;
+}
+
+function consumeGoogleOAuthState(state) {
+    if (!state || !googleOAuthStateStore.has(state)) return false;
+    const ts = googleOAuthStateStore.get(state);
+    googleOAuthStateStore.delete(state);
+    return (Date.now() - ts) <= GOOGLE_OAUTH_STATE_TTL_MS;
+}
+
 function pruneGithubOAuthStates() {
     const now = Date.now();
     for (const [state, ts] of githubOAuthStateStore.entries()) {
@@ -570,10 +661,9 @@ function consumeOutlookOAuthState(state) {
 
 // Initialize OAuth client from environment variables
 function initOAuthClient() {
-    const clientId = process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+    const { clientId, clientSecret } = getGoogleOAuthCredentials();
 
-    if (!clientId || !clientSecret || clientId === 'your_google_client_id_here') {
+    if (!isGoogleOAuthConfigured()) {
         console.log('  Google OAuth credentials not configured in .env');
         return false;
     }
@@ -601,6 +691,9 @@ function initOAuthClient() {
             sheetsClient = tokenHasScope(token, SHEETS_SCOPE)
                 ? google.sheets({ version: 'v4', auth: oauth2Client })
                 : null;
+            docsClient = tokenHasScope(token, DOCS_SCOPE)
+                ? google.docs({ version: 'v1', auth: oauth2Client })
+                : null;
             if (calendarClient) {
                 console.log('Gmail + Calendar clients initialized with existing token');
             } else {
@@ -614,6 +707,9 @@ function initOAuthClient() {
             }
             if (!sheetsClient) {
                 console.log('Google Sheets scope missing in token; reconnect required for Sheets tools.');
+            }
+            if (!docsClient) {
+                console.log('Google Docs scope missing in token; reconnect required for Docs tools.');
             }
         }
         return true;
@@ -666,11 +762,14 @@ async function refreshOutlookToken() {
         outlookAccessToken = tokenData.access_token;
         if (tokenData.refresh_token) outlookRefreshToken = tokenData.refresh_token;
         outlookTokenExpiry = Date.now() + (tokenData.expires_in * 1000) - 60000;
+        const existingData = fs.existsSync(OUTLOOK_TOKEN_PATH) ? JSON.parse(fs.readFileSync(OUTLOOK_TOKEN_PATH, 'utf8')) : {};
         saveOutlookTokenData({
+            ...existingData,
             access_token: outlookAccessToken,
             refresh_token: outlookRefreshToken,
             expiry: outlookTokenExpiry,
             email: outlookUserEmail,
+            scope: tokenData.scope || existingData.scope || OUTLOOK_SCOPES.join(' '),
             connectedAt: new Date().toISOString()
         });
         return true;
@@ -709,14 +808,34 @@ async function initOutlookClient() {
 //  HELPER UTILITIES
 // ============================================================
 
+function sanitizeHeaderValue(value) {
+    return String(value ?? '')
+        .replace(/[\r\n]+/g, ' ')
+        .trim();
+}
+
+function normalizeAddressHeader(value) {
+    if (!value) return '';
+    if (Array.isArray(value)) {
+        return value
+            .map(item => sanitizeHeaderValue(item))
+            .filter(Boolean)
+            .join(', ');
+    }
+    return sanitizeHeaderValue(value);
+}
+
 function buildRawMessage({ to, subject, body, cc, bcc, inReplyTo, references, threadId }) {
     const lines = [];
-    if (to) lines.push(`To: ${Array.isArray(to) ? to.join(', ') : to}`);
-    if (cc) lines.push(`Cc: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
-    if (bcc) lines.push(`Bcc: ${Array.isArray(bcc) ? bcc.join(', ') : bcc}`);
-    lines.push(`Subject: ${subject || ''}`);
-    if (inReplyTo) lines.push(`In-Reply-To: ${inReplyTo}`);
-    if (references) lines.push(`References: ${references}`);
+    const toHeader = normalizeAddressHeader(to);
+    const ccHeader = normalizeAddressHeader(cc);
+    const bccHeader = normalizeAddressHeader(bcc);
+    if (toHeader) lines.push(`To: ${toHeader}`);
+    if (ccHeader) lines.push(`Cc: ${ccHeader}`);
+    if (bccHeader) lines.push(`Bcc: ${bccHeader}`);
+    lines.push(`Subject: ${sanitizeHeaderValue(subject || '')}`);
+    if (inReplyTo) lines.push(`In-Reply-To: ${sanitizeHeaderValue(inReplyTo)}`);
+    if (references) lines.push(`References: ${sanitizeHeaderValue(references)}`);
     lines.push('Content-Type: text/html; charset=utf-8');
     lines.push('');
     lines.push(body || '');
@@ -809,11 +928,12 @@ async function sendEmail({ to, subject, body, cc, bcc }) {
 // 2. Search Emails
 async function searchEmails({ query, maxResults = 20 }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const response = await gmailClient.users.messages.list({ userId: 'me', q: query, maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gmailClient.users.messages.list({ userId: 'me', q: query, maxResults: limit });
     if (!response.data.messages) return { results: [], totalEstimate: 0, message: 'No emails found' };
 
     const emails = await Promise.all(
-        response.data.messages.slice(0, maxResults).map(async (msg) => {
+        response.data.messages.slice(0, limit).map(async (msg) => {
             try {
                 const data = await getEmailMetadata(msg.id);
                 const h = extractHeaders(data.payload.headers, ['Subject', 'From', 'Date']);
@@ -843,7 +963,8 @@ async function readEmail({ messageId }) {
 // 4. List Emails
 async function listEmails({ maxResults = 20, label = 'INBOX' }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const response = await gmailClient.users.messages.list({ userId: 'me', labelIds: [label], maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gmailClient.users.messages.list({ userId: 'me', labelIds: [label], maxResults: limit });
     if (!response.data.messages) return { results: [], message: 'No emails found' };
 
     const emails = await Promise.all(
@@ -891,8 +1012,12 @@ async function replyToEmail({ messageId, body, cc }) {
     const headers = original.data.payload.headers;
     const h = extractHeaders(headers, ['Subject', 'From', 'To', 'Message-ID']);
 
-    const replyTo = h.from;
-    const subject = h.subject.startsWith('Re:') ? h.subject : `Re: ${h.subject}`;
+    const replyTo = (h.from || '').trim();
+    if (!replyTo) {
+        throw new Error('Cannot reply because the original message has no From header.');
+    }
+    const originalSubject = (h.subject || '').trim() || '(no subject)';
+    const subject = /^re:/i.test(originalSubject) ? originalSubject : `Re: ${originalSubject}`;
     const raw = buildRawMessage({
         to: replyTo, subject, body, cc,
         inReplyTo: h['message-id'],
@@ -914,7 +1039,8 @@ async function forwardEmail({ messageId, to, additionalMessage }) {
     const originalBody = extractBody(original.data.payload);
 
     const forwardBody = `${additionalMessage || ''}\n\n---------- Forwarded message ----------\nFrom: ${h.from}\nDate: ${h.date}\nSubject: ${h.subject}\n\n${originalBody}`;
-    const subject = h.subject.startsWith('Fwd:') ? h.subject : `Fwd: ${h.subject}`;
+    const originalSubject = (h.subject || '').trim() || '(no subject)';
+    const subject = /^fwd?:/i.test(originalSubject) ? originalSubject : `Fwd: ${originalSubject}`;
 
     const raw = buildRawMessage({ to, subject, body: forwardBody });
     const result = await gmailClient.users.messages.send({ userId: 'me', requestBody: { raw } });
@@ -1031,7 +1157,8 @@ async function getThread({ threadId, maxMessages = 50 }) {
 // 20. List Drafts
 async function listDrafts({ maxResults = 20 }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const response = await gmailClient.users.drafts.list({ userId: 'me', maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gmailClient.users.drafts.list({ userId: 'me', maxResults: limit });
     if (!response.data.drafts) return { drafts: [], message: 'No drafts found' };
 
     const drafts = await Promise.all(
@@ -1447,7 +1574,8 @@ async function queryFreeBusyCalendars({ timeMin, timeMax, calendarIds = [] }) {
 // 1. List Events
 async function listEvents({ calendarId = 'primary', maxResults = 10, timeMin, timeMax }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
-    const params = { calendarId, maxResults, singleEvents: true, orderBy: 'startTime' };
+    const limit = clampPagination(maxResults, { fallback: 10, max: 250 });
+    const params = { calendarId, maxResults: limit, singleEvents: true, orderBy: 'startTime' };
     if (timeMin) params.timeMin = timeMin;
     else params.timeMin = new Date().toISOString();
     if (timeMax) params.timeMax = timeMax;
@@ -1762,7 +1890,8 @@ async function findCommonFreeSlots({ timeMin, timeMax, durationMinutes = 30, peo
 // 10. List Recurring Event Instances
 async function listRecurringInstances({ calendarId = 'primary', eventId, maxResults = 10, timeMin, timeMax }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
-    const params = { calendarId, eventId, maxResults };
+    const limit = clampPagination(maxResults, { fallback: 10, max: 250 });
+    const params = { calendarId, eventId, maxResults: limit };
     if (timeMin) params.timeMin = timeMin;
     if (timeMax) params.timeMax = timeMax;
     const response = await calendarClient.events.instances(params);
@@ -1794,8 +1923,9 @@ async function updateEventAttendees({ calendarId = 'primary', eventId, addAttend
         }
     }
     if (removeAttendees.length > 0) {
-        const removeSet = new Set(removeAttendees);
-        attendees = attendees.filter(a => !removeSet.has(a.email));
+        const resolvedRemovals = await normalizeEventAttendees(removeAttendees);
+        const removeSet = new Set(resolvedRemovals.map(email => email.toLowerCase()));
+        attendees = attendees.filter(a => !removeSet.has(String(a.email || '').toLowerCase()));
     }
     existing.attendees = attendees;
     const result = await calendarClient.events.update({ calendarId, eventId, requestBody: existing });
@@ -1841,7 +1971,8 @@ function normalizeSpaceName(spaceId) {
 
 async function listChatSpaces({ maxResults = 20 }) {
     if (!gchatClient) throw new Error('Google Chat not authenticated');
-    const response = await gchatClient.spaces.list({ pageSize: maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gchatClient.spaces.list({ pageSize: limit });
     const spaces = (response.data.spaces || []).map(space => ({
         name: space.name,
         displayName: space.displayName || space.name,
@@ -1876,9 +2007,10 @@ async function listChatMessages({ spaceId, maxResults = 20 }) {
     if (!spaceId) throw new Error('spaceId is required');
 
     const parent = normalizeSpaceName(spaceId);
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const response = await gchatClient.spaces.messages.list({
         parent,
-        pageSize: maxResults
+        pageSize: limit
     });
     const messages = (response.data.messages || []).map(msg => ({
         name: msg.name,
@@ -1936,6 +2068,7 @@ function buildDriveQueryClause(query) {
 
 async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime desc', includeTrashed = false }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
+    const limit = clampPagination(pageSize, { fallback: 100, max: 200 });
     const qParts = [];
     if (!includeTrashed) qParts.push('trashed = false');
     const queryText = String(query || '').trim();
@@ -1946,7 +2079,7 @@ async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime d
     try {
         response = await driveClient.files.list({
             q: qParts.length > 0 ? qParts.join(' and ') : undefined,
-            pageSize,
+            pageSize: limit,
             orderBy,
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -1962,7 +2095,7 @@ async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime d
         retryQParts.push(buildDriveKeywordClause(queryText));
         response = await driveClient.files.list({
             q: retryQParts.join(' and '),
-            pageSize,
+            pageSize: limit,
             orderBy,
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2423,6 +2556,7 @@ async function verifySheetWriteWithRetry({
 
 async function listSpreadsheets({ query, maxResults = 100 }) {
     if (!driveClient) throw new Error('Google Drive is required to list spreadsheets. Reconnect Google Drive.');
+    const limit = clampPagination(maxResults, { fallback: 100, max: 200 });
 
     const qParts = [
         "mimeType = 'application/vnd.google-apps.spreadsheet'",
@@ -2436,7 +2570,7 @@ async function listSpreadsheets({ query, maxResults = 100 }) {
     try {
         response = await driveClient.files.list({
             q: qParts.join(' and '),
-            pageSize: maxResults,
+            pageSize: limit,
             orderBy: 'modifiedTime desc',
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2454,7 +2588,7 @@ async function listSpreadsheets({ query, maxResults = 100 }) {
         ];
         response = await driveClient.files.list({
             q: retryQParts.join(' and '),
-            pageSize: maxResults,
+            pageSize: limit,
             orderBy: 'modifiedTime desc',
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2467,7 +2601,7 @@ async function listSpreadsheets({ query, maxResults = 100 }) {
     if (queryText && files.length === 0) {
         const broad = await driveClient.files.list({
             q: "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
-            pageSize: Math.max(maxResults, 200),
+            pageSize: Math.max(limit, 200),
             orderBy: 'modifiedTime desc',
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2925,17 +3059,156 @@ async function clearSheetValues({ spreadsheetId, range }) {
 }
 
 // ============================================================
+//  8 GOOGLE DOCS TOOL IMPLEMENTATIONS
+// ============================================================
+
+// 1. List Documents (via Drive API)
+async function listDocuments({ query, pageSize = 25 }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated (required for listing Docs)');
+    const limit = clampPagination(pageSize, { fallback: 25, max: 100 });
+    const qParts = ["mimeType='application/vnd.google-apps.document'", 'trashed = false'];
+    if (query) qParts.push(`name contains '${query.replace(/'/g, "\\'")}'`);
+    const response = await driveClient.files.list({
+        q: qParts.join(' and '),
+        pageSize: limit,
+        orderBy: 'modifiedTime desc',
+        fields: 'files(id,name,modifiedTime,createdTime,owners(displayName,emailAddress),webViewLink)'
+    });
+    const files = (response.data.files || []).map(f => ({
+        id: f.id, name: f.name, modifiedTime: f.modifiedTime, createdTime: f.createdTime,
+        owners: f.owners, webViewLink: f.webViewLink
+    }));
+    return { documents: files, count: files.length, message: `Found ${files.length} Google Doc(s)` };
+}
+
+// 2. Get Document
+async function getDocument({ documentId }) {
+    if (!docsClient) throw new Error('Google Docs not authenticated');
+    if (!documentId) throw new Error('documentId is required');
+    const response = await docsClient.documents.get({ documentId });
+    const doc = response.data;
+    return { documentId: doc.documentId, title: doc.title, revisionId: doc.revisionId, body: doc.body };
+}
+
+// 3. Create Document
+async function createDocument({ title, content }) {
+    if (!docsClient) throw new Error('Google Docs not authenticated');
+    if (!title) throw new Error('title is required');
+    const response = await docsClient.documents.create({ requestBody: { title } });
+    const doc = response.data;
+    if (content) {
+        await docsClient.documents.batchUpdate({
+            documentId: doc.documentId,
+            requestBody: { requests: [{ insertText: { location: { index: 1 }, text: content } }] }
+        });
+    }
+    return {
+        documentId: doc.documentId, title: doc.title,
+        webViewLink: `https://docs.google.com/document/d/${doc.documentId}/edit`,
+        message: `Created document "${title}"`
+    };
+}
+
+// 4. Insert Text
+async function insertText({ documentId, text, index = 1 }) {
+    if (!docsClient) throw new Error('Google Docs not authenticated');
+    if (!documentId || !text) throw new Error('documentId and text are required');
+    await docsClient.documents.batchUpdate({
+        documentId,
+        requestBody: { requests: [{ insertText: { location: { index }, text } }] }
+    });
+    return { success: true, documentId, message: `Inserted text at index ${index}` };
+}
+
+// 5. Replace Text
+async function replaceText({ documentId, findText, replaceWith, matchCase = false }) {
+    if (!docsClient) throw new Error('Google Docs not authenticated');
+    if (!documentId || !findText || replaceWith === undefined) throw new Error('documentId, findText, and replaceWith are required');
+    const response = await docsClient.documents.batchUpdate({
+        documentId,
+        requestBody: {
+            requests: [{
+                replaceAllText: {
+                    containsText: { text: findText, matchCase },
+                    replaceText: replaceWith
+                }
+            }]
+        }
+    });
+    const occurrences = response.data.replies?.[0]?.replaceAllText?.occurrencesChanged || 0;
+    return { success: true, documentId, occurrencesChanged: occurrences, message: `Replaced ${occurrences} occurrence(s) of "${findText}"` };
+}
+
+// 6. Delete Content
+async function deleteContent({ documentId, startIndex, endIndex }) {
+    if (!docsClient) throw new Error('Google Docs not authenticated');
+    if (!documentId || startIndex === undefined || endIndex === undefined) throw new Error('documentId, startIndex, and endIndex are required');
+    await docsClient.documents.batchUpdate({
+        documentId,
+        requestBody: { requests: [{ deleteContentRange: { range: { startIndex, endIndex, segmentId: '' } } }] }
+    });
+    return { success: true, documentId, message: `Deleted content from index ${startIndex} to ${endIndex}` };
+}
+
+// 7. Append Text
+async function appendText({ documentId, text }) {
+    if (!docsClient) throw new Error('Google Docs not authenticated');
+    if (!documentId || !text) throw new Error('documentId and text are required');
+    const doc = await docsClient.documents.get({ documentId });
+    const body = doc.data.body;
+    const endIndex = body.content[body.content.length - 1].endIndex - 1;
+    await docsClient.documents.batchUpdate({
+        documentId,
+        requestBody: { requests: [{ insertText: { location: { index: endIndex }, text } }] }
+    });
+    return { success: true, documentId, message: `Appended text to end of document` };
+}
+
+// 8. Get Document Text
+async function getDocumentText({ documentId }) {
+    if (!docsClient) throw new Error('Google Docs not authenticated');
+    if (!documentId) throw new Error('documentId is required');
+    const response = await docsClient.documents.get({ documentId });
+    const doc = response.data;
+    let text = '';
+    for (const element of (doc.body?.content || [])) {
+        if (element.paragraph) {
+            for (const el of (element.paragraph.elements || [])) {
+                if (el.textRun) text += el.textRun.content;
+            }
+        }
+        if (element.table) {
+            for (const row of (element.table.tableRows || [])) {
+                for (const cell of (row.tableCells || [])) {
+                    for (const cellContent of (cell.content || [])) {
+                        if (cellContent.paragraph) {
+                            for (const el of (cellContent.paragraph.elements || [])) {
+                                if (el.textRun) text += el.textRun.content;
+                            }
+                        }
+                    }
+                    text += '\t';
+                }
+                text += '\n';
+            }
+        }
+    }
+    return { documentId, title: doc.title, text: text.trim(), characterCount: text.trim().length };
+}
+
+// ============================================================
 //  20 GITHUB TOOL IMPLEMENTATIONS
 // ============================================================
 
 // 1. List Repos
 async function listRepos({ username, sort = 'updated', perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
     let response;
     if (username) {
-        response = await octokitClient.rest.repos.listForUser({ username, sort, per_page: perPage });
+        response = await octokitClient.rest.repos.listForUser({ username, sort, per_page: limit });
     } else {
-        response = await octokitClient.rest.repos.listForAuthenticatedUser({ sort, per_page: perPage });
+        response = await octokitClient.rest.repos.listForAuthenticatedUser({ sort, per_page: limit });
     }
     const repos = response.data.map(r => ({
         name: r.name, full_name: r.full_name, description: r.description,
@@ -2972,7 +3245,8 @@ async function createRepo({ name, description, isPrivate = false, autoInit = tru
 // 4. List Issues
 async function listIssues({ owner, repo, state = 'open', labels, perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const params = { owner, repo, state, per_page: perPage };
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
+    const params = { owner, repo, state, per_page: limit };
     if (labels) params.labels = labels;
     const response = await octokitClient.rest.issues.listForRepo(params);
     const issues = response.data.filter(i => !i.pull_request).map(i => ({
@@ -3011,7 +3285,8 @@ async function updateIssue({ owner, repo, issueNumber, title, body, state, label
 // 7. List Pull Requests
 async function listPullRequests({ owner, repo, state = 'open', perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.pulls.list({ owner, repo, state, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
+    const response = await octokitClient.rest.pulls.list({ owner, repo, state, per_page: limit });
     const prs = response.data.map(p => ({
         number: p.number, title: p.title, state: p.state,
         user: p.user?.login, head: p.head?.ref, base: p.base?.ref,
@@ -3054,7 +3329,8 @@ async function mergePullRequest({ owner, repo, pullNumber, mergeMethod = 'merge'
 // 11. List Branches
 async function listBranches({ owner, repo, perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.repos.listBranches({ owner, repo, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
+    const response = await octokitClient.rest.repos.listBranches({ owner, repo, per_page: limit });
     const branches = response.data.map(b => ({
         name: b.name, sha: b.commit.sha, protected: b.protected
     }));
@@ -3100,7 +3376,8 @@ async function createOrUpdateFile({ owner, repo, filePath, content, message, bra
 // 15. Search Repos
 async function searchRepos({ query, sort = 'stars', perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.search.repos({ q: query, sort, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.search.repos({ q: query, sort, per_page: limit });
     const repos = response.data.items.map(r => ({
         name: r.name, full_name: r.full_name, description: r.description,
         language: r.language, stars: r.stargazers_count, forks: r.forks_count,
@@ -3112,7 +3389,8 @@ async function searchRepos({ query, sort = 'stars', perPage = 20 }) {
 // 16. Search Code
 async function searchCode({ query, perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.search.code({ q: query, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.search.code({ q: query, per_page: limit });
     const results = response.data.items.map(item => ({
         name: item.name, path: item.path,
         repository: item.repository.full_name,
@@ -3124,7 +3402,8 @@ async function searchCode({ query, perPage = 20 }) {
 // 17. List Commits
 async function listCommits({ owner, repo, sha, perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const params = { owner, repo, per_page: perPage };
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const params = { owner, repo, per_page: limit };
     if (sha) params.sha = sha;
     const response = await octokitClient.rest.repos.listCommits(params);
     const commits = response.data.map(c => ({
@@ -3156,7 +3435,8 @@ async function getUserProfile({ username }) {
 // 19. List Notifications
 async function listNotifications({ all = false, perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.activity.listNotificationsForAuthenticatedUser({ all, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.activity.listNotificationsForAuthenticatedUser({ all, per_page: limit });
     const notifications = response.data.map(n => ({
         id: n.id, reason: n.reason, unread: n.unread,
         subject: { title: n.subject.title, type: n.subject.type },
@@ -3169,7 +3449,8 @@ async function listNotifications({ all = false, perPage = 20 }) {
 // 20. List Gists
 async function listGists({ perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.gists.list({ per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.gists.list({ per_page: limit });
     const gists = response.data.map(g => ({
         id: g.id, description: g.description,
         files: Object.keys(g.files),
@@ -3245,8 +3526,9 @@ async function outlookSendEmail({ to, subject, body, cc, bcc }) {
 
 // 2. List Emails
 async function outlookListEmails({ maxResults = 20, folder = 'inbox' }) {
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const data = await outlookGraphFetch(
-        `/me/mailFolders/${folder}/messages?$top=${maxResults}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments&$orderby=receivedDateTime desc`
+        `/me/mailFolders/${folder}/messages?$top=${limit}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments&$orderby=receivedDateTime desc`
     );
     const emails = (data.value || []).map(m => ({
         id: m.id,
@@ -3286,8 +3568,9 @@ async function outlookReadEmail({ messageId }) {
 
 // 4. Search Emails
 async function outlookSearchEmails({ query, maxResults = 20 }) {
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const data = await outlookGraphFetch(
-        `/me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments`
+        `/me/messages?$search="${encodeURIComponent(query)}"&$top=${limit}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments`
     );
     const emails = (data.value || []).map(m => ({
         id: m.id,
@@ -3433,8 +3716,9 @@ async function outlookSendDraft({ messageId }) {
 
 // 16. List Drafts
 async function outlookListDrafts({ maxResults = 20 }) {
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const data = await outlookGraphFetch(
-        `/me/mailFolders/drafts/messages?$top=${maxResults}&$select=id,subject,toRecipients,createdDateTime,bodyPreview&$orderby=createdDateTime desc`
+        `/me/mailFolders/drafts/messages?$top=${limit}&$select=id,subject,toRecipients,createdDateTime,bodyPreview&$orderby=createdDateTime desc`
     );
     const drafts = (data.value || []).map(m => ({
         id: m.id,
@@ -3465,6 +3749,111 @@ async function outlookGetUserProfile() {
         officeLocation: user.officeLocation,
         message: `Outlook profile: ${user.displayName} (${user.mail || user.userPrincipalName})`
     };
+}
+
+// ============================================================
+//  10 MICROSOFT TEAMS TOOL IMPLEMENTATIONS
+// ============================================================
+
+async function teamsListTeams() {
+    const data = await outlookGraphFetch('/me/joinedTeams');
+    const teams = (data.value || []).map(t => ({
+        id: t.id, displayName: t.displayName, description: t.description
+    }));
+    return { teams, count: teams.length, message: `Found ${teams.length} team(s)` };
+}
+
+async function teamsGetTeam({ teamId }) {
+    if (!teamId) throw new Error('teamId is required');
+    const team = await outlookGraphFetch(`/teams/${teamId}`);
+    return {
+        id: team.id, displayName: team.displayName, description: team.description,
+        visibility: team.visibility, webUrl: team.webUrl
+    };
+}
+
+async function teamsListChannels({ teamId }) {
+    if (!teamId) throw new Error('teamId is required');
+    const data = await outlookGraphFetch(`/teams/${teamId}/channels`);
+    const channels = (data.value || []).map(c => ({
+        id: c.id, displayName: c.displayName, description: c.description, membershipType: c.membershipType
+    }));
+    return { channels, count: channels.length, message: `Found ${channels.length} channel(s)` };
+}
+
+async function teamsSendChannelMessage({ teamId, channelId, message, contentType = 'text' }) {
+    if (!teamId || !channelId || !message) throw new Error('teamId, channelId, and message are required');
+    const result = await outlookGraphFetch(`/teams/${teamId}/channels/${channelId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ body: { contentType: contentType === 'html' ? 'html' : 'text', content: message } })
+    });
+    return { success: true, messageId: result.id, message: 'Channel message sent' };
+}
+
+async function teamsListChannelMessages({ teamId, channelId, top = 20 }) {
+    if (!teamId || !channelId) throw new Error('teamId and channelId are required');
+    const limit = clampPagination(top, { fallback: 20, max: 100 });
+    const data = await outlookGraphFetch(`/teams/${teamId}/channels/${channelId}/messages?$top=${limit}`);
+    const messages = (data.value || []).map(m => ({
+        id: m.id, from: m.from?.user?.displayName || 'Unknown',
+        body: m.body?.content?.slice(0, 500), contentType: m.body?.contentType,
+        createdDateTime: m.createdDateTime
+    }));
+    return { messages, count: messages.length };
+}
+
+async function teamsListChats({ top = 20 }) {
+    const limit = clampPagination(top, { fallback: 20, max: 100 });
+    const data = await outlookGraphFetch(`/me/chats?$top=${limit}&$expand=members`);
+    const chats = (data.value || []).map(c => ({
+        id: c.id, topic: c.topic, chatType: c.chatType,
+        members: (c.members || []).map(m => m.displayName).filter(Boolean),
+        lastUpdatedDateTime: c.lastUpdatedDateTime
+    }));
+    return { chats, count: chats.length, message: `Found ${chats.length} chat(s)` };
+}
+
+async function teamsSendChatMessage({ chatId, message, contentType = 'text' }) {
+    if (!chatId || !message) throw new Error('chatId and message are required');
+    const result = await outlookGraphFetch(`/chats/${chatId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ body: { contentType: contentType === 'html' ? 'html' : 'text', content: message } })
+    });
+    return { success: true, messageId: result.id, message: 'Chat message sent' };
+}
+
+async function teamsListChatMessages({ chatId, top = 20 }) {
+    if (!chatId) throw new Error('chatId is required');
+    const limit = clampPagination(top, { fallback: 20, max: 100 });
+    const data = await outlookGraphFetch(`/chats/${chatId}/messages?$top=${limit}`);
+    const messages = (data.value || []).map(m => ({
+        id: m.id, from: m.from?.user?.displayName || 'Unknown',
+        body: m.body?.content?.slice(0, 500), contentType: m.body?.contentType,
+        createdDateTime: m.createdDateTime
+    }));
+    return { messages, count: messages.length };
+}
+
+async function teamsCreateChat({ chatType, members, topic }) {
+    if (!chatType || !members || members.length === 0) throw new Error('chatType and members are required');
+    const membersList = members.map(email => ({
+        '@odata.type': '#microsoft.graph.aadUserConversationMember',
+        roles: ['owner'],
+        'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${email}')`
+    }));
+    const body = { chatType, members: membersList };
+    if (topic) body.topic = topic;
+    const result = await outlookGraphFetch('/chats', { method: 'POST', body: JSON.stringify(body) });
+    return { success: true, chatId: result.id, chatType: result.chatType, message: `Created ${chatType} chat` };
+}
+
+async function teamsGetChatMembers({ chatId }) {
+    if (!chatId) throw new Error('chatId is required');
+    const data = await outlookGraphFetch(`/chats/${chatId}/members`);
+    const members = (data.value || []).map(m => ({
+        displayName: m.displayName, email: m.email, roles: m.roles
+    }));
+    return { members, count: members.length };
 }
 
 // ============================================================
@@ -3929,6 +4318,30 @@ const outlookTools = [
     { type: "function", function: { name: "outlook_get_user_profile", description: "Get the connected Outlook/Microsoft user's profile information.", parameters: { type: "object", properties: {} } } }
 ];
 
+const docsTools = [
+    { type: "function", function: { name: "list_documents", description: "List Google Docs documents. Uses Drive API to find documents by name.", parameters: { type: "object", properties: { query: { type: "string", description: "Optional name filter (e.g. 'Meeting Notes')" }, pageSize: { type: "integer", description: "Max documents to return (default 25)" } } } } },
+    { type: "function", function: { name: "get_document", description: "Get full structure/metadata of a Google Doc by document ID.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" } }, required: ["documentId"] } } },
+    { type: "function", function: { name: "create_document", description: "Create a new Google Doc with a title and optional initial content.", parameters: { type: "object", properties: { title: { type: "string", description: "Document title" }, content: { type: "string", description: "Optional initial text content" } }, required: ["title"] } } },
+    { type: "function", function: { name: "insert_text", description: "Insert text at a specific index in a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, text: { type: "string", description: "Text to insert" }, index: { type: "integer", description: "Character index to insert at (default 1 = start)" } }, required: ["documentId", "text"] } } },
+    { type: "function", function: { name: "replace_text", description: "Find and replace all occurrences of text in a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, findText: { type: "string", description: "Text to find" }, replaceWith: { type: "string", description: "Replacement text" }, matchCase: { type: "boolean", description: "Case-sensitive match (default false)" } }, required: ["documentId", "findText", "replaceWith"] } } },
+    { type: "function", function: { name: "delete_content", description: "Delete content in a Google Doc between start and end indices.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, startIndex: { type: "integer", description: "Start character index" }, endIndex: { type: "integer", description: "End character index" } }, required: ["documentId", "startIndex", "endIndex"] } } },
+    { type: "function", function: { name: "append_text", description: "Append text to the end of a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, text: { type: "string", description: "Text to append" } }, required: ["documentId", "text"] } } },
+    { type: "function", function: { name: "get_document_text", description: "Extract plain text content from a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" } }, required: ["documentId"] } } }
+];
+
+const teamsTools = [
+    { type: "function", function: { name: "teams_list_teams", description: "List Microsoft Teams the user has joined.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "teams_get_team", description: "Get details about a specific Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" } }, required: ["teamId"] } } },
+    { type: "function", function: { name: "teams_list_channels", description: "List channels in a Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" } }, required: ["teamId"] } } },
+    { type: "function", function: { name: "teams_send_channel_message", description: "Send a message to a channel in a Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" }, channelId: { type: "string", description: "Channel ID" }, message: { type: "string", description: "Message content (plain text or HTML)" }, contentType: { type: "string", description: "Content type: text or html (default text)" } }, required: ["teamId", "channelId", "message"] } } },
+    { type: "function", function: { name: "teams_list_channel_messages", description: "List recent messages from a channel in a Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" }, channelId: { type: "string", description: "Channel ID" }, top: { type: "integer", description: "Number of messages to return (default 20)" } }, required: ["teamId", "channelId"] } } },
+    { type: "function", function: { name: "teams_list_chats", description: "List the user's Microsoft Teams chats (1:1 and group).", parameters: { type: "object", properties: { top: { type: "integer", description: "Number of chats to return (default 20)" } } } } },
+    { type: "function", function: { name: "teams_send_chat_message", description: "Send a message in a Microsoft Teams chat.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" }, message: { type: "string", description: "Message content (plain text or HTML)" }, contentType: { type: "string", description: "Content type: text or html (default text)" } }, required: ["chatId", "message"] } } },
+    { type: "function", function: { name: "teams_list_chat_messages", description: "List recent messages from a Microsoft Teams chat.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" }, top: { type: "integer", description: "Number of messages to return (default 20)" } }, required: ["chatId"] } } },
+    { type: "function", function: { name: "teams_create_chat", description: "Create a new Microsoft Teams 1:1 or group chat.", parameters: { type: "object", properties: { chatType: { type: "string", description: "Chat type: oneOnOne or group" }, members: { type: "array", items: { type: "string" }, description: "Array of member email addresses" }, topic: { type: "string", description: "Chat topic (for group chats)" } }, required: ["chatType", "members"] } } },
+    { type: "function", function: { name: "teams_get_chat_members", description: "List members of a Microsoft Teams chat.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" } }, required: ["chatId"] } } }
+];
+
 // ============================================================
 //  TOOL EXECUTION ROUTERS
 // ============================================================
@@ -3941,6 +4354,9 @@ const driveToolNames = new Set(driveTools.map(t => t.function.name));
 const sheetsToolNames = new Set(sheetsTools.map(t => t.function.name));
 const githubToolNames = new Set(githubTools.map(t => t.function.name));
 const outlookToolNames = new Set(outlookTools.map(t => t.function.name));
+const docsToolNames = new Set(docsTools.map(t => t.function.name));
+const teamsToolNames = new Set(teamsTools.map(t => t.function.name));
+const docsListOnlyTools = docsTools.filter(tool => tool.function.name === 'list_documents');
 
 async function executeGmailTool(toolName, args) {
     if (!gmailClient) throw new Error('Gmail not connected. Please authenticate first.');
@@ -4111,6 +4527,42 @@ async function executeOutlookTool(toolName, args) {
     }
 }
 
+async function executeDocsTool(toolName, args) {
+    if (!docsClient && toolName !== 'list_documents') throw new Error('Google Docs not connected. Please authenticate with Google first.');
+    if (toolName === 'list_documents' && !driveClient) throw new Error('Google Drive not connected (required for listing Docs).');
+    const toolMap = {
+        list_documents: listDocuments, get_document: getDocument, create_document: createDocument,
+        insert_text: insertText, replace_text: replaceText, delete_content: deleteContent,
+        append_text: appendText, get_document_text: getDocumentText
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown Google Docs tool: ${toolName}`);
+    return await fn(args);
+}
+
+async function executeTeamsTool(toolName, args) {
+    if (!outlookAccessToken) throw new Error('Microsoft Teams not connected. Please authenticate with Teams first.');
+    const toolMap = {
+        teams_list_teams: teamsListTeams, teams_get_team: teamsGetTeam,
+        teams_list_channels: teamsListChannels, teams_send_channel_message: teamsSendChannelMessage,
+        teams_list_channel_messages: teamsListChannelMessages, teams_list_chats: teamsListChats,
+        teams_send_chat_message: teamsSendChatMessage, teams_list_chat_messages: teamsListChatMessages,
+        teams_create_chat: teamsCreateChat, teams_get_chat_members: teamsGetChatMembers
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown Teams tool: ${toolName}`);
+    try {
+        return await fn(args);
+    } catch (error) {
+        const status = error?.status || error?.code;
+        const message = String(error?.message || '');
+        if (status === 401 || /unauthorized|invalid.*token|expired/i.test(message)) {
+            throw new Error('Teams authentication expired. Please reconnect Microsoft Teams.');
+        }
+        throw error;
+    }
+}
+
 // Master dispatcher
 async function executeTool(toolName, args) {
     console.log(`[Tool] ${toolName}`, JSON.stringify(args).slice(0, 200));
@@ -4120,8 +4572,10 @@ async function executeTool(toolName, args) {
     if (driveToolNames.has(toolName)) return await executeDriveTool(toolName, args);
     if (sheetsToolNames.has(toolName)) return await executeSheetsTool(toolName, args);
     if (toolName.startsWith(SHEETS_MCP_TOOL_PREFIX)) return await executeSheetsMcpTool(toolName, args);
+    if (docsToolNames.has(toolName)) return await executeDocsTool(toolName, args);
     if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, args);
     if (outlookToolNames.has(toolName)) return await executeOutlookTool(toolName, args);
+    if (teamsToolNames.has(toolName)) return await executeTeamsTool(toolName, args);
     throw new Error(`Unknown tool: ${toolName}`);
 }
 
@@ -4146,9 +4600,15 @@ app.get('/api/tools', (req, res) => {
     };
     const github = { service: 'github', connected: !!octokitClient, tools: githubTools.map(t => ({ function: t.function })) };
     const outlook = { service: 'outlook', connected: !!outlookAccessToken, tools: outlookTools.map(t => ({ function: t.function })) };
-    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length;
+    const docsConnected = !!docsClient && hasDocsScope();
+    const docsListOnlyConnected = !docsConnected && driveConnected;
+    const docsVisibleTools = docsConnected ? docsTools : (docsListOnlyConnected ? docsListOnlyTools : []);
+    const docs = { service: 'docs', connected: docsConnected || docsListOnlyConnected, tools: docsVisibleTools.map(t => ({ function: t.function })) };
+    const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
+    const teams = { service: 'teams', connected: teamsConnected, tools: teamsTools.map(t => ({ function: t.function })) };
+    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length;
     res.json({
-        services: [gmail, calendar, gchat, drive, sheets, github, outlook],
+        services: [gmail, calendar, gchat, drive, sheets, github, outlook, docs, teams],
         totalTools
     });
 });
@@ -4177,6 +4637,9 @@ app.get('/api/timer-tasks', (req, res) => {
 app.post('/api/timer-tasks', (req, res) => {
     try {
         const task = sanitizeScheduledTask({ ...req.body }, { forCreate: true });
+        if (scheduledTasks.some(existing => existing.id === task.id)) {
+            task.id = makeId('task');
+        }
         scheduledTasks.push(task);
         saveScheduledTasksToDisk();
         res.status(201).json({ success: true, task });
@@ -4216,19 +4679,22 @@ app.delete('/api/timer-tasks/:id', (req, res) => {
 });
 
 app.post('/api/timer-tasks/:id/run', async (req, res) => {
-    const task = scheduledTasks.find(item => item.id === req.params.id);
-    if (!task) return res.status(404).json({ error: 'Task not found' });
-    const result = await runScheduledTask(task.id, 'manual');
-    if (!result.success && !result.skipped) {
-        return res.status(500).json(result);
+    try {
+        const task = scheduledTasks.find(item => item.id === req.params.id);
+        if (!task) return res.status(404).json({ error: 'Task not found' });
+        const result = await runScheduledTask(task.id, 'manual');
+        if (!result.success && !result.skipped) {
+            return res.status(500).json(result);
+        }
+        return res.json(result);
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to run timer task' });
     }
-    return res.json(result);
 });
 
 // Gmail authentication status
 app.get('/api/gmail/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     res.json({
         credentialsConfigured: !!hasCredentials,
@@ -4239,8 +4705,7 @@ app.get('/api/gmail/status', (req, res) => {
 
 // Calendar authentication status (same as Gmail since same OAuth)
 app.get('/api/calendar/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const calendarScopeGranted = hasCalendarScope();
     res.json({
@@ -4254,8 +4719,7 @@ app.get('/api/calendar/status', (req, res) => {
 
 // Google Chat authentication status (same Google OAuth, separate scopes)
 app.get('/api/gchat/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const gchatScopeGranted = hasGchatScopes();
     res.json({
@@ -4269,8 +4733,7 @@ app.get('/api/gchat/status', (req, res) => {
 
 // Google Drive authentication status (same Google OAuth, separate scope)
 app.get('/api/drive/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const driveScopeGranted = hasDriveScope();
     res.json({
@@ -4284,8 +4747,7 @@ app.get('/api/drive/status', (req, res) => {
 
 // Google Sheets authentication status (same Google OAuth, separate scope)
 app.get('/api/sheets/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const sheetsScopeGranted = hasSheetsScope();
     res.json({
@@ -4310,14 +4772,72 @@ app.get('/api/sheets-mcp/status', (req, res) => {
 });
 
 app.post('/api/sheets-mcp/reconnect', async (req, res) => {
-    await closeSheetsMcpClient();
-    await initSheetsMcpClient();
+    try {
+        await closeSheetsMcpClient();
+        await initSheetsMcpClient();
+        res.json({
+            success: !!sheetsMcpClient,
+            connected: !!sheetsMcpClient,
+            toolCount: sheetsMcpTools.length,
+            error: sheetsMcpError
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            connected: false,
+            toolCount: sheetsMcpTools.length,
+            error: error.message || 'Failed to reconnect Sheets MCP'
+        });
+    }
+});
+
+// Google Docs status (same Google OAuth, separate scope)
+app.get('/api/docs/status', (req, res) => {
+    const hasCredentials = isGoogleOAuthConfigured();
+    const hasToken = fs.existsSync(TOKEN_PATH);
+    const docsScopeGranted = hasDocsScope();
     res.json({
-        success: !!sheetsMcpClient,
-        connected: !!sheetsMcpClient,
-        toolCount: sheetsMcpTools.length,
-        error: sheetsMcpError
+        credentialsConfigured: !!hasCredentials,
+        authenticated: hasToken && docsClient !== null && docsScopeGranted,
+        hasDocsScope: docsScopeGranted,
+        requiresReconnect: hasToken && !docsScopeGranted,
+        toolCount: docsTools.length
     });
+});
+
+// Microsoft Teams status (uses Outlook OAuth with extra scopes)
+app.get('/api/teams/status', (req, res) => {
+    const oauthConfigured = isOutlookOAuthConfigured();
+    const teamsScoped = hasTeamsScopes();
+    res.json({
+        authenticated: !!outlookAccessToken && teamsScoped,
+        oauthConfigured,
+        hasScopes: teamsScoped,
+        email: outlookUserEmail,
+        requiresReconnect: !!outlookAccessToken && !teamsScoped,
+        toolCount: teamsTools.length
+    });
+});
+
+// Microsoft Teams auth - triggers Outlook re-auth with Teams scopes
+app.get('/api/teams/auth', (req, res) => {
+    if (!isOutlookOAuthConfigured()) {
+        return res.status(400).json({
+            error: 'Outlook OAuth credentials are not configured in .env file (required for Teams)',
+            setupRequired: true
+        });
+    }
+    const state = issueOutlookOAuthState();
+    const params = new URLSearchParams({
+        client_id: process.env.OUTLOOK_CLIENT_ID,
+        response_type: 'code',
+        redirect_uri: getOutlookRedirectUri(),
+        scope: OUTLOOK_SCOPES.join(' '),
+        response_mode: 'query',
+        state
+    });
+    const authUrl = `${OUTLOOK_AUTHORITY}/oauth2/v2.0/authorize?${params.toString()}`;
+    res.json({ authUrl });
 });
 
 // Calendar connect - triggers re-auth with calendar scope
@@ -4328,7 +4848,8 @@ app.get('/api/calendar/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4340,7 +4861,8 @@ app.get('/api/gchat/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4352,7 +4874,8 @@ app.get('/api/drive/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4364,7 +4887,8 @@ app.get('/api/sheets/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4438,7 +4962,8 @@ app.get('/api/gmail/auth', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4504,8 +5029,17 @@ app.get('/github/callback', async (req, res) => {
 
 // OAuth callback
 app.get('/oauth2callback', async (req, res) => {
-    const { code } = req.query;
-    if (!code) return res.status(400).send('No authorization code provided');
+    const { code, state } = req.query;
+    if (!code || !state) return res.status(400).send('Missing Google authorization code or state');
+    if (!consumeGoogleOAuthState(state)) {
+        return res.status(400).send('Invalid or expired Google OAuth state. Please try connecting again.');
+    }
+    if (!oauth2Client) {
+        const initialized = initOAuthClient();
+        if (!initialized) {
+            return res.status(400).send('Google OAuth credentials are not configured in server .env');
+        }
+    }
 
     try {
         const { tokens } = await oauth2Client.getToken(code);
@@ -4526,6 +5060,9 @@ app.get('/oauth2callback', async (req, res) => {
         sheetsClient = tokenHasScope(tokens, SHEETS_SCOPE)
             ? google.sheets({ version: 'v4', auth: oauth2Client })
             : null;
+        docsClient = tokenHasScope(tokens, DOCS_SCOPE)
+            ? google.docs({ version: 'v1', auth: oauth2Client })
+            : null;
         const calendarMessage = calendarClient
             ? 'Gmail + Calendar are ready.'
             : 'Gmail is ready. Calendar permission is still missing, so reconnect Calendar from the app.';
@@ -4538,7 +5075,10 @@ app.get('/oauth2callback', async (req, res) => {
         const sheetsMessage = sheetsClient
             ? 'Google Sheets is ready.'
             : 'Google Sheets permission is still missing, so reconnect Sheets from the app.';
-        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} ${gchatMessage} ${driveMessage} ${sheetsMessage} You can close this window.</p></div></body></html>`);
+        const docsMessage = docsClient
+            ? 'Google Docs is ready.'
+            : 'Google Docs permission is still missing, so reconnect Docs from the app.';
+        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} ${gchatMessage} ${driveMessage} ${sheetsMessage} ${docsMessage} You can close this window.</p></div></body></html>`);
     } catch (error) {
         console.error('OAuth callback error:', error);
         res.status(500).send(`Authentication failed: ${error.message}`);
@@ -4638,6 +5178,7 @@ app.get('/outlook/callback', async (req, res) => {
             expiry: outlookTokenExpiry,
             email: outlookUserEmail,
             displayName: userData.displayName || '',
+            scope: tokenData.scope || OUTLOOK_SCOPES.join(' '),
             connectedAt: new Date().toISOString()
         });
 
@@ -4664,8 +5205,14 @@ function getConnectedToolContext() {
     if (sheetsConnected) availableTools.push(...sheetsTools);
     const sheetsMcpConnected = !!sheetsMcpClient && sheetsMcpTools.length > 0;
     if (sheetsMcpConnected) availableTools.push(...sheetsMcpTools);
+    const docsConnected = !!docsClient && hasDocsScope();
+    const docsListOnlyConnected = !docsConnected && driveConnected;
+    if (docsConnected) availableTools.push(...docsTools);
+    else if (docsListOnlyConnected) availableTools.push(...docsListOnlyTools);
     if (octokitClient) availableTools.push(...githubTools);
     if (outlookAccessToken) availableTools.push(...outlookTools);
+    const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
+    if (teamsConnected) availableTools.push(...teamsTools);
 
     const connectedServices = [];
     if (gmailClient) connectedServices.push('Gmail (25 tools)');
@@ -4674,43 +5221,55 @@ function getConnectedToolContext() {
     if (driveConnected) connectedServices.push(`Google Drive (${driveTools.length} tools)`);
     if (sheetsConnected) connectedServices.push(`Google Sheets (${sheetsTools.length} tools)`);
     if (sheetsMcpConnected) connectedServices.push(`Google Sheets MCP (${sheetsMcpTools.length} tools)`);
+    if (docsConnected) connectedServices.push(`Google Docs (${docsTools.length} tools)`);
+    if (docsListOnlyConnected) connectedServices.push(`Google Docs (${docsListOnlyTools.length} tool via Drive scope)`);
     if (octokitClient) connectedServices.push('GitHub (20 tools)');
     if (outlookAccessToken) connectedServices.push(`Outlook (${outlookTools.length} tools)`);
+    if (teamsConnected) connectedServices.push(`Microsoft Teams (${teamsTools.length} tools)`);
 
     const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
     return { availableTools, statusText };
 }
 
 function buildAgentSystemPrompt({ statusText, toolCount, dateContext }) {
-    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, GitHub, and Outlook. You can perform complex, multi-step operations across all connected services.
+    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, and Microsoft Teams. You can perform complex, multi-step operations across all connected services.
 
 Connected Services: ${statusText}
 Total Tools Available: ${toolCount}
 
+## EXECUTION MODE:
+- A single user command can contain multiple tasks. Treat it as one end-to-end workflow, not separate mini chats.
+- Create an internal plan, execute tools, evaluate results, and continue until the user goal is complete or truly blocked.
+- Prefer action over clarification. Ask follow-up questions only when a required value is missing or an operation is destructive.
+
 ## CORE RULES - Follow these STRICTLY:
 
-1. **ALWAYS SEARCH FIRST**: When the user refers to an email by description, you MUST use search_emails first. When referring to repos/issues, use list/search tools first. NEVER guess IDs or fabricate email addresses.
+1. **DISCOVERY FIRST, NEVER GUESS**: When the user refers to emails/docs/files/issues by description, use search/list/discovery tools first. Never invent IDs, email addresses, or repository names.
 
-2. **CHAIN TOOLS FOR COMPLEX TASKS**: Break down complex requests into steps and execute them one by one.
+2. **ONE COMMAND -> MULTI-TOOL EXECUTION**: If the user asks for a compound task, execute all required steps in the same request flow.
    - "Read and reply to John's latest email" -> search_emails -> read_email -> reply_to_email
    - "Create an issue for the bug and email the team" -> create_issue -> send_email
-   - "Find calendar events for today and email the attendees" -> list_events -> send_email
-   - "Check if Meghan is free today between 1pm and 5pm" -> check_person_availability
-   - "Find a 30-minute slot for me, Meghan, and Rahul tomorrow" -> find_common_free_slots
+   - "Find calendar events for today and email attendees" -> list_events -> send_email
    - "List my spreadsheets and summarize tabs" -> list_spreadsheets -> list_sheet_tabs
-   - "Create a Drive folder and upload notes" -> create_drive_folder -> create_drive_file
-   - "Archive all unread emails from newsletters" -> search_emails -> batch_modify_emails
-   - "Check my PRs and create calendar events for reviews" -> list_pull_requests -> create_event
+   - "Check my PRs and schedule review slots" -> list_pull_requests -> create_event
 
-2b. **PERSON AVAILABILITY SAFETY**: For a named person, NEVER infer availability from get_free_busy on your default primary calendar. Use check_person_availability (single person) or find_common_free_slots (multiple people).
+3. **PARALLELIZE WHEN INDEPENDENT**: When subtasks do not depend on each other, call multiple tools in the same turn.
+   - Example: gather Gmail unread count, Outlook unread count, and today's calendar events at the same time.
 
-3. **NEVER STOP MID-TASK**: If a task requires multiple steps, keep going until FULLY completed. Do NOT ask to confirm intermediate steps unless the action is destructive.
+4. **SEQUENCE WHEN DEPENDENT**: If a later step needs output from an earlier step, chain tools in order.
+   - Example: search -> read -> extract recipient -> draft/send.
 
-4. **USE BATCH OPERATIONS**: When modifying multiple emails, prefer batch_modify_emails.
+5. **NEVER STOP MID-TASK**: Continue tool execution until completion. Do not ask for confirmation between non-destructive intermediate steps.
 
-5. **CROSS-SERVICE OPERATIONS**: You can combine Gmail, Calendar, Chat, Drive, Sheets, and GitHub tools in a single task. Think creatively about how services work together.
+6. **RECOVER FROM FAILURES**: If a tool fails due to missing ID, scope, or lookup ambiguity, run the appropriate discovery/diagnostic tool and retry with corrected arguments. Explain blockers only after retry paths are exhausted.
 
-6. **BE PROACTIVE**: Mention relevant info you notice while processing (unread counts, upcoming events, open PRs).
+7. **SAFETY FOR DESTRUCTIVE ACTIONS**: For delete/trash/clear/bulk-destructive operations, ask for confirmation unless the user explicitly requested that exact destructive action.
+
+8. **USE BATCH OPERATIONS**: For multi-email modifications, prefer batch_modify_emails over repeated single-item calls.
+
+9. **CROSS-SERVICE ORCHESTRATION**: Combine Gmail, Calendar, Chat, Drive, Sheets, Docs, GitHub, Outlook, and Teams tools when useful to finish the full request.
+
+10. **BE PROACTIVE BUT ACCURATE**: Share helpful observations discovered during execution, but never claim success unless tool output confirms it.
 
 ## TOOL USAGE TIPS:
 - Gmail: search_emails supports full Gmail query syntax (from:, to:, subject:, is:unread, has:attachment, etc.)
@@ -4726,7 +5285,15 @@ Total Tools Available: ${toolCount}
 - Sheets MCP: MCP tools are prefixed with ${SHEETS_MCP_TOOL_PREFIX} and provide fallback read/update operations when needed.
 - Sheets write safety: Never claim a sheet update succeeded unless tool output indicates verification/read-back succeeded.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.
-- Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.`;
+- Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.
+- Google Docs: Use list_documents to find Docs by name. Use get_document_text to read content. Use create_document to create new docs. Use insert_text/append_text to add content. Use replace_text for find-and-replace.
+- Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
+
+## FINAL RESPONSE QUALITY:
+- Provide a concise outcome summary of what was completed.
+- Include key outputs/links/IDs the user needs next.
+- If anything failed, state exactly what failed and what retry/permission is needed.
+- Do not include internal chain-of-thought. Keep reasoning brief and action-focused.`;
 
     const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
 - Current timestamp (UTC): ${dateContext.nowIso}
@@ -4746,6 +5313,131 @@ async function runAgentConversation({ message, history = [] }) {
     if (!process.env.OPENAI_API_KEY) {
         throw new Error('OpenAI API key missing');
     }
+
+    const normalizeAssistantText = (content) => {
+        if (typeof content === 'string') return content.trim();
+        if (Array.isArray(content)) {
+            return content
+                .map(part => {
+                    if (typeof part === 'string') return part;
+                    if (part && typeof part.text === 'string') return part.text;
+                    return '';
+                })
+                .join('\n')
+                .trim();
+        }
+        return '';
+    };
+
+    const safeJsonStringify = (value) => {
+        try {
+            return JSON.stringify(value);
+        } catch (error) {
+            return JSON.stringify({
+                error: 'Unable to serialize tool output',
+                message: String(error?.message || error)
+            });
+        }
+    };
+
+    const parseToolCallArguments = (rawArguments) => {
+        if (rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)) {
+            return rawArguments;
+        }
+        const raw = String(rawArguments || '').trim();
+        if (!raw) return {};
+
+        const candidates = [];
+        const pushCandidate = (value) => {
+            const normalized = String(value || '').trim();
+            if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+        };
+
+        pushCandidate(raw);
+        const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+        if (fenced && fenced[1]) pushCandidate(fenced[1]);
+
+        const latest = candidates[candidates.length - 1] || raw;
+        const firstBrace = latest.search(/[{\[]/);
+        const lastBrace = Math.max(latest.lastIndexOf('}'), latest.lastIndexOf(']'));
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+            pushCandidate(latest.slice(firstBrace, lastBrace + 1));
+        }
+
+        const quoteNormalized = (candidates[candidates.length - 1] || raw)
+            .replace(/[“”]/g, '"')
+            .replace(/[‘’]/g, "'");
+        pushCandidate(quoteNormalized);
+        pushCandidate(quoteNormalized.replace(/,\s*([}\]])/g, '$1'));
+
+        let lastError = null;
+        for (const candidate of candidates) {
+            try {
+                const parsed = JSON.parse(candidate);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    throw new Error('Tool arguments must be a JSON object.');
+                }
+                return parsed;
+            } catch (error) {
+                lastError = error;
+            }
+        }
+
+        throw new Error(`Invalid arguments JSON: ${lastError ? lastError.message : 'Unable to parse tool arguments'}`);
+    };
+
+    const isRetriableOpenAiError = (error) => {
+        const status = Number(error?.status || error?.code || error?.response?.status || 0);
+        if ([408, 409, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+        const code = String(error?.code || '').toUpperCase();
+        if (['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) return true;
+        const message = String(error?.message || '');
+        return /rate limit|timeout|timed out|temporar|overloaded|network|try again/i.test(message);
+    };
+
+    const buildOpenAiRequest = ({ model, messages, tools, toolChoice }) => {
+        const request = {
+            model,
+            messages,
+            temperature: OPENAI_TEMPERATURE
+        };
+        if (Array.isArray(tools) && tools.length > 0) {
+            request.tools = tools;
+            request.tool_choice = toolChoice || 'auto';
+            request.parallel_tool_calls = true;
+        }
+        if (OPENAI_MAX_OUTPUT_TOKENS) {
+            request.max_tokens = OPENAI_MAX_OUTPUT_TOKENS;
+        }
+        return request;
+    };
+
+    const createCompletionWithRetry = async ({ messages, tools, toolChoice }) => {
+        const modelCandidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL]
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+            .filter((value, index, list) => list.indexOf(value) === index);
+        let lastError = null;
+
+        for (const model of modelCandidates) {
+            for (let attempt = 0; attempt <= OPENAI_CHAT_MAX_RETRIES; attempt += 1) {
+                try {
+                    const response = await openai.chat.completions.create(
+                        buildOpenAiRequest({ model, messages, tools, toolChoice })
+                    );
+                    return { response, model };
+                } catch (error) {
+                    lastError = error;
+                    const canRetry = isRetriableOpenAiError(error) && attempt < OPENAI_CHAT_MAX_RETRIES;
+                    if (!canRetry) break;
+                    const delayMs = Math.min(3000, 350 * (2 ** attempt));
+                    await sleep(delayMs);
+                }
+            }
+        }
+
+        throw lastError || new Error('OpenAI completion failed');
+    };
 
     const { availableTools, statusText } = getConnectedToolContext();
     const dateContext = getCurrentDateContext();
@@ -4768,15 +5460,19 @@ async function runAgentConversation({ message, history = [] }) {
         ...history,
         { role: 'user', content: enrichedUserMessage }
     ];
+    const toolChoice = availableTools.length > 0 ? 'auto' : undefined;
 
-    let response = await openai.chat.completions.create({
-        model: 'gpt-4o',
+    let completion = await createCompletionWithRetry({
         messages,
-        tools: availableTools.length > 0 ? availableTools : undefined,
-        tool_choice: availableTools.length > 0 ? 'auto' : undefined
+        tools: availableTools,
+        toolChoice
     });
+    let activeModel = completion.model;
+    let assistantMessage = completion.response?.choices?.[0]?.message;
+    if (!assistantMessage) {
+        throw new Error('OpenAI returned no assistant message.');
+    }
 
-    let assistantMessage = response.choices[0].message;
     const allToolResults = [];
     const allSteps = [];
     const MAX_TURNS = 15;
@@ -4790,7 +5486,7 @@ async function runAgentConversation({ message, history = [] }) {
             const toolName = toolCall.function.name;
             let args;
             try {
-                args = JSON.parse(toolCall.function.arguments);
+                args = parseToolCallArguments(toolCall.function.arguments);
             } catch (error) {
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
             }
@@ -4818,29 +5514,36 @@ async function runAgentConversation({ message, history = [] }) {
             messages.push({
                 role: 'tool',
                 tool_call_id: toolCall.id,
-                content: JSON.stringify(error ? { error } : result)
+                content: safeJsonStringify(error ? { error } : result)
             });
         }
 
-        response = await openai.chat.completions.create({
-            model: 'gpt-4o',
+        completion = await createCompletionWithRetry({
             messages,
-            tools: availableTools.length > 0 ? availableTools : undefined,
-            tool_choice: availableTools.length > 0 ? 'auto' : undefined
+            tools: availableTools,
+            toolChoice
         });
-        assistantMessage = response.choices[0].message;
+        activeModel = completion.model;
+        assistantMessage = completion.response?.choices?.[0]?.message;
+        if (!assistantMessage) {
+            throw new Error('OpenAI returned no assistant follow-up message.');
+        }
     }
 
-    let finalResponse = assistantMessage.content || '';
+    let finalResponse = normalizeAssistantText(assistantMessage.content);
     if (turnCount >= MAX_TURNS && assistantMessage.tool_calls) {
         finalResponse += '\n\n(Reached maximum steps for this request. Some operations may still be pending.)';
+    }
+    if (!finalResponse && allToolResults.length > 0) {
+        finalResponse = 'Completed the requested workflow. See the tool results for details.';
     }
 
     return {
         response: finalResponse,
         toolResults: allToolResults,
         steps: allSteps,
-        turnsUsed: turnCount
+        turnsUsed: turnCount,
+        model: activeModel
     };
 }
 
@@ -4892,11 +5595,15 @@ async function runSchedulerTick() {
     schedulerTickInProgress = true;
     try {
         const now = schedulerDateParts(new Date());
-        const dueTasks = scheduledTasks.filter(task =>
-            task.enabled &&
-            task.time === now.hhmm &&
-            task.lastRunDate !== now.date
-        );
+        const nowMinutes = dailyTimeToMinutes(now.hhmm);
+        const dueTasks = scheduledTasks
+            .filter(task => {
+                if (!task.enabled || task.lastRunDate === now.date) return false;
+                const scheduledMinutes = dailyTimeToMinutes(task.time);
+                if (scheduledMinutes === null || nowMinutes === null) return false;
+                return scheduledMinutes <= nowMinutes;
+            })
+            .sort((a, b) => a.time.localeCompare(b.time));
         for (const task of dueTasks) {
             const result = await runScheduledTask(task.id, 'scheduled');
             if (!result.success && !result.skipped) {
@@ -4940,7 +5647,20 @@ app.get('/api/gmail/message/:id', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
     const { message, history = [] } = req.body;
     try {
-        const result = await runAgentConversation({ message, history });
+        if (typeof message !== 'string' || !message.trim()) {
+            return res.status(400).json({ error: 'message must be a non-empty string' });
+        }
+        const safeHistory = Array.isArray(history)
+            ? history
+                .filter(item =>
+                    item &&
+                    (item.role === 'user' || item.role === 'assistant') &&
+                    typeof item.content === 'string'
+                )
+                .slice(-40)
+                .map(item => ({ role: item.role, content: item.content }))
+            : [];
+        const result = await runAgentConversation({ message, history: safeHistory });
         res.json(result);
     } catch (error) {
         console.error('Chat error:', error);
@@ -4962,19 +5682,31 @@ initOutlookClient().catch(error => {
 loadScheduledTasksFromDisk();
 startScheduledTaskRunner();
 
-const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length;
-app.listen(PORT, () => {
+const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length;
+const httpServer = app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
-    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length})`);
+    console.log(`OpenAI model: ${OPENAI_MODEL}${OPENAI_FALLBACK_MODEL ? ` (fallback: ${OPENAI_FALLBACK_MODEL})` : ''}, retries: ${OPENAI_CHAT_MAX_RETRIES}, temperature: ${OPENAI_TEMPERATURE}${OPENAI_MAX_OUTPUT_TOKENS ? `, max output tokens: ${OPENAI_MAX_OUTPUT_TOKENS}` : ''}`);
+    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
     console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Chat: ${gchatClient && hasGchatScopes() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Drive: ${driveClient && hasDriveScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Sheets: ${sheetsClient && hasSheetsScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Sheets MCP: ${sheetsMcpClient ? `Connected (${sheetsMcpTools.length} tools)` : `Not connected${sheetsMcpError ? ` (${sheetsMcpError})` : ''}`}`);
+    console.log(`Google Docs: ${docsClient && hasDocsScope() ? 'Connected' : 'Not connected'}`);
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
     console.log(`Outlook: ${outlookAccessToken ? `Connected (${outlookUserEmail || 'unknown'})` : 'Not connected'}`);
+    console.log(`Microsoft Teams: ${outlookAccessToken && hasTeamsScopes() ? 'Connected' : 'Not connected'}`);
     console.log(`Timer Tasks: ${scheduledTasks.length} configured (${scheduledTasks.filter(task => task.enabled).length} enabled)`);
+});
+
+httpServer.on('error', (error) => {
+    if (error && error.code === 'EADDRINUSE') {
+        console.error(`Port ${PORT} is already in use. Stop the existing server process or set a different PORT in .env.`);
+        return process.exit(1);
+    }
+    console.error('Server startup error:', error?.message || error);
+    process.exit(1);
 });
 
 process.on('SIGINT', async () => {
