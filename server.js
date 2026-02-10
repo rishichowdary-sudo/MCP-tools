@@ -44,6 +44,7 @@ const MODEL_TOOL_VALUE_MAX_STRING_CHARS = 1200;
 const MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS = 25;
 const MODEL_TOOL_VALUE_MAX_OBJECT_KEYS = 60;
 const ASSISTANT_RESPONSE_MAX_CHARS = 12000;
+const DRIVE_TEXT_EDIT_MAX_CHARS = 250000;
 
 // Google OAuth scopes setup (Gmail, Calendar, Chat, Drive, Sheets, Docs)
 const SCOPES = [
@@ -2626,6 +2627,87 @@ async function extractDriveFileText({ fileId, maxBytes = 40000 }) {
     };
 }
 
+async function appendDriveDocumentText({ fileId, text }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+    const appendTextValue = String(text || '').replace(/\r\n?/g, '\n').replace(/\u0000/g, '').trim();
+    if (!appendTextValue) throw new Error('text is required');
+
+    const metaResponse = await driveClient.files.get({
+        fileId,
+        supportsAllDrives: true,
+        fields: 'id,name,mimeType,webViewLink,size'
+    });
+    const file = metaResponse.data || {};
+    const mimeType = String(file.mimeType || '');
+    if (mimeType === 'application/vnd.google-apps.folder') {
+        throw new Error('Cannot append text to a folder.');
+    }
+    if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+        throw new Error('Target is a spreadsheet. Use Sheets tools for spreadsheet updates.');
+    }
+
+    if (mimeType === 'application/vnd.google-apps.document' && docsClient && hasDocsScope()) {
+        const prefix = appendTextValue.startsWith('\n') ? '' : '\n';
+        await appendText({ documentId: fileId, text: `${prefix}${appendTextValue}` });
+        return {
+            success: true,
+            fileId,
+            name: file.name,
+            mimeType,
+            appendedText: appendTextValue,
+            usedDocsApi: true,
+            webViewLink: file.webViewLink || null,
+            message: `Appended text to "${file.name}" using Google Docs API.`
+        };
+    }
+
+    let currentContent = '';
+    if (mimeType.startsWith('application/vnd.google-apps.')) {
+        const exportResponse = await driveClient.files.export(
+            { fileId, mimeType: 'text/plain' },
+            { responseType: 'arraybuffer' }
+        );
+        currentContent = Buffer.from(exportResponse.data).toString('utf8');
+    } else {
+        const fileResponse = await driveClient.files.get(
+            { fileId, alt: 'media', supportsAllDrives: true },
+            { responseType: 'arraybuffer' }
+        );
+        const rawBytes = Buffer.from(fileResponse.data);
+        if (!isLikelyTextMimeType(mimeType) && hasHighBinaryRatio(rawBytes)) {
+            throw new Error(`"${file.name}" appears to be binary (${mimeType || 'unknown'}). Text append is not supported.`);
+        }
+        currentContent = rawBytes.toString('utf8');
+    }
+
+    currentContent = String(currentContent || '').replace(/\r\n?/g, '\n').replace(/\u0000/g, '');
+    if (currentContent.length > DRIVE_TEXT_EDIT_MAX_CHARS) {
+        throw new Error(`Document is too large to safely rewrite via Drive fallback (${currentContent.length} chars). Reconnect Docs and retry.`);
+    }
+
+    const base = currentContent.trimEnd();
+    const updatedContent = base ? `${base}\n${appendTextValue}\n` : `${appendTextValue}\n`;
+    const updated = await updateDriveFile({
+        fileId,
+        content: updatedContent,
+        mimeType: 'text/plain'
+    });
+
+    return {
+        success: true,
+        fileId,
+        name: updated.file?.name || file.name,
+        mimeType,
+        appendedText: appendTextValue,
+        previousChars: currentContent.length,
+        newChars: updatedContent.length,
+        usedDocsApi: false,
+        webViewLink: updated.file?.webViewLink || file.webViewLink || null,
+        message: `Appended text to "${updated.file?.name || file.name}" using Drive fallback.`
+    };
+}
+
 async function convertFileToGoogleDoc({ fileId, title, parentId, downloadConverted = false, downloadFormat = 'docx' }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
     if (!fileId) throw new Error('fileId is required');
@@ -4713,6 +4795,7 @@ const driveTools = [
     { type: "function", function: { name: "share_drive_file", description: "Share a Drive file with a user email.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, emailAddress: { type: "string", description: "User email address to share with" }, role: { type: "string", description: "Permission role: reader, commenter, writer, organizer, fileOrganizer (default reader)" }, sendNotificationEmail: { type: "boolean", description: "Send share email notification (default true)" } }, required: ["fileId", "emailAddress"] } } },
     { type: "function", function: { name: "download_drive_file", description: "Prepare a real browser download link for a Drive file. For Google Workspace files, choose export format (docx/pdf/txt/xlsx/etc.).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Optional export format for Google Workspace files (e.g. docx, pdf, txt, xlsx, csv)." }, filename: { type: "string", description: "Optional custom downloaded file name." } }, required: ["fileId"] } } },
     { type: "function", function: { name: "extract_drive_file_text", description: "Extract readable text from a Drive file (best for summarization/Q&A; PDFs attempt conversion to text).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum text bytes to return (default 40000, max 120000)." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "append_drive_document_text", description: "Append text to a Drive document. Uses Docs API when available; otherwise safely falls back to Drive text rewrite.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID (Google Doc or text-like file)." }, text: { type: "string", description: "Text to append to the end of the document." } }, required: ["fileId", "text"] } } },
     { type: "function", function: { name: "convert_file_to_google_doc", description: "Convert a file (like PDF) into a Google Doc stored in Drive. Optionally return a download link for the converted doc.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. a PDF)." }, title: { type: "string", description: "Optional title for the converted Google Doc." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted doc." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted document." }, downloadFormat: { type: "string", description: "Optional export format for converted doc (docx, pdf, txt). Default docx." } }, required: ["fileId"] } } },
     { type: "function", function: { name: "convert_file_to_google_sheet", description: "Convert a file (like CSV/XLSX) into a Google Sheet stored in Drive. Optionally return a download link for the converted sheet.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. CSV/XLSX)." }, title: { type: "string", description: "Optional title for the converted Google Sheet." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted sheet." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted spreadsheet." }, downloadFormat: { type: "string", description: "Optional export format for converted sheet (xlsx, csv, pdf). Default xlsx." } }, required: ["fileId"] } } }
 ];
@@ -4814,6 +4897,84 @@ const outlookToolNames = new Set(outlookTools.map(t => t.function.name));
 const docsToolNames = new Set(docsTools.map(t => t.function.name));
 const teamsToolNames = new Set(teamsTools.map(t => t.function.name));
 const docsListOnlyTools = docsTools.filter(tool => tool.function.name === 'list_documents');
+const spreadsheetIdArgToolNames = new Set([
+    'get_spreadsheet',
+    'list_sheet_tabs',
+    'add_sheet_tab',
+    'delete_sheet_tab',
+    'read_sheet_values',
+    'update_sheet_values',
+    'update_timesheet_hours',
+    'append_sheet_values',
+    'clear_sheet_values'
+]);
+
+function isSheetsRelatedToolName(toolName) {
+    const name = String(toolName || '');
+    if (!name) return false;
+    return sheetsToolNames.has(name) || name.startsWith(SHEETS_MCP_TOOL_PREFIX);
+}
+
+function shouldPreferDocumentEditingRoute(userMessage) {
+    const message = String(userMessage || '').toLowerCase();
+    if (!message) return false;
+
+    const hasDocKeyword = /\b(doc|docs|document|google doc|docx)\b/i.test(message);
+    const hasEditVerb = /\b(edit|update|append|add|insert|replace|modify|change|write)\b/i.test(message);
+    const hasSheetKeyword = /\b(sheet|spreadsheet|excel|xlsx|csv|timesheet)\b/i.test(message);
+
+    return hasDocKeyword && hasEditVerb && !hasSheetKeyword;
+}
+
+function selectToolsForMessageIntent({ userMessage, availableTools, docsConnected, docsListOnlyConnected }) {
+    let selectedTools = Array.isArray(availableTools) ? availableTools : [];
+    const routingHints = [];
+
+    if (shouldPreferDocumentEditingRoute(userMessage)) {
+        selectedTools = selectedTools.filter(tool => {
+            const toolName = tool?.function?.name;
+            if (!toolName) return false;
+            if (isSheetsRelatedToolName(toolName)) return false;
+            if (githubToolNames.has(toolName)) return false;
+            return true;
+        });
+        routingHints.push('Document editing intent detected: avoid Sheets and GitHub file tools.');
+        if (!docsConnected && docsListOnlyConnected) {
+            routingHints.push('Docs write scope missing: use Drive document append/update fallback tools.');
+        }
+    }
+
+    if (!selectedTools.length && Array.isArray(availableTools) && availableTools.length > 0) {
+        selectedTools = availableTools;
+    }
+
+    return { selectedTools, routingHints };
+}
+
+function sheetValuesToPlainText(values) {
+    if (!Array.isArray(values)) return '';
+    const lines = values.map(row => {
+        if (Array.isArray(row)) {
+            return row.map(cell => String(cell ?? '')).join('\t');
+        }
+        return String(row ?? '');
+    });
+    return lines.join('\n').trim();
+}
+
+async function resolveDriveFileMetadata(fileId) {
+    if (!driveClient || !fileId) return null;
+    try {
+        const response = await driveClient.files.get({
+            fileId: String(fileId),
+            supportsAllDrives: true,
+            fields: 'id,name,mimeType'
+        });
+        return response?.data || null;
+    } catch {
+        return null;
+    }
+}
 
 async function executeGmailTool(toolName, args) {
     if (!gmailClient) throw new Error('Gmail not connected. Please authenticate first.');
@@ -4895,6 +5056,7 @@ async function executeDriveTool(toolName, args) {
         share_drive_file: shareDriveFile,
         download_drive_file: downloadDriveFile,
         extract_drive_file_text: extractDriveFileText,
+        append_drive_document_text: appendDriveDocumentText,
         convert_file_to_google_doc: convertFileToGoogleDoc,
         convert_file_to_google_sheet: convertFileToGoogleSheet
     };
@@ -4927,6 +5089,27 @@ async function executeSheetsTool(toolName, args) {
         append_sheet_values: appendSheetValues,
         clear_sheet_values: clearSheetValues
     };
+
+    const spreadsheetId = spreadsheetIdArgToolNames.has(toolName)
+        ? String(args?.spreadsheetId || '').trim()
+        : '';
+    if (spreadsheetId) {
+        const driveMeta = await resolveDriveFileMetadata(spreadsheetId);
+        const driveMimeType = String(driveMeta?.mimeType || '');
+        if (driveMimeType && driveMimeType !== 'application/vnd.google-apps.spreadsheet') {
+            if (toolName === 'append_sheet_values' && driveMimeType === 'application/vnd.google-apps.document') {
+                const appendTextValue = sheetValuesToPlainText(args?.values);
+                if (appendTextValue) {
+                    return await appendDriveDocumentText({
+                        fileId: spreadsheetId,
+                        text: appendTextValue
+                    });
+                }
+            }
+            throw new Error(`"${driveMeta?.name || spreadsheetId}" is a document (${driveMimeType}), not a spreadsheet. Use Docs/Drive document editing tools.`);
+        }
+    }
+
     const fn = toolMap[toolName];
     if (!fn) throw new Error(`Unknown Google Sheets tool: ${toolName}`);
     try {
@@ -5751,7 +5934,7 @@ function getConnectedToolContext() {
     if (teamsConnected) connectedServices.push(`Microsoft Teams (${teamsTools.length} tools)`);
 
     const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
-    return { availableTools, statusText };
+    return { availableTools, statusText, docsConnected, docsListOnlyConnected };
 }
 
 function buildAgentSystemPrompt({ statusText, toolCount, dateContext }) {
@@ -5794,6 +5977,8 @@ Total Tools Available: ${toolCount}
 
 10. **BE PROACTIVE BUT ACCURATE**: Share helpful observations discovered during execution, but never claim success unless tool output confirms it.
 
+11. **DOCUMENT VS SHEET DISCIPLINE**: Never use Sheets tools for Google Docs/document IDs. Never use GitHub repository file tools to edit Drive/Docs files.
+
 ## TOOL USAGE TIPS:
 - Gmail: search_emails supports full Gmail query syntax (from:, to:, subject:, is:unread, has:attachment, etc.)
 - Calendar: Use list_events with timeMin/timeMax for date ranges. Use create_meet_event or create_event with createMeetLink=true for Google Meet.
@@ -5801,7 +5986,7 @@ Total Tools Available: ${toolCount}
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
-- Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access. Use download_drive_file for real file downloads, extract_drive_file_text for summarization/Q&A, convert_file_to_google_doc to convert PDFs/files into Docs stored in Drive, and convert_file_to_google_sheet to convert CSV/XLSX/files into Sheets stored in Drive.
+- Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access. Use download_drive_file for real file downloads, extract_drive_file_text for summarization/Q&A, append_drive_document_text to append text to docs/files, convert_file_to_google_doc to convert PDFs/files into Docs stored in Drive, and convert_file_to_google_sheet to convert CSV/XLSX/files into Sheets stored in Drive.
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
 - Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
 - Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
@@ -5809,7 +5994,7 @@ Total Tools Available: ${toolCount}
 - Sheets write safety: Never claim a sheet update succeeded unless tool output indicates verification/read-back succeeded.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.
 - Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.
-- Google Docs: Use list_documents to find Docs by name. Use get_document_text to read content. Use create_document to create new docs. Use insert_text/append_text to add content. Use replace_text for find-and-replace.
+- Google Docs: Use list_documents to find Docs by name. Use get_document_text to read content. Use create_document to create new docs. Use insert_text/append_text to add content. Use replace_text for find-and-replace. If Docs write scope is missing, use append_drive_document_text (or extract_drive_file_text + update_drive_file) as fallback.
 - Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
 
 ## FINAL RESPONSE QUALITY:
@@ -6006,14 +6191,24 @@ async function runAgentConversation({ message, history = [] }) {
         throw lastError || new Error('OpenAI completion failed');
     };
 
-    const { availableTools, statusText } = getConnectedToolContext();
+    const toolContext = getConnectedToolContext();
+    const { selectedTools: availableTools, routingHints } = selectToolsForMessageIntent({
+        userMessage: message,
+        availableTools: toolContext.availableTools,
+        docsConnected: toolContext.docsConnected,
+        docsListOnlyConnected: toolContext.docsListOnlyConnected
+    });
     const dateContext = getCurrentDateContext();
     const systemPrompt = buildAgentSystemPrompt({
-        statusText,
+        statusText: toolContext.statusText,
         toolCount: availableTools.length,
         dateContext
     });
+    const routingHintBlock = routingHints.length > 0
+        ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
+        : '';
     const enrichedUserMessage = `${message}
+${routingHintBlock}
 
 [Runtime Date Context]
 - Current timestamp (UTC): ${dateContext.nowIso}
