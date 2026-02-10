@@ -958,6 +958,35 @@ body {
     color: var(--text-muted);
 }
 
+.mic-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--glass-border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-normal);
+    flex-shrink: 0;
+    margin-right: 0.5rem;
+}
+
+.mic-btn:hover {
+    background: var(--glass-bg);
+    border-color: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+.mic-btn.listening {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: var(--error);
+    color: var(--error);
+    animation: pulse 1.5s infinite;
+}
+
 .send-btn {
     width: 48px;
     height: 48px;
