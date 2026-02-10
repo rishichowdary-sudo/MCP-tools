@@ -1303,7 +1303,8 @@ body {
 /* Gmail-like Email List Styles */
 .email-card {
     display: flex;
-    align-items: center;
+    display: flex;
+    align-items: flex-start;
     padding: 0.75rem 1rem;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
@@ -1313,6 +1314,7 @@ body {
     position: relative;
     border-radius: 0;
     margin-bottom: 0;
+    overflow-wrap: anywhere;
 }
 
 .email-card:hover {
@@ -1369,48 +1371,35 @@ body {
     flex: 1;
     min-width: 0;
     display: flex;
-    align-items: baseline;
+    align-items: flex-start;
     gap: 0.75rem;
 }
 
 .email-sender {
     font-weight: 600;
     color: var(--text-primary);
-    white-space: nowrap;
     width: 160px;
-    overflow: hidden;
-    text-overflow: ellipsis;
     flex-shrink: 0;
+    overflow-wrap: break-word;
+    margin-right: 1rem;
 }
 
 .email-snippet-wrapper {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
+    display: block;
     flex: 1;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
     min-width: 0;
 }
 
 .email-subject {
     font-weight: 600;
     color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex-shrink: 0;
-    max-width: 60%;
-    /* Prevent subject from taking all space */
+    overflow-wrap: break-word;
 }
 
 .email-snippet {
     color: var(--text-secondary);
     font-weight: 400;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-wrap: break-word;
 }
 
 .email-date {

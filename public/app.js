@@ -1724,7 +1724,7 @@ function formatToolResults(results) {
                                 <div class="email-sender">${escapeHtml(displayName)}</div>
                                 <div class="email-snippet-wrapper">
                                     <span class="email-subject">${escapeHtml(email.subject || '(no subject)')}</span>
-                                    <span class="email-snippet">- ${escapeHtml(email.snippet ? email.snippet.slice(0, 90) : '')}...</span>
+                                    <span class="email-snippet">- ${escapeHtml(email.snippet ? email.snippet.slice(0, 300) : '')}...</span>
                                 </div>
                                 <div class="email-date">${formatDate(email.date)}</div>
                             </div>
@@ -1749,7 +1749,7 @@ function formatToolResults(results) {
                 // Drafts
             } else if (result.result.drafts && Array.isArray(result.result.drafts)) {
                 content = result.result.drafts.map(d => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(d.subject || '(no subject)')}</span>
                         </div>
@@ -1759,7 +1759,7 @@ function formatToolResults(results) {
                 // Google Chat spaces
             } else if (result.result.spaces && Array.isArray(result.result.spaces)) {
                 content = result.result.spaces.map(s => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(s.displayName || s.name)}</span>
                             <span class="email-card-date">${escapeHtml(s.spaceType || '')}</span>
@@ -1770,7 +1770,7 @@ function formatToolResults(results) {
                 // Google Chat messages
             } else if (result.result.space && result.result.messages && Array.isArray(result.result.messages)) {
                 content = result.result.messages.map(msg => `
-                    <div class="email-card thread-msg">
+                    <div class="email-card thread-msg vertical">
                         <div class="email-card-header">
                             <span class="email-card-from" style="font-weight:600">${escapeHtml(msg.sender || '')}</span>
                             <span class="email-card-date">${formatDate(msg.createTime)}</span>
@@ -1781,7 +1781,7 @@ function formatToolResults(results) {
                 // Thread messages
             } else if (result.result.messages && Array.isArray(result.result.messages)) {
                 content = result.result.messages.map(msg => `
-                    <div class="email-card thread-msg">
+                    <div class="email-card thread-msg vertical">
                         <div class="email-card-header">
                             <span class="email-card-from" style="font-weight:600">${escapeHtml(msg.from || '')}</span>
                             <span class="email-card-date">${formatDate(msg.date)}</span>
@@ -1803,7 +1803,7 @@ function formatToolResults(results) {
                 // Calendar events
             } else if (result.result.events && Array.isArray(result.result.events)) {
                 content = result.result.events.map(e => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(e.summary || '(no title)')}</span>
                             <span class="email-card-date">${formatDate(e.start)}</span>
@@ -1816,7 +1816,7 @@ function formatToolResults(results) {
                 // Calendars list
             } else if (result.result.calendars && Array.isArray(result.result.calendars)) {
                 content = result.result.calendars.map(c => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(c.summary || c.id)}</span>
                             ${c.primary ? '<span style="color:var(--accent-primary);font-size:0.75rem">Primary</span>' : ''}
@@ -1827,7 +1827,7 @@ function formatToolResults(results) {
                 // Drive files
             } else if (result.result.files && Array.isArray(result.result.files)) {
                 content = result.result.files.map(f => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(f.name || f.id)}</span>
                             <span class="email-card-date">${escapeHtml((f.mimeType || '').replace('application/vnd.google-apps.', ''))}</span>
@@ -1839,7 +1839,7 @@ function formatToolResults(results) {
                 // Spreadsheet list
             } else if (result.result.spreadsheets && Array.isArray(result.result.spreadsheets)) {
                 content = result.result.spreadsheets.map(s => `
-                    <div class="email-card">
+                    <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(s.title || s.spreadsheetId)}</span>
                             <span class="email-card-date">${formatDate(s.modifiedTime)}</span>
