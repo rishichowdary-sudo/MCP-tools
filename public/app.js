@@ -708,10 +708,29 @@ async function initiateGoogleAuth() {
         authenticateBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...`;
 
         const response = await fetch('/api/gmail/auth');
-        const data = await response.json();
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 404) {
+                throw new Error('Google auth route not found on backend. Restart the server so latest routes are loaded.');
+            }
+            throw new Error(`Unexpected non-JSON response from backend (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Google auth failed with status ${response.status}`);
+        }
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Authentication', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetGoogleAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -726,10 +745,13 @@ async function initiateGoogleAuth() {
         } else if (data.setupRequired) {
             alert('Please set up Google Cloud credentials first.');
             resetGoogleAuthButton();
+        } else {
+            alert(data.error || 'Failed to initiate Google authentication');
+            resetGoogleAuthButton();
         }
     } catch (error) {
         console.error('Google auth error:', error);
-        alert('Failed to initiate authentication');
+        alert(error.message || 'Failed to initiate authentication');
         resetGoogleAuthButton();
     }
 }
@@ -740,10 +762,29 @@ async function initiateCalendarAuth() {
         calendarAuthBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...`;
 
         const response = await fetch('/api/calendar/connect');
-        const data = await response.json();
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 404) {
+                throw new Error('Calendar auth route not found on backend. Restart the server so latest routes are loaded.');
+            }
+            throw new Error(`Unexpected non-JSON response from backend (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Calendar auth failed with status ${response.status}`);
+        }
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Calendar Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetCalendarAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -758,10 +799,13 @@ async function initiateCalendarAuth() {
         } else if (data.setupRequired) {
             alert('Please set up Google Cloud credentials first.');
             resetCalendarAuthButton();
+        } else {
+            alert(data.error || 'Failed to initiate calendar authentication');
+            resetCalendarAuthButton();
         }
     } catch (error) {
         console.error('Calendar auth error:', error);
-        alert('Failed to initiate calendar authentication');
+        alert(error.message || 'Failed to initiate calendar authentication');
         resetCalendarAuthButton();
     }
 }
@@ -800,6 +844,11 @@ async function initiateGchatAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Chat Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetGchatAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -854,6 +903,11 @@ async function initiateDriveAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Drive Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetDriveAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -908,6 +962,11 @@ async function initiateSheetsAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Sheets Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetSheetsAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -963,6 +1022,11 @@ async function initiateGithubAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'GitHub Authentication', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetGithubAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -1055,6 +1119,11 @@ async function initiateOutlookAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Outlook Authentication', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetOutlookAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -1159,6 +1228,10 @@ async function initiateTeamsAuth() {
         const data = await response.json();
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'TeamsAuth', 'width=600,height=700');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                return;
+            }
             const pollInterval = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(pollInterval);
@@ -1374,7 +1447,7 @@ async function sendMessage() {
             }
 
             // Suppress text response for list-type tools (only show cards)
-            const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_prs', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
+            const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_pull_requests', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
             const isListToolOnly = data.toolResults &&
                 data.toolResults.length === 1 &&
                 LIST_TOOLS.includes(data.toolResults[0].tool) &&
@@ -1558,8 +1631,8 @@ function formatToolResults(results) {
                     <div class="attachment-card">
                         <span class="attachment-icon">&#128206;</span>
                         <div>
-                            <div style="font-weight:500">${escapeHtml(a.filename)}</div>
-                            <div style="font-size:0.8rem;color:var(--text-muted)">${escapeHtml(a.mimeType)} &middot; ${formatSize(a.size)}</div>
+                            <div style="font-weight:500">${escapeHtml(a.filename || a.name || 'attachment')}</div>
+                            <div style="font-size:0.8rem;color:var(--text-muted)">${escapeHtml(a.mimeType || a.contentType || 'unknown')} &middot; ${formatSize(a.size)}</div>
                         </div>
                     </div>
                 `).join('');
