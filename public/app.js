@@ -180,7 +180,7 @@ const TOOL_ICONS = {
     list_drive_files: '&#128193;', get_drive_file: '&#128196;', create_drive_folder: '&#128193;',
     create_drive_file: '&#10133;', update_drive_file: '&#9998;', delete_drive_file: '&#128465;',
     copy_drive_file: '&#128209;', move_drive_file: '&#10145;', share_drive_file: '&#128101;',
-    download_drive_file: '&#128229;', extract_drive_file_text: '&#128214;', convert_file_to_google_doc: '&#128260;', convert_file_to_google_sheet: '&#128202;',
+    download_drive_file: '&#128229;', extract_drive_file_text: '&#128214;', append_drive_document_text: '&#9998;', convert_file_to_google_doc: '&#128260;', convert_file_to_google_sheet: '&#128202;',
     // Google Sheets
     list_spreadsheets: '&#128202;', create_spreadsheet: '&#10133;', get_spreadsheet: '&#128196;',
     list_sheet_tabs: '&#128203;', add_sheet_tab: '&#10133;', delete_sheet_tab: '&#10134;',
@@ -245,7 +245,7 @@ const GCHAT_CATEGORIES = {
 const DRIVE_CATEGORIES = {
     'Browse': ['list_drive_files', 'get_drive_file'],
     'Download & Extract': ['download_drive_file', 'extract_drive_file_text'],
-    'Create & Convert': ['create_drive_folder', 'create_drive_file', 'convert_file_to_google_doc', 'convert_file_to_google_sheet', 'update_drive_file'],
+    'Create & Convert': ['create_drive_folder', 'create_drive_file', 'append_drive_document_text', 'convert_file_to_google_doc', 'convert_file_to_google_sheet', 'update_drive_file'],
     'Manage': ['copy_drive_file', 'move_drive_file', 'share_drive_file', 'delete_drive_file']
 };
 
@@ -1912,6 +1912,21 @@ function formatToolResults(results) {
                             <span class="email-card-date">${escapeHtml(result.result.extractionMethod || '')}</span>
                         </div>
                         <pre style="max-height:260px;overflow:auto;white-space:pre-wrap">${escapeHtml(preview)}</pre>
+                    </div>
+                `;
+                // Appended text to Drive document
+            } else if (result.tool === 'append_drive_document_text' && result.result.fileId) {
+                content = `
+                    <div class="email-card vertical">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(result.result.name || 'Drive document')}</span>
+                            <span class="email-card-date">${result.result.usedDocsApi ? 'Docs API' : 'Drive Fallback'}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(result.result.fileId || '')}</code></div>
+                        <div class="email-card-snippet" style="margin-top:0.6rem">
+                            ${result.result.message ? escapeHtml(result.result.message) : 'Text appended successfully.'}
+                        </div>
+                        ${result.result.webViewLink ? `<div class="email-card-snippet" style="margin-top:0.6rem"><a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:none">Open in Drive</a></div>` : ''}
                     </div>
                 `;
                 // Converted file to Google Doc
