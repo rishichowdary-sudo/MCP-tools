@@ -158,6 +158,19 @@
                         </span>
                     </button>
 
+                    <!-- GCS (Cloud Storage) Option -->
+                    <button class="nav-item" id="gcsNavItem" data-service="gcs">
+                        <div class="nav-item-icon gcs-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#FF6D00" d="M19.35 10.04A7.49 7.49 0 0012 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 000 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM19 18H6c-2.21 0-4-1.79-4-4s1.79-4 4-4h.71C7.37 7.69 9.48 6 12 6c3.04 0 5.5 2.46 5.5 5.5v.5H19c1.66 0 3 1.34 3 3s-1.34 3-3 3z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Cloud Storage</span>
+                        <span class="nav-item-status" id="gcsStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
                     <!-- Timer Tasks Option -->
                     <button class="nav-item" id="timerNavItem" data-service="timer">
                         <div class="nav-item-icon timer-icon">
@@ -225,6 +238,10 @@
                         <div class="nav-item-icon"><span style="font-size:16px">&#128101;</span></div>
                         <span class="nav-item-text">My Teams</span>
                     </button>
+                    <button class="nav-item quick-nav" data-prompt="List my GCS buckets">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128230;</span></div>
+                        <span class="nav-item-text">My Buckets</span>
+                    </button>
                 </div>
             </nav>
 
@@ -252,6 +269,7 @@
                         <button class="service-tab" data-filter="outlook">Outlook (18)</button>
                         <button class="service-tab" data-filter="docs">Docs (8)</button>
                         <button class="service-tab" data-filter="teams">Teams (10)</button>
+                        <button class="service-tab" data-filter="gcs">GCS (10)</button>
                     </div>
                     <div class="capability-group">
                         <p class="capability-description"><span id="toolStatusText">Not connected</span></p>
@@ -929,6 +947,54 @@
                 </div>
             </div>
 
+            <!-- GCS (Cloud Storage) Panel -->
+            <div class="service-panel" id="gcsPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#FF6D00" d="M19.35 10.04A7.49 7.49 0 0012 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 000 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM19 18H6c-2.21 0-4-1.79-4-4s1.79-4 4-4h.71C7.37 7.69 9.48 6 12 6c3.04 0 5.5 2.46 5.5 5.5v.5H19c1.66 0 3 1.34 3 3s-1.34 3-3 3z"/>
+                        </svg>
+                        <h2>GCP Cloud Storage</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="gcs">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="connected-section" id="gcsConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon" style="background:linear-gradient(135deg,#FF6D00,#E65100)">&#10003;</div>
+                                <div>
+                                    <h3>Cloud Storage Connected</h3>
+                                    <p id="gcsProjectInfo">10 bucket/object tools ready!</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="List my GCS buckets">List Buckets</button>
+                                <button class="quick-action-btn" data-prompt="Create a new GCS bucket">Create Bucket</button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="gcs">Start Chatting</button>
+                        </div>
+                    </div>
+                    <div class="setup-section" id="gcsSetupSection">
+                        <div class="setup-card">
+                            <div class="setup-icon">&#9881;</div>
+                            <h3>Setup Required</h3>
+                            <p>GCP Service Account credentials needed for Cloud Storage.</p>
+                            <ol class="setup-steps">
+                                <li>Go to <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank">GCP Service Accounts</a></li>
+                                <li>Create a service account with <strong>Storage Admin</strong> role</li>
+                                <li>Download the JSON key file</li>
+                                <li>Add to your <code>.env</code> file:
+                                    <br><code>GCP_SERVICE_ACCOUNT_KEY_FILE=/path/to/key.json</code>
+                                    <br><code>GCP_PROJECT_ID=your-project-id</code>
+                                </li>
+                                <li>Restart the server</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Timer Tasks Panel -->
             <div class="service-panel" id="timerPanel">
                 <div class="panel-header">
@@ -1021,6 +1087,10 @@
                         <span class="service-badge teams-badge" id="teamsBadge" style="display: none;">
                             <span class="badge-dot"></span>
                             Teams
+                        </span>
+                        <span class="service-badge gcs-badge" id="gcsBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            GCS
                         </span>
                         <span class="service-badge timer-badge" id="timerBadge" style="display: none;">
                             <span class="badge-dot"></span>

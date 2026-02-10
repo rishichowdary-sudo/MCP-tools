@@ -6,6 +6,7 @@ const OpenAI = require('openai');
 const { Octokit } = require('octokit');
 const { Client: McpClient } = require('@modelcontextprotocol/sdk/client');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+const { Readable } = require('stream');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -139,6 +140,11 @@ let outlookTokenExpiry = null;
 let outlookUserEmail = null;
 let outlookAuthMethod = 'oauth';
 const outlookOAuthStateStore = new Map();
+
+// GCS (Cloud Storage) state
+let gcsClient = null;
+let gcsAuthenticated = false;
+let gcsProjectId = null;
 
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 const DISALLOWED_ATTENDEE_DOMAINS = new Set(['example.com', 'test.com', 'domain.com', 'email.com']);
@@ -929,6 +935,34 @@ async function initOutlookClient() {
         return true;
     } catch (error) {
         console.error('Error initializing Outlook client:', error);
+        return false;
+    }
+}
+
+function initGcsClient() {
+    try {
+        const keyFile = process.env.GCP_SERVICE_ACCOUNT_KEY_FILE;
+        const projectId = process.env.GCP_PROJECT_ID;
+        if (!keyFile || !projectId) {
+            console.log('GCS: Skipped (GCP_SERVICE_ACCOUNT_KEY_FILE or GCP_PROJECT_ID not set)');
+            return false;
+        }
+        if (!fs.existsSync(keyFile)) {
+            console.error(`GCS: Service account key file not found: ${keyFile}`);
+            return false;
+        }
+        const auth = new google.auth.GoogleAuth({
+            keyFile,
+            scopes: ['https://www.googleapis.com/auth/cloud-platform']
+        });
+        gcsClient = google.storage({ version: 'v1', auth });
+        gcsAuthenticated = true;
+        gcsProjectId = projectId;
+        console.log(`GCS client initialized (project: ${projectId})`);
+        return true;
+    } catch (error) {
+        console.error('Error initializing GCS client:', error.message);
+        gcsAuthenticated = false;
         return false;
     }
 }
@@ -4532,6 +4566,87 @@ async function teamsGetChatMembers({ chatId }) {
 }
 
 // ============================================================
+//  GCS (CLOUD STORAGE) TOOL FUNCTIONS
+// ============================================================
+
+async function gcsListBuckets() {
+    const res = await gcsClient.buckets.list({ project: gcsProjectId });
+    const buckets = (res.data.items || []).map(b => ({
+        name: b.name, location: b.location, storageClass: b.storageClass,
+        created: b.timeCreated, updated: b.updated
+    }));
+    return { buckets, count: buckets.length };
+}
+
+async function gcsGetBucket({ bucket }) {
+    const res = await gcsClient.buckets.get({ bucket });
+    return res.data;
+}
+
+async function gcsCreateBucket({ name, location, storageClass }) {
+    const res = await gcsClient.buckets.insert({
+        project: gcsProjectId,
+        requestBody: {
+            name,
+            location: location || 'US',
+            storageClass: storageClass || 'STANDARD'
+        }
+    });
+    return { created: true, bucket: res.data.name, location: res.data.location, storageClass: res.data.storageClass };
+}
+
+async function gcsDeleteBucket({ bucket }) {
+    await gcsClient.buckets.delete({ bucket });
+    return { deleted: true, bucket };
+}
+
+async function gcsListObjects({ bucket, prefix, maxResults }) {
+    const params = { bucket };
+    if (prefix) params.prefix = prefix;
+    if (maxResults) params.maxResults = maxResults;
+    const res = await gcsClient.objects.list(params);
+    const objects = (res.data.items || []).map(o => ({
+        name: o.name, size: o.size, contentType: o.contentType,
+        updated: o.updated
+    }));
+    return { objects, count: objects.length, bucket };
+}
+
+async function gcsUploadObject({ bucket, name, content, contentType }) {
+    const media = {
+        mimeType: contentType || 'application/octet-stream',
+        body: Readable.from(Buffer.from(content))
+    };
+    const res = await gcsClient.objects.insert({ bucket, name, media });
+    return { uploaded: true, bucket, name: res.data.name, size: res.data.size, contentType: res.data.contentType };
+}
+
+async function gcsDownloadObject({ bucket, name }) {
+    const res = await gcsClient.objects.get({ bucket, object: name, alt: 'media' }, { responseType: 'text' });
+    return { bucket, name, content: res.data };
+}
+
+async function gcsDeleteObject({ bucket, name }) {
+    await gcsClient.objects.delete({ bucket, object: name });
+    return { deleted: true, bucket, name };
+}
+
+async function gcsCopyObject({ sourceBucket, sourceObject, destBucket, destObject }) {
+    const res = await gcsClient.objects.copy({
+        sourceBucket,
+        sourceObject,
+        destinationBucket: destBucket || sourceBucket,
+        destinationObject: destObject || sourceObject
+    });
+    return { copied: true, source: `${sourceBucket}/${sourceObject}`, destination: `${res.data.bucket}/${res.data.name}` };
+}
+
+async function gcsGetObjectMetadata({ bucket, name }) {
+    const res = await gcsClient.objects.get({ bucket, object: name });
+    return res.data;
+}
+
+// ============================================================
 //  TOOL DEFINITIONS FOR OPENAI
 // ============================================================
 const gmailTools = [
@@ -5022,6 +5137,19 @@ const teamsTools = [
     { type: "function", function: { name: "teams_get_chat_members", description: "List members of a Microsoft Teams chat.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" } }, required: ["chatId"] } } }
 ];
 
+const gcsTools = [
+    { type: "function", function: { name: "gcs_list_buckets", description: "List all GCS buckets in the project.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "gcs_get_bucket", description: "Get metadata for a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
+    { type: "function", function: { name: "gcs_create_bucket", description: "Create a new GCS bucket.", parameters: { type: "object", properties: { name: { type: "string", description: "Bucket name (globally unique)" }, location: { type: "string", description: "Bucket location (default US)" }, storageClass: { type: "string", description: "Storage class: STANDARD, NEARLINE, COLDLINE, ARCHIVE (default STANDARD)" } }, required: ["name"] } } },
+    { type: "function", function: { name: "gcs_delete_bucket", description: "Delete a GCS bucket (must be empty).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
+    { type: "function", function: { name: "gcs_list_objects", description: "List objects in a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Filter objects by prefix (folder path)" }, maxResults: { type: "integer", description: "Maximum number of objects to return" } }, required: ["bucket"] } } },
+    { type: "function", function: { name: "gcs_upload_object", description: "Upload text or JSON content to a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, content: { type: "string", description: "Content to upload" }, contentType: { type: "string", description: "MIME type (default application/octet-stream)" } }, required: ["bucket", "name", "content"] } } },
+    { type: "function", function: { name: "gcs_download_object", description: "Download/read the content of an object from a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_delete_object", description: "Delete an object from a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_copy_object", description: "Copy an object between buckets or within a bucket.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (default same as source)" }, destObject: { type: "string", description: "Destination object name (default same as source)" } }, required: ["sourceBucket", "sourceObject"] } } },
+    { type: "function", function: { name: "gcs_get_object_metadata", description: "Get metadata for an object in a GCS bucket (size, content type, timestamps).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } }
+];
+
 // ============================================================
 //  TOOL EXECUTION ROUTERS
 // ============================================================
@@ -5036,6 +5164,7 @@ const githubToolNames = new Set(githubTools.map(t => t.function.name));
 const outlookToolNames = new Set(outlookTools.map(t => t.function.name));
 const docsToolNames = new Set(docsTools.map(t => t.function.name));
 const teamsToolNames = new Set(teamsTools.map(t => t.function.name));
+const gcsToolNames = new Set(gcsTools.map(t => t.function.name));
 const docsListOnlyTools = docsTools.filter(tool => tool.function.name === 'list_documents');
 const spreadsheetIdArgToolNames = new Set([
     'get_spreadsheet',
@@ -5347,6 +5476,20 @@ async function executeTeamsTool(toolName, args) {
     }
 }
 
+async function executeGcsTool(toolName, args) {
+    if (!gcsAuthenticated) throw new Error('GCS not connected. Set GCP_SERVICE_ACCOUNT_KEY_FILE and GCP_PROJECT_ID in .env and restart.');
+    const toolMap = {
+        gcs_list_buckets: gcsListBuckets, gcs_get_bucket: gcsGetBucket,
+        gcs_create_bucket: gcsCreateBucket, gcs_delete_bucket: gcsDeleteBucket,
+        gcs_list_objects: gcsListObjects, gcs_upload_object: gcsUploadObject,
+        gcs_download_object: gcsDownloadObject, gcs_delete_object: gcsDeleteObject,
+        gcs_copy_object: gcsCopyObject, gcs_get_object_metadata: gcsGetObjectMetadata
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown GCS tool: ${toolName}`);
+    return await fn(args);
+}
+
 // Master dispatcher
 async function executeTool(toolName, args) {
     console.log(`[Tool] ${toolName}`, JSON.stringify(args).slice(0, 200));
@@ -5360,6 +5503,7 @@ async function executeTool(toolName, args) {
     if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, args);
     if (outlookToolNames.has(toolName)) return await executeOutlookTool(toolName, args);
     if (teamsToolNames.has(toolName)) return await executeTeamsTool(toolName, args);
+    if (gcsToolNames.has(toolName)) return await executeGcsTool(toolName, args);
     throw new Error(`Unknown tool: ${toolName}`);
 }
 
@@ -5390,9 +5534,10 @@ app.get('/api/tools', (req, res) => {
     const docs = { service: 'docs', connected: docsConnected || docsListOnlyConnected, tools: docsVisibleTools.map(t => ({ function: t.function })) };
     const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
     const teams = { service: 'teams', connected: teamsConnected, tools: teamsTools.map(t => ({ function: t.function })) };
-    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length;
+    const gcs = { service: 'gcs', connected: gcsAuthenticated, tools: gcsTools.map(t => ({ function: t.function })) };
+    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length + gcsTools.length;
     res.json({
-        services: [gmail, calendar, gchat, drive, sheets, github, outlook, docs, teams],
+        services: [gmail, calendar, gchat, drive, sheets, github, outlook, docs, teams, gcs],
         totalTools
     });
 });
@@ -5663,6 +5808,15 @@ app.get('/api/teams/status', (req, res) => {
         email: outlookUserEmail,
         requiresReconnect: !!outlookAccessToken && !teamsScoped,
         toolCount: teamsTools.length
+    });
+});
+
+// GCS (Cloud Storage) status
+app.get('/api/gcs/status', (req, res) => {
+    res.json({
+        authenticated: gcsAuthenticated,
+        projectId: gcsProjectId,
+        toolCount: gcsTools.length
     });
 });
 
@@ -6060,6 +6214,7 @@ function getConnectedToolContext() {
     if (outlookAccessToken) availableTools.push(...outlookTools);
     const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
     if (teamsConnected) availableTools.push(...teamsTools);
+    if (gcsAuthenticated) availableTools.push(...gcsTools);
 
     const connectedServices = [];
     if (gmailClient) connectedServices.push('Gmail (25 tools)');
@@ -6073,13 +6228,14 @@ function getConnectedToolContext() {
     if (octokitClient) connectedServices.push('GitHub (20 tools)');
     if (outlookAccessToken) connectedServices.push(`Outlook (${outlookTools.length} tools)`);
     if (teamsConnected) connectedServices.push(`Microsoft Teams (${teamsTools.length} tools)`);
+    if (gcsAuthenticated) connectedServices.push(`GCS (${gcsTools.length} tools)`);
 
     const statusText = connectedServices.length > 0 ? connectedServices.join(', ') : 'No services connected';
     return { availableTools, statusText, docsConnected, docsListOnlyConnected };
 }
 
 function buildAgentSystemPrompt({ statusText, toolCount, dateContext }) {
-    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, and Microsoft Teams. You can perform complex, multi-step operations across all connected services.
+    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You can perform complex, multi-step operations across all connected services.
 
 Connected Services: ${statusText}
 Total Tools Available: ${toolCount}
@@ -6114,7 +6270,7 @@ Total Tools Available: ${toolCount}
 
 8. **USE BATCH OPERATIONS**: For multi-email modifications, prefer batch_modify_emails over repeated single-item calls.
 
-9. **CROSS-SERVICE ORCHESTRATION**: Combine Gmail, Calendar, Chat, Drive, Sheets, Docs, GitHub, Outlook, and Teams tools when useful to finish the full request.
+9. **CROSS-SERVICE ORCHESTRATION**: Combine Gmail, Calendar, Chat, Drive, Sheets, Docs, GitHub, Outlook, Teams, and GCS tools when useful to finish the full request.
 
 10. **BE PROACTIVE BUT ACCURATE**: Share helpful observations discovered during execution, but never claim success unless tool output confirms it.
 
@@ -6138,6 +6294,7 @@ Total Tools Available: ${toolCount}
 - Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.
 - Google Docs: Use list_documents to find Docs by name. Use get_document_text to read content. Use create_document to create new docs. Use insert_text/append_text to add content. Use replace_text for find-and-replace. If Docs write scope is missing, use append_drive_document_text (or extract_drive_file_text + update_drive_file) as fallback.
 - Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
+- GCS (Cloud Storage): All GCS tools are prefixed with gcs_. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets.
 
 ## FINAL RESPONSE QUALITY:
 - Provide a concise outcome summary of what was completed.
@@ -6588,14 +6745,15 @@ initSheetsMcpClient().catch(error => {
 initOutlookClient().catch(error => {
     console.error('Outlook init failed:', error?.message || error);
 });
+initGcsClient();
 loadScheduledTasksFromDisk();
 startScheduledTaskRunner();
 
-const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length;
+const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length + gcsTools.length;
 const httpServer = app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
     console.log(`OpenAI model: ${OPENAI_MODEL}${OPENAI_FALLBACK_MODEL ? ` (fallback: ${OPENAI_FALLBACK_MODEL})` : ''}, retries: ${OPENAI_CHAT_MAX_RETRIES}, temperature: ${OPENAI_TEMPERATURE}${OPENAI_MAX_OUTPUT_TOKENS ? `, max output tokens: ${OPENAI_MAX_OUTPUT_TOKENS}` : ''}`);
-    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length})`);
+    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length}, GCS: ${gcsTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
     console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Chat: ${gchatClient && hasGchatScopes() ? 'Connected' : 'Not connected'}`);
@@ -6606,6 +6764,7 @@ const httpServer = app.listen(PORT, () => {
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
     console.log(`Outlook: ${outlookAccessToken ? `Connected (${outlookUserEmail || 'unknown'})` : 'Not connected'}`);
     console.log(`Microsoft Teams: ${outlookAccessToken && hasTeamsScopes() ? 'Connected' : 'Not connected'}`);
+    console.log(`GCS: ${gcsAuthenticated ? `Connected (project: ${gcsProjectId})` : 'Not connected'}`);
     console.log(`Timer Tasks: ${scheduledTasks.length} configured (${scheduledTasks.filter(task => task.enabled).length} enabled)`);
 });
 

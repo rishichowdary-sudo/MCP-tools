@@ -139,6 +139,7 @@
 .service-section-header .service-dot.outlook { background: #0078D4; }
 .service-section-header .service-dot.docs { background: #4285F4; }
 .service-section-header .service-dot.teams { background: #6264A7; }
+.service-section-header .service-dot.gcs { background: #FF6D00; }
 
 .capability-group h3 {
     margin-bottom: 0.25rem;
