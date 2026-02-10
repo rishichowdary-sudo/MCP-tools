@@ -21,6 +21,21 @@ app.use(express.static('public'));
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
+const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
+const OPENAI_MODEL = String(process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
+const OPENAI_FALLBACK_MODEL = String(process.env.OPENAI_FALLBACK_MODEL || '').trim();
+const OPENAI_CHAT_MAX_RETRIES = Math.min(
+    4,
+    Math.max(0, Number.parseInt(process.env.OPENAI_CHAT_MAX_RETRIES || '2', 10) || 2)
+);
+const parsedOpenAiTemperature = Number.parseFloat(process.env.OPENAI_TEMPERATURE ?? '0.2');
+const OPENAI_TEMPERATURE = Number.isFinite(parsedOpenAiTemperature)
+    ? Math.min(1, Math.max(0, parsedOpenAiTemperature))
+    : 0.2;
+const parsedOpenAiMaxOutput = Number.parseInt(process.env.OPENAI_MAX_OUTPUT_TOKENS || '', 10);
+const OPENAI_MAX_OUTPUT_TOKENS = Number.isFinite(parsedOpenAiMaxOutput) && parsedOpenAiMaxOutput > 0
+    ? parsedOpenAiMaxOutput
+    : null;
 
 // Google OAuth scopes setup (Gmail, Calendar, Chat, Drive, Sheets, Docs)
 const SCOPES = [
@@ -5299,6 +5314,131 @@ async function runAgentConversation({ message, history = [] }) {
         throw new Error('OpenAI API key missing');
     }
 
+    const normalizeAssistantText = (content) => {
+        if (typeof content === 'string') return content.trim();
+        if (Array.isArray(content)) {
+            return content
+                .map(part => {
+                    if (typeof part === 'string') return part;
+                    if (part && typeof part.text === 'string') return part.text;
+                    return '';
+                })
+                .join('\n')
+                .trim();
+        }
+        return '';
+    };
+
+    const safeJsonStringify = (value) => {
+        try {
+            return JSON.stringify(value);
+        } catch (error) {
+            return JSON.stringify({
+                error: 'Unable to serialize tool output',
+                message: String(error?.message || error)
+            });
+        }
+    };
+
+    const parseToolCallArguments = (rawArguments) => {
+        if (rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)) {
+            return rawArguments;
+        }
+        const raw = String(rawArguments || '').trim();
+        if (!raw) return {};
+
+        const candidates = [];
+        const pushCandidate = (value) => {
+            const normalized = String(value || '').trim();
+            if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+        };
+
+        pushCandidate(raw);
+        const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+        if (fenced && fenced[1]) pushCandidate(fenced[1]);
+
+        const latest = candidates[candidates.length - 1] || raw;
+        const firstBrace = latest.search(/[{\[]/);
+        const lastBrace = Math.max(latest.lastIndexOf('}'), latest.lastIndexOf(']'));
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+            pushCandidate(latest.slice(firstBrace, lastBrace + 1));
+        }
+
+        const quoteNormalized = (candidates[candidates.length - 1] || raw)
+            .replace(/[“”]/g, '"')
+            .replace(/[‘’]/g, "'");
+        pushCandidate(quoteNormalized);
+        pushCandidate(quoteNormalized.replace(/,\s*([}\]])/g, '$1'));
+
+        let lastError = null;
+        for (const candidate of candidates) {
+            try {
+                const parsed = JSON.parse(candidate);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    throw new Error('Tool arguments must be a JSON object.');
+                }
+                return parsed;
+            } catch (error) {
+                lastError = error;
+            }
+        }
+
+        throw new Error(`Invalid arguments JSON: ${lastError ? lastError.message : 'Unable to parse tool arguments'}`);
+    };
+
+    const isRetriableOpenAiError = (error) => {
+        const status = Number(error?.status || error?.code || error?.response?.status || 0);
+        if ([408, 409, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+        const code = String(error?.code || '').toUpperCase();
+        if (['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) return true;
+        const message = String(error?.message || '');
+        return /rate limit|timeout|timed out|temporar|overloaded|network|try again/i.test(message);
+    };
+
+    const buildOpenAiRequest = ({ model, messages, tools, toolChoice }) => {
+        const request = {
+            model,
+            messages,
+            temperature: OPENAI_TEMPERATURE
+        };
+        if (Array.isArray(tools) && tools.length > 0) {
+            request.tools = tools;
+            request.tool_choice = toolChoice || 'auto';
+            request.parallel_tool_calls = true;
+        }
+        if (OPENAI_MAX_OUTPUT_TOKENS) {
+            request.max_tokens = OPENAI_MAX_OUTPUT_TOKENS;
+        }
+        return request;
+    };
+
+    const createCompletionWithRetry = async ({ messages, tools, toolChoice }) => {
+        const modelCandidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL]
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+            .filter((value, index, list) => list.indexOf(value) === index);
+        let lastError = null;
+
+        for (const model of modelCandidates) {
+            for (let attempt = 0; attempt <= OPENAI_CHAT_MAX_RETRIES; attempt += 1) {
+                try {
+                    const response = await openai.chat.completions.create(
+                        buildOpenAiRequest({ model, messages, tools, toolChoice })
+                    );
+                    return { response, model };
+                } catch (error) {
+                    lastError = error;
+                    const canRetry = isRetriableOpenAiError(error) && attempt < OPENAI_CHAT_MAX_RETRIES;
+                    if (!canRetry) break;
+                    const delayMs = Math.min(3000, 350 * (2 ** attempt));
+                    await sleep(delayMs);
+                }
+            }
+        }
+
+        throw lastError || new Error('OpenAI completion failed');
+    };
+
     const { availableTools, statusText } = getConnectedToolContext();
     const dateContext = getCurrentDateContext();
     const systemPrompt = buildAgentSystemPrompt({
@@ -5320,15 +5460,19 @@ async function runAgentConversation({ message, history = [] }) {
         ...history,
         { role: 'user', content: enrichedUserMessage }
     ];
+    const toolChoice = availableTools.length > 0 ? 'auto' : undefined;
 
-    let response = await openai.chat.completions.create({
-        model: 'gpt-4o',
+    let completion = await createCompletionWithRetry({
         messages,
-        tools: availableTools.length > 0 ? availableTools : undefined,
-        tool_choice: availableTools.length > 0 ? 'auto' : undefined
+        tools: availableTools,
+        toolChoice
     });
+    let activeModel = completion.model;
+    let assistantMessage = completion.response?.choices?.[0]?.message;
+    if (!assistantMessage) {
+        throw new Error('OpenAI returned no assistant message.');
+    }
 
-    let assistantMessage = response.choices[0].message;
     const allToolResults = [];
     const allSteps = [];
     const MAX_TURNS = 15;
@@ -5342,7 +5486,7 @@ async function runAgentConversation({ message, history = [] }) {
             const toolName = toolCall.function.name;
             let args;
             try {
-                args = JSON.parse(toolCall.function.arguments);
+                args = parseToolCallArguments(toolCall.function.arguments);
             } catch (error) {
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
             }
@@ -5370,29 +5514,36 @@ async function runAgentConversation({ message, history = [] }) {
             messages.push({
                 role: 'tool',
                 tool_call_id: toolCall.id,
-                content: JSON.stringify(error ? { error } : result)
+                content: safeJsonStringify(error ? { error } : result)
             });
         }
 
-        response = await openai.chat.completions.create({
-            model: 'gpt-4o',
+        completion = await createCompletionWithRetry({
             messages,
-            tools: availableTools.length > 0 ? availableTools : undefined,
-            tool_choice: availableTools.length > 0 ? 'auto' : undefined
+            tools: availableTools,
+            toolChoice
         });
-        assistantMessage = response.choices[0].message;
+        activeModel = completion.model;
+        assistantMessage = completion.response?.choices?.[0]?.message;
+        if (!assistantMessage) {
+            throw new Error('OpenAI returned no assistant follow-up message.');
+        }
     }
 
-    let finalResponse = assistantMessage.content || '';
+    let finalResponse = normalizeAssistantText(assistantMessage.content);
     if (turnCount >= MAX_TURNS && assistantMessage.tool_calls) {
         finalResponse += '\n\n(Reached maximum steps for this request. Some operations may still be pending.)';
+    }
+    if (!finalResponse && allToolResults.length > 0) {
+        finalResponse = 'Completed the requested workflow. See the tool results for details.';
     }
 
     return {
         response: finalResponse,
         toolResults: allToolResults,
         steps: allSteps,
-        turnsUsed: turnCount
+        turnsUsed: turnCount,
+        model: activeModel
     };
 }
 
@@ -5534,6 +5685,7 @@ startScheduledTaskRunner();
 const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length;
 const httpServer = app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
+    console.log(`OpenAI model: ${OPENAI_MODEL}${OPENAI_FALLBACK_MODEL ? ` (fallback: ${OPENAI_FALLBACK_MODEL})` : ''}, retries: ${OPENAI_CHAT_MAX_RETRIES}, temperature: ${OPENAI_TEMPERATURE}${OPENAI_MAX_OUTPUT_TOKENS ? `, max output tokens: ${OPENAI_MAX_OUTPUT_TOKENS}` : ''}`);
     console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
     console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);

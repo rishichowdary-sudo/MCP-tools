@@ -1458,7 +1458,7 @@ async function sendMessage() {
             }
 
             if (data.toolResults && data.toolResults.length > 0) {
-                responseHtml += formatToolResults(data.toolResults);
+                responseHtml += `<div class="tool-results-stack">${formatToolResults(data.toolResults)}</div>`;
             }
 
             addMessage('assistant', responseHtml, { allowHtml: true });
@@ -1511,27 +1511,104 @@ function formatStepsPipeline(steps) {
 
 // Format response text to HTML
 function formatResponse(text) {
-    if (!text) return '';
+    if (!text || !String(text).trim()) return '';
 
-    return text
-        .split('\n')
-        .map(line => {
-            if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
-                return `<li>${escapeHtml(line.trim().slice(2))}</li>`;
+    const codeBlocks = [];
+    const normalized = String(text).replace(/\r\n?/g, '\n');
+    const withCodePlaceholders = normalized.replace(/```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, (_, language, code) => {
+        const index = codeBlocks.length;
+        codeBlocks.push({
+            language: escapeHtml(String(language || '').trim().toLowerCase()),
+            code: escapeHtml(String(code || '').replace(/\n+$/, ''))
+        });
+        return `@@CODE_BLOCK_${index}@@`;
+    });
+
+    const htmlParts = [];
+    const lines = withCodePlaceholders.split('\n');
+    let listMode = null;
+
+    const closeOpenList = () => {
+        if (!listMode) return;
+        htmlParts.push(listMode === 'ol' ? '</ol>' : '</ul>');
+        listMode = null;
+    };
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+
+        if (!line) {
+            closeOpenList();
+            continue;
+        }
+
+        const codeMatch = line.match(/^@@CODE_BLOCK_(\d+)@@$/);
+        if (codeMatch) {
+            closeOpenList();
+            const block = codeBlocks[Number.parseInt(codeMatch[1], 10)] || { language: '', code: '' };
+            const languageClass = block.language ? ` class="language-${block.language}"` : '';
+            htmlParts.push(`<pre class="assistant-code"><code${languageClass}>${block.code}</code></pre>`);
+            continue;
+        }
+
+        const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+        if (headingMatch) {
+            closeOpenList();
+            const level = Math.min(3, headingMatch[1].length);
+            htmlParts.push(`<h${level}>${applyInlineFormatting(headingMatch[2])}</h${level}>`);
+            continue;
+        }
+
+        if (/^---+$/.test(line)) {
+            closeOpenList();
+            htmlParts.push('<hr>');
+            continue;
+        }
+
+        const unorderedMatch = line.match(/^[-*]\s+(.+)$/);
+        if (unorderedMatch) {
+            if (listMode !== 'ul') {
+                closeOpenList();
+                htmlParts.push('<ul>');
+                listMode = 'ul';
             }
-            if (/^\d+\.\s/.test(line.trim())) {
-                return `<li>${escapeHtml(line.trim().replace(/^\d+\.\s/, ''))}</li>`;
+            htmlParts.push(`<li>${applyInlineFormatting(unorderedMatch[1])}</li>`);
+            continue;
+        }
+
+        const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+        if (orderedMatch) {
+            if (listMode !== 'ol') {
+                closeOpenList();
+                htmlParts.push('<ol>');
+                listMode = 'ol';
             }
-            line = escapeHtml(line);
-            if (line.includes('`')) {
-                line = line.replace(/`([^`]+)`/g, '<code>$1</code>');
-            }
-            if (line.includes('**')) {
-                line = line.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-            }
-            return line ? `<p>${line}</p>` : '';
-        })
-        .join('');
+            htmlParts.push(`<li>${applyInlineFormatting(orderedMatch[1])}</li>`);
+            continue;
+        }
+
+        const quoteMatch = line.match(/^>\s?(.+)$/);
+        if (quoteMatch) {
+            closeOpenList();
+            htmlParts.push(`<blockquote>${applyInlineFormatting(quoteMatch[1])}</blockquote>`);
+            continue;
+        }
+
+        closeOpenList();
+        htmlParts.push(`<p>${applyInlineFormatting(line)}</p>`);
+    }
+
+    closeOpenList();
+    return `<div class="assistant-response">${htmlParts.join('')}</div>`;
+}
+
+function applyInlineFormatting(text) {
+    let safe = escapeHtml(String(text || ''));
+    safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    safe = safe.replace(/`([^`]+)`/g, '<code>$1</code>');
+    safe = safe.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    return safe;
 }
 
 // Format tool results
@@ -1877,11 +1954,14 @@ function addMessage(role, content, { allowHtml = false } = {}) {
     const bubbleContent = allowHtml
         ? String(content || '')
         : escapeHtml(String(content || '')).replace(/\n/g, '<br>');
+    const bubbleClass = role === 'assistant' && allowHtml
+        ? 'message-bubble assistant-rich-bubble'
+        : 'message-bubble';
 
     messageDiv.innerHTML = `
         <div class="message-avatar">${avatar}</div>
         <div class="message-content">
-            <div class="message-bubble">${bubbleContent}</div>
+            <div class="${bubbleClass}">${bubbleContent}</div>
         </div>
     `;
 
