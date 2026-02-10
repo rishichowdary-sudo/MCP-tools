@@ -50,6 +50,7 @@ const GCHAT_REQUIRED_SCOPES = [
 const GOOGLE_OAUTH_PROMPT = 'consent select_account';
 const GITHUB_OAUTH_SCOPES = ['repo', 'read:user', 'user:email', 'notifications', 'gist'];
 const GITHUB_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const GOOGLE_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const SHEETS_MCP_TOOL_PREFIX = 'sheets_mcp__';
 const SHEETS_MCP_ENABLED = String(process.env.SHEETS_MCP_ENABLED || 'true').toLowerCase() !== 'false';
 const SHEETS_MCP_COMMAND = process.env.SHEETS_MCP_COMMAND || 'node';
@@ -101,6 +102,7 @@ let sheetsMcpTransport = null;
 let sheetsMcpTools = [];
 let sheetsMcpError = null;
 const githubOAuthStateStore = new Map();
+const googleOAuthStateStore = new Map();
 let cachedPrimaryEmail = null;
 let scheduledTasks = [];
 let schedulerInterval = null;
@@ -284,6 +286,17 @@ function isValidDailyTime(value) {
         Number(value.slice(3, 5)) <= 59;
 }
 
+function dailyTimeToMinutes(value) {
+    if (!isValidDailyTime(value)) return null;
+    return (Number(value.slice(0, 2)) * 60) + Number(value.slice(3, 5));
+}
+
+function clampPagination(value, { fallback = 20, min = 1, max = 100 } = {}) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+}
+
 function schedulerDateParts(now = new Date()) {
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -375,6 +388,7 @@ function isOutlookOAuthConfigured() {
     const clientSecret = process.env.OUTLOOK_CLIENT_SECRET;
     if (!clientId || !clientSecret) return false;
     if (clientId.includes('your_outlook_client_id_here')) return false;
+    if (clientSecret.includes('your_outlook_client_secret_here')) return false;
     return true;
 }
 
@@ -412,6 +426,16 @@ function getGoogleOAuthCredentials() {
     const clientId = process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
     const clientSecret = process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
     return { clientId, clientSecret };
+}
+
+function isGoogleOAuthConfigured() {
+    const { clientId, clientSecret } = getGoogleOAuthCredentials();
+    if (!clientId || !clientSecret) return false;
+    const idLower = clientId.toLowerCase();
+    const secretLower = clientSecret.toLowerCase();
+    if (idLower.includes('your_google_client_id') || idLower.includes('your_gmail_client_id')) return false;
+    if (secretLower.includes('your_google_client_secret') || secretLower.includes('your_gmail_client_secret')) return false;
+    return true;
 }
 
 function ensureSheetsMcpOAuthKeyfile(clientId, clientSecret) {
@@ -557,6 +581,27 @@ async function closeSheetsMcpClient() {
     }
 }
 
+function pruneGoogleOAuthStates() {
+    const now = Date.now();
+    for (const [state, ts] of googleOAuthStateStore.entries()) {
+        if (now - ts > GOOGLE_OAUTH_STATE_TTL_MS) googleOAuthStateStore.delete(state);
+    }
+}
+
+function issueGoogleOAuthState() {
+    pruneGoogleOAuthStates();
+    const state = crypto.randomBytes(24).toString('hex');
+    googleOAuthStateStore.set(state, Date.now());
+    return state;
+}
+
+function consumeGoogleOAuthState(state) {
+    if (!state || !googleOAuthStateStore.has(state)) return false;
+    const ts = googleOAuthStateStore.get(state);
+    googleOAuthStateStore.delete(state);
+    return (Date.now() - ts) <= GOOGLE_OAUTH_STATE_TTL_MS;
+}
+
 function pruneGithubOAuthStates() {
     const now = Date.now();
     for (const [state, ts] of githubOAuthStateStore.entries()) {
@@ -601,10 +646,9 @@ function consumeOutlookOAuthState(state) {
 
 // Initialize OAuth client from environment variables
 function initOAuthClient() {
-    const clientId = process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+    const { clientId, clientSecret } = getGoogleOAuthCredentials();
 
-    if (!clientId || !clientSecret || clientId === 'your_google_client_id_here') {
+    if (!isGoogleOAuthConfigured()) {
         console.log('  Google OAuth credentials not configured in .env');
         return false;
     }
@@ -749,14 +793,34 @@ async function initOutlookClient() {
 //  HELPER UTILITIES
 // ============================================================
 
+function sanitizeHeaderValue(value) {
+    return String(value ?? '')
+        .replace(/[\r\n]+/g, ' ')
+        .trim();
+}
+
+function normalizeAddressHeader(value) {
+    if (!value) return '';
+    if (Array.isArray(value)) {
+        return value
+            .map(item => sanitizeHeaderValue(item))
+            .filter(Boolean)
+            .join(', ');
+    }
+    return sanitizeHeaderValue(value);
+}
+
 function buildRawMessage({ to, subject, body, cc, bcc, inReplyTo, references, threadId }) {
     const lines = [];
-    if (to) lines.push(`To: ${Array.isArray(to) ? to.join(', ') : to}`);
-    if (cc) lines.push(`Cc: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
-    if (bcc) lines.push(`Bcc: ${Array.isArray(bcc) ? bcc.join(', ') : bcc}`);
-    lines.push(`Subject: ${subject || ''}`);
-    if (inReplyTo) lines.push(`In-Reply-To: ${inReplyTo}`);
-    if (references) lines.push(`References: ${references}`);
+    const toHeader = normalizeAddressHeader(to);
+    const ccHeader = normalizeAddressHeader(cc);
+    const bccHeader = normalizeAddressHeader(bcc);
+    if (toHeader) lines.push(`To: ${toHeader}`);
+    if (ccHeader) lines.push(`Cc: ${ccHeader}`);
+    if (bccHeader) lines.push(`Bcc: ${bccHeader}`);
+    lines.push(`Subject: ${sanitizeHeaderValue(subject || '')}`);
+    if (inReplyTo) lines.push(`In-Reply-To: ${sanitizeHeaderValue(inReplyTo)}`);
+    if (references) lines.push(`References: ${sanitizeHeaderValue(references)}`);
     lines.push('Content-Type: text/html; charset=utf-8');
     lines.push('');
     lines.push(body || '');
@@ -849,11 +913,12 @@ async function sendEmail({ to, subject, body, cc, bcc }) {
 // 2. Search Emails
 async function searchEmails({ query, maxResults = 20 }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const response = await gmailClient.users.messages.list({ userId: 'me', q: query, maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gmailClient.users.messages.list({ userId: 'me', q: query, maxResults: limit });
     if (!response.data.messages) return { results: [], totalEstimate: 0, message: 'No emails found' };
 
     const emails = await Promise.all(
-        response.data.messages.slice(0, maxResults).map(async (msg) => {
+        response.data.messages.slice(0, limit).map(async (msg) => {
             try {
                 const data = await getEmailMetadata(msg.id);
                 const h = extractHeaders(data.payload.headers, ['Subject', 'From', 'Date']);
@@ -883,7 +948,8 @@ async function readEmail({ messageId }) {
 // 4. List Emails
 async function listEmails({ maxResults = 20, label = 'INBOX' }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const response = await gmailClient.users.messages.list({ userId: 'me', labelIds: [label], maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gmailClient.users.messages.list({ userId: 'me', labelIds: [label], maxResults: limit });
     if (!response.data.messages) return { results: [], message: 'No emails found' };
 
     const emails = await Promise.all(
@@ -931,8 +997,12 @@ async function replyToEmail({ messageId, body, cc }) {
     const headers = original.data.payload.headers;
     const h = extractHeaders(headers, ['Subject', 'From', 'To', 'Message-ID']);
 
-    const replyTo = h.from;
-    const subject = h.subject.startsWith('Re:') ? h.subject : `Re: ${h.subject}`;
+    const replyTo = (h.from || '').trim();
+    if (!replyTo) {
+        throw new Error('Cannot reply because the original message has no From header.');
+    }
+    const originalSubject = (h.subject || '').trim() || '(no subject)';
+    const subject = /^re:/i.test(originalSubject) ? originalSubject : `Re: ${originalSubject}`;
     const raw = buildRawMessage({
         to: replyTo, subject, body, cc,
         inReplyTo: h['message-id'],
@@ -954,7 +1024,8 @@ async function forwardEmail({ messageId, to, additionalMessage }) {
     const originalBody = extractBody(original.data.payload);
 
     const forwardBody = `${additionalMessage || ''}\n\n---------- Forwarded message ----------\nFrom: ${h.from}\nDate: ${h.date}\nSubject: ${h.subject}\n\n${originalBody}`;
-    const subject = h.subject.startsWith('Fwd:') ? h.subject : `Fwd: ${h.subject}`;
+    const originalSubject = (h.subject || '').trim() || '(no subject)';
+    const subject = /^fwd?:/i.test(originalSubject) ? originalSubject : `Fwd: ${originalSubject}`;
 
     const raw = buildRawMessage({ to, subject, body: forwardBody });
     const result = await gmailClient.users.messages.send({ userId: 'me', requestBody: { raw } });
@@ -1071,7 +1142,8 @@ async function getThread({ threadId, maxMessages = 50 }) {
 // 20. List Drafts
 async function listDrafts({ maxResults = 20 }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
-    const response = await gmailClient.users.drafts.list({ userId: 'me', maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gmailClient.users.drafts.list({ userId: 'me', maxResults: limit });
     if (!response.data.drafts) return { drafts: [], message: 'No drafts found' };
 
     const drafts = await Promise.all(
@@ -1487,7 +1559,8 @@ async function queryFreeBusyCalendars({ timeMin, timeMax, calendarIds = [] }) {
 // 1. List Events
 async function listEvents({ calendarId = 'primary', maxResults = 10, timeMin, timeMax }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
-    const params = { calendarId, maxResults, singleEvents: true, orderBy: 'startTime' };
+    const limit = clampPagination(maxResults, { fallback: 10, max: 250 });
+    const params = { calendarId, maxResults: limit, singleEvents: true, orderBy: 'startTime' };
     if (timeMin) params.timeMin = timeMin;
     else params.timeMin = new Date().toISOString();
     if (timeMax) params.timeMax = timeMax;
@@ -1802,7 +1875,8 @@ async function findCommonFreeSlots({ timeMin, timeMax, durationMinutes = 30, peo
 // 10. List Recurring Event Instances
 async function listRecurringInstances({ calendarId = 'primary', eventId, maxResults = 10, timeMin, timeMax }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
-    const params = { calendarId, eventId, maxResults };
+    const limit = clampPagination(maxResults, { fallback: 10, max: 250 });
+    const params = { calendarId, eventId, maxResults: limit };
     if (timeMin) params.timeMin = timeMin;
     if (timeMax) params.timeMax = timeMax;
     const response = await calendarClient.events.instances(params);
@@ -1834,8 +1908,9 @@ async function updateEventAttendees({ calendarId = 'primary', eventId, addAttend
         }
     }
     if (removeAttendees.length > 0) {
-        const removeSet = new Set(removeAttendees);
-        attendees = attendees.filter(a => !removeSet.has(a.email));
+        const resolvedRemovals = await normalizeEventAttendees(removeAttendees);
+        const removeSet = new Set(resolvedRemovals.map(email => email.toLowerCase()));
+        attendees = attendees.filter(a => !removeSet.has(String(a.email || '').toLowerCase()));
     }
     existing.attendees = attendees;
     const result = await calendarClient.events.update({ calendarId, eventId, requestBody: existing });
@@ -1881,7 +1956,8 @@ function normalizeSpaceName(spaceId) {
 
 async function listChatSpaces({ maxResults = 20 }) {
     if (!gchatClient) throw new Error('Google Chat not authenticated');
-    const response = await gchatClient.spaces.list({ pageSize: maxResults });
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
+    const response = await gchatClient.spaces.list({ pageSize: limit });
     const spaces = (response.data.spaces || []).map(space => ({
         name: space.name,
         displayName: space.displayName || space.name,
@@ -1916,9 +1992,10 @@ async function listChatMessages({ spaceId, maxResults = 20 }) {
     if (!spaceId) throw new Error('spaceId is required');
 
     const parent = normalizeSpaceName(spaceId);
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const response = await gchatClient.spaces.messages.list({
         parent,
-        pageSize: maxResults
+        pageSize: limit
     });
     const messages = (response.data.messages || []).map(msg => ({
         name: msg.name,
@@ -1976,6 +2053,7 @@ function buildDriveQueryClause(query) {
 
 async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime desc', includeTrashed = false }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
+    const limit = clampPagination(pageSize, { fallback: 100, max: 200 });
     const qParts = [];
     if (!includeTrashed) qParts.push('trashed = false');
     const queryText = String(query || '').trim();
@@ -1986,7 +2064,7 @@ async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime d
     try {
         response = await driveClient.files.list({
             q: qParts.length > 0 ? qParts.join(' and ') : undefined,
-            pageSize,
+            pageSize: limit,
             orderBy,
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2002,7 +2080,7 @@ async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime d
         retryQParts.push(buildDriveKeywordClause(queryText));
         response = await driveClient.files.list({
             q: retryQParts.join(' and '),
-            pageSize,
+            pageSize: limit,
             orderBy,
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2463,6 +2541,7 @@ async function verifySheetWriteWithRetry({
 
 async function listSpreadsheets({ query, maxResults = 100 }) {
     if (!driveClient) throw new Error('Google Drive is required to list spreadsheets. Reconnect Google Drive.');
+    const limit = clampPagination(maxResults, { fallback: 100, max: 200 });
 
     const qParts = [
         "mimeType = 'application/vnd.google-apps.spreadsheet'",
@@ -2476,7 +2555,7 @@ async function listSpreadsheets({ query, maxResults = 100 }) {
     try {
         response = await driveClient.files.list({
             q: qParts.join(' and '),
-            pageSize: maxResults,
+            pageSize: limit,
             orderBy: 'modifiedTime desc',
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2494,7 +2573,7 @@ async function listSpreadsheets({ query, maxResults = 100 }) {
         ];
         response = await driveClient.files.list({
             q: retryQParts.join(' and '),
-            pageSize: maxResults,
+            pageSize: limit,
             orderBy: 'modifiedTime desc',
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2507,7 +2586,7 @@ async function listSpreadsheets({ query, maxResults = 100 }) {
     if (queryText && files.length === 0) {
         const broad = await driveClient.files.list({
             q: "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
-            pageSize: Math.max(maxResults, 200),
+            pageSize: Math.max(limit, 200),
             orderBy: 'modifiedTime desc',
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
@@ -2971,11 +3050,12 @@ async function clearSheetValues({ spreadsheetId, range }) {
 // 1. List Documents (via Drive API)
 async function listDocuments({ query, pageSize = 25 }) {
     if (!driveClient) throw new Error('Google Drive not authenticated (required for listing Docs)');
+    const limit = clampPagination(pageSize, { fallback: 25, max: 100 });
     const qParts = ["mimeType='application/vnd.google-apps.document'", 'trashed = false'];
     if (query) qParts.push(`name contains '${query.replace(/'/g, "\\'")}'`);
     const response = await driveClient.files.list({
         q: qParts.join(' and '),
-        pageSize,
+        pageSize: limit,
         orderBy: 'modifiedTime desc',
         fields: 'files(id,name,modifiedTime,createdTime,owners(displayName,emailAddress),webViewLink)'
     });
@@ -3108,11 +3188,12 @@ async function getDocumentText({ documentId }) {
 // 1. List Repos
 async function listRepos({ username, sort = 'updated', perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
     let response;
     if (username) {
-        response = await octokitClient.rest.repos.listForUser({ username, sort, per_page: perPage });
+        response = await octokitClient.rest.repos.listForUser({ username, sort, per_page: limit });
     } else {
-        response = await octokitClient.rest.repos.listForAuthenticatedUser({ sort, per_page: perPage });
+        response = await octokitClient.rest.repos.listForAuthenticatedUser({ sort, per_page: limit });
     }
     const repos = response.data.map(r => ({
         name: r.name, full_name: r.full_name, description: r.description,
@@ -3149,7 +3230,8 @@ async function createRepo({ name, description, isPrivate = false, autoInit = tru
 // 4. List Issues
 async function listIssues({ owner, repo, state = 'open', labels, perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const params = { owner, repo, state, per_page: perPage };
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
+    const params = { owner, repo, state, per_page: limit };
     if (labels) params.labels = labels;
     const response = await octokitClient.rest.issues.listForRepo(params);
     const issues = response.data.filter(i => !i.pull_request).map(i => ({
@@ -3188,7 +3270,8 @@ async function updateIssue({ owner, repo, issueNumber, title, body, state, label
 // 7. List Pull Requests
 async function listPullRequests({ owner, repo, state = 'open', perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.pulls.list({ owner, repo, state, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
+    const response = await octokitClient.rest.pulls.list({ owner, repo, state, per_page: limit });
     const prs = response.data.map(p => ({
         number: p.number, title: p.title, state: p.state,
         user: p.user?.login, head: p.head?.ref, base: p.base?.ref,
@@ -3231,7 +3314,8 @@ async function mergePullRequest({ owner, repo, pullNumber, mergeMethod = 'merge'
 // 11. List Branches
 async function listBranches({ owner, repo, perPage = 30 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.repos.listBranches({ owner, repo, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 30, max: 100 });
+    const response = await octokitClient.rest.repos.listBranches({ owner, repo, per_page: limit });
     const branches = response.data.map(b => ({
         name: b.name, sha: b.commit.sha, protected: b.protected
     }));
@@ -3277,7 +3361,8 @@ async function createOrUpdateFile({ owner, repo, filePath, content, message, bra
 // 15. Search Repos
 async function searchRepos({ query, sort = 'stars', perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.search.repos({ q: query, sort, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.search.repos({ q: query, sort, per_page: limit });
     const repos = response.data.items.map(r => ({
         name: r.name, full_name: r.full_name, description: r.description,
         language: r.language, stars: r.stargazers_count, forks: r.forks_count,
@@ -3289,7 +3374,8 @@ async function searchRepos({ query, sort = 'stars', perPage = 20 }) {
 // 16. Search Code
 async function searchCode({ query, perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.search.code({ q: query, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.search.code({ q: query, per_page: limit });
     const results = response.data.items.map(item => ({
         name: item.name, path: item.path,
         repository: item.repository.full_name,
@@ -3301,7 +3387,8 @@ async function searchCode({ query, perPage = 20 }) {
 // 17. List Commits
 async function listCommits({ owner, repo, sha, perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const params = { owner, repo, per_page: perPage };
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const params = { owner, repo, per_page: limit };
     if (sha) params.sha = sha;
     const response = await octokitClient.rest.repos.listCommits(params);
     const commits = response.data.map(c => ({
@@ -3333,7 +3420,8 @@ async function getUserProfile({ username }) {
 // 19. List Notifications
 async function listNotifications({ all = false, perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.activity.listNotificationsForAuthenticatedUser({ all, per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.activity.listNotificationsForAuthenticatedUser({ all, per_page: limit });
     const notifications = response.data.map(n => ({
         id: n.id, reason: n.reason, unread: n.unread,
         subject: { title: n.subject.title, type: n.subject.type },
@@ -3346,7 +3434,8 @@ async function listNotifications({ all = false, perPage = 20 }) {
 // 20. List Gists
 async function listGists({ perPage = 20 }) {
     if (!octokitClient) throw new Error('GitHub not connected');
-    const response = await octokitClient.rest.gists.list({ per_page: perPage });
+    const limit = clampPagination(perPage, { fallback: 20, max: 100 });
+    const response = await octokitClient.rest.gists.list({ per_page: limit });
     const gists = response.data.map(g => ({
         id: g.id, description: g.description,
         files: Object.keys(g.files),
@@ -3422,8 +3511,9 @@ async function outlookSendEmail({ to, subject, body, cc, bcc }) {
 
 // 2. List Emails
 async function outlookListEmails({ maxResults = 20, folder = 'inbox' }) {
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const data = await outlookGraphFetch(
-        `/me/mailFolders/${folder}/messages?$top=${maxResults}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments&$orderby=receivedDateTime desc`
+        `/me/mailFolders/${folder}/messages?$top=${limit}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments&$orderby=receivedDateTime desc`
     );
     const emails = (data.value || []).map(m => ({
         id: m.id,
@@ -3463,8 +3553,9 @@ async function outlookReadEmail({ messageId }) {
 
 // 4. Search Emails
 async function outlookSearchEmails({ query, maxResults = 20 }) {
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const data = await outlookGraphFetch(
-        `/me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments`
+        `/me/messages?$search="${encodeURIComponent(query)}"&$top=${limit}&$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments`
     );
     const emails = (data.value || []).map(m => ({
         id: m.id,
@@ -3610,8 +3701,9 @@ async function outlookSendDraft({ messageId }) {
 
 // 16. List Drafts
 async function outlookListDrafts({ maxResults = 20 }) {
+    const limit = clampPagination(maxResults, { fallback: 20, max: 100 });
     const data = await outlookGraphFetch(
-        `/me/mailFolders/drafts/messages?$top=${maxResults}&$select=id,subject,toRecipients,createdDateTime,bodyPreview&$orderby=createdDateTime desc`
+        `/me/mailFolders/drafts/messages?$top=${limit}&$select=id,subject,toRecipients,createdDateTime,bodyPreview&$orderby=createdDateTime desc`
     );
     const drafts = (data.value || []).map(m => ({
         id: m.id,
@@ -3685,7 +3777,8 @@ async function teamsSendChannelMessage({ teamId, channelId, message, contentType
 
 async function teamsListChannelMessages({ teamId, channelId, top = 20 }) {
     if (!teamId || !channelId) throw new Error('teamId and channelId are required');
-    const data = await outlookGraphFetch(`/teams/${teamId}/channels/${channelId}/messages?$top=${top}`);
+    const limit = clampPagination(top, { fallback: 20, max: 100 });
+    const data = await outlookGraphFetch(`/teams/${teamId}/channels/${channelId}/messages?$top=${limit}`);
     const messages = (data.value || []).map(m => ({
         id: m.id, from: m.from?.user?.displayName || 'Unknown',
         body: m.body?.content?.slice(0, 500), contentType: m.body?.contentType,
@@ -3695,7 +3788,8 @@ async function teamsListChannelMessages({ teamId, channelId, top = 20 }) {
 }
 
 async function teamsListChats({ top = 20 }) {
-    const data = await outlookGraphFetch(`/me/chats?$top=${top}&$expand=members`);
+    const limit = clampPagination(top, { fallback: 20, max: 100 });
+    const data = await outlookGraphFetch(`/me/chats?$top=${limit}&$expand=members`);
     const chats = (data.value || []).map(c => ({
         id: c.id, topic: c.topic, chatType: c.chatType,
         members: (c.members || []).map(m => m.displayName).filter(Boolean),
@@ -3715,7 +3809,8 @@ async function teamsSendChatMessage({ chatId, message, contentType = 'text' }) {
 
 async function teamsListChatMessages({ chatId, top = 20 }) {
     if (!chatId) throw new Error('chatId is required');
-    const data = await outlookGraphFetch(`/chats/${chatId}/messages?$top=${top}`);
+    const limit = clampPagination(top, { fallback: 20, max: 100 });
+    const data = await outlookGraphFetch(`/chats/${chatId}/messages?$top=${limit}`);
     const messages = (data.value || []).map(m => ({
         id: m.id, from: m.from?.user?.displayName || 'Unknown',
         body: m.body?.content?.slice(0, 500), contentType: m.body?.contentType,
@@ -4246,6 +4341,7 @@ const githubToolNames = new Set(githubTools.map(t => t.function.name));
 const outlookToolNames = new Set(outlookTools.map(t => t.function.name));
 const docsToolNames = new Set(docsTools.map(t => t.function.name));
 const teamsToolNames = new Set(teamsTools.map(t => t.function.name));
+const docsListOnlyTools = docsTools.filter(tool => tool.function.name === 'list_documents');
 
 async function executeGmailTool(toolName, args) {
     if (!gmailClient) throw new Error('Gmail not connected. Please authenticate first.');
@@ -4490,7 +4586,9 @@ app.get('/api/tools', (req, res) => {
     const github = { service: 'github', connected: !!octokitClient, tools: githubTools.map(t => ({ function: t.function })) };
     const outlook = { service: 'outlook', connected: !!outlookAccessToken, tools: outlookTools.map(t => ({ function: t.function })) };
     const docsConnected = !!docsClient && hasDocsScope();
-    const docs = { service: 'docs', connected: docsConnected, tools: docsTools.map(t => ({ function: t.function })) };
+    const docsListOnlyConnected = !docsConnected && driveConnected;
+    const docsVisibleTools = docsConnected ? docsTools : (docsListOnlyConnected ? docsListOnlyTools : []);
+    const docs = { service: 'docs', connected: docsConnected || docsListOnlyConnected, tools: docsVisibleTools.map(t => ({ function: t.function })) };
     const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
     const teams = { service: 'teams', connected: teamsConnected, tools: teamsTools.map(t => ({ function: t.function })) };
     const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length;
@@ -4524,6 +4622,9 @@ app.get('/api/timer-tasks', (req, res) => {
 app.post('/api/timer-tasks', (req, res) => {
     try {
         const task = sanitizeScheduledTask({ ...req.body }, { forCreate: true });
+        if (scheduledTasks.some(existing => existing.id === task.id)) {
+            task.id = makeId('task');
+        }
         scheduledTasks.push(task);
         saveScheduledTasksToDisk();
         res.status(201).json({ success: true, task });
@@ -4563,19 +4664,22 @@ app.delete('/api/timer-tasks/:id', (req, res) => {
 });
 
 app.post('/api/timer-tasks/:id/run', async (req, res) => {
-    const task = scheduledTasks.find(item => item.id === req.params.id);
-    if (!task) return res.status(404).json({ error: 'Task not found' });
-    const result = await runScheduledTask(task.id, 'manual');
-    if (!result.success && !result.skipped) {
-        return res.status(500).json(result);
+    try {
+        const task = scheduledTasks.find(item => item.id === req.params.id);
+        if (!task) return res.status(404).json({ error: 'Task not found' });
+        const result = await runScheduledTask(task.id, 'manual');
+        if (!result.success && !result.skipped) {
+            return res.status(500).json(result);
+        }
+        return res.json(result);
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to run timer task' });
     }
-    return res.json(result);
 });
 
 // Gmail authentication status
 app.get('/api/gmail/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     res.json({
         credentialsConfigured: !!hasCredentials,
@@ -4586,8 +4690,7 @@ app.get('/api/gmail/status', (req, res) => {
 
 // Calendar authentication status (same as Gmail since same OAuth)
 app.get('/api/calendar/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const calendarScopeGranted = hasCalendarScope();
     res.json({
@@ -4601,8 +4704,7 @@ app.get('/api/calendar/status', (req, res) => {
 
 // Google Chat authentication status (same Google OAuth, separate scopes)
 app.get('/api/gchat/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const gchatScopeGranted = hasGchatScopes();
     res.json({
@@ -4616,8 +4718,7 @@ app.get('/api/gchat/status', (req, res) => {
 
 // Google Drive authentication status (same Google OAuth, separate scope)
 app.get('/api/drive/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const driveScopeGranted = hasDriveScope();
     res.json({
@@ -4631,8 +4732,7 @@ app.get('/api/drive/status', (req, res) => {
 
 // Google Sheets authentication status (same Google OAuth, separate scope)
 app.get('/api/sheets/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const sheetsScopeGranted = hasSheetsScope();
     res.json({
@@ -4657,20 +4757,28 @@ app.get('/api/sheets-mcp/status', (req, res) => {
 });
 
 app.post('/api/sheets-mcp/reconnect', async (req, res) => {
-    await closeSheetsMcpClient();
-    await initSheetsMcpClient();
-    res.json({
-        success: !!sheetsMcpClient,
-        connected: !!sheetsMcpClient,
-        toolCount: sheetsMcpTools.length,
-        error: sheetsMcpError
-    });
+    try {
+        await closeSheetsMcpClient();
+        await initSheetsMcpClient();
+        res.json({
+            success: !!sheetsMcpClient,
+            connected: !!sheetsMcpClient,
+            toolCount: sheetsMcpTools.length,
+            error: sheetsMcpError
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            connected: false,
+            toolCount: sheetsMcpTools.length,
+            error: error.message || 'Failed to reconnect Sheets MCP'
+        });
+    }
 });
 
 // Google Docs status (same Google OAuth, separate scope)
 app.get('/api/docs/status', (req, res) => {
-    const hasCredentials = (process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) &&
-        (process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+    const hasCredentials = isGoogleOAuthConfigured();
     const hasToken = fs.existsSync(TOKEN_PATH);
     const docsScopeGranted = hasDocsScope();
     res.json({
@@ -4725,7 +4833,8 @@ app.get('/api/calendar/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4737,7 +4846,8 @@ app.get('/api/gchat/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4749,7 +4859,8 @@ app.get('/api/drive/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4761,7 +4872,8 @@ app.get('/api/sheets/connect', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4835,7 +4947,8 @@ app.get('/api/gmail/auth', (req, res) => {
             return res.status(400).json({ error: 'Google OAuth credentials not configured in .env file', setupRequired: true });
         }
     }
-    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT });
+    const state = issueGoogleOAuthState();
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: GOOGLE_OAUTH_PROMPT, state });
     res.json({ authUrl });
 });
 
@@ -4901,8 +5014,17 @@ app.get('/github/callback', async (req, res) => {
 
 // OAuth callback
 app.get('/oauth2callback', async (req, res) => {
-    const { code } = req.query;
-    if (!code) return res.status(400).send('No authorization code provided');
+    const { code, state } = req.query;
+    if (!code || !state) return res.status(400).send('Missing Google authorization code or state');
+    if (!consumeGoogleOAuthState(state)) {
+        return res.status(400).send('Invalid or expired Google OAuth state. Please try connecting again.');
+    }
+    if (!oauth2Client) {
+        const initialized = initOAuthClient();
+        if (!initialized) {
+            return res.status(400).send('Google OAuth credentials are not configured in server .env');
+        }
+    }
 
     try {
         const { tokens } = await oauth2Client.getToken(code);
@@ -4938,7 +5060,10 @@ app.get('/oauth2callback', async (req, res) => {
         const sheetsMessage = sheetsClient
             ? 'Google Sheets is ready.'
             : 'Google Sheets permission is still missing, so reconnect Sheets from the app.';
-        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} ${gchatMessage} ${driveMessage} ${sheetsMessage} You can close this window.</p></div></body></html>`);
+        const docsMessage = docsClient
+            ? 'Google Docs is ready.'
+            : 'Google Docs permission is still missing, so reconnect Docs from the app.';
+        res.send(`<html><body style="background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif"><div style="text-align:center"><h1>Google Connected!</h1><p>${calendarMessage} ${gchatMessage} ${driveMessage} ${sheetsMessage} ${docsMessage} You can close this window.</p></div></body></html>`);
     } catch (error) {
         console.error('OAuth callback error:', error);
         res.status(500).send(`Authentication failed: ${error.message}`);
@@ -5066,7 +5191,9 @@ function getConnectedToolContext() {
     const sheetsMcpConnected = !!sheetsMcpClient && sheetsMcpTools.length > 0;
     if (sheetsMcpConnected) availableTools.push(...sheetsMcpTools);
     const docsConnected = !!docsClient && hasDocsScope();
+    const docsListOnlyConnected = !docsConnected && driveConnected;
     if (docsConnected) availableTools.push(...docsTools);
+    else if (docsListOnlyConnected) availableTools.push(...docsListOnlyTools);
     if (octokitClient) availableTools.push(...githubTools);
     if (outlookAccessToken) availableTools.push(...outlookTools);
     const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
@@ -5080,6 +5207,7 @@ function getConnectedToolContext() {
     if (sheetsConnected) connectedServices.push(`Google Sheets (${sheetsTools.length} tools)`);
     if (sheetsMcpConnected) connectedServices.push(`Google Sheets MCP (${sheetsMcpTools.length} tools)`);
     if (docsConnected) connectedServices.push(`Google Docs (${docsTools.length} tools)`);
+    if (docsListOnlyConnected) connectedServices.push(`Google Docs (${docsListOnlyTools.length} tool via Drive scope)`);
     if (octokitClient) connectedServices.push('GitHub (20 tools)');
     if (outlookAccessToken) connectedServices.push(`Outlook (${outlookTools.length} tools)`);
     if (teamsConnected) connectedServices.push(`Microsoft Teams (${teamsTools.length} tools)`);
@@ -5316,11 +5444,15 @@ async function runSchedulerTick() {
     schedulerTickInProgress = true;
     try {
         const now = schedulerDateParts(new Date());
-        const dueTasks = scheduledTasks.filter(task =>
-            task.enabled &&
-            task.time === now.hhmm &&
-            task.lastRunDate !== now.date
-        );
+        const nowMinutes = dailyTimeToMinutes(now.hhmm);
+        const dueTasks = scheduledTasks
+            .filter(task => {
+                if (!task.enabled || task.lastRunDate === now.date) return false;
+                const scheduledMinutes = dailyTimeToMinutes(task.time);
+                if (scheduledMinutes === null || nowMinutes === null) return false;
+                return scheduledMinutes <= nowMinutes;
+            })
+            .sort((a, b) => a.time.localeCompare(b.time));
         for (const task of dueTasks) {
             const result = await runScheduledTask(task.id, 'scheduled');
             if (!result.success && !result.skipped) {
@@ -5364,7 +5496,20 @@ app.get('/api/gmail/message/:id', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
     const { message, history = [] } = req.body;
     try {
-        const result = await runAgentConversation({ message, history });
+        if (typeof message !== 'string' || !message.trim()) {
+            return res.status(400).json({ error: 'message must be a non-empty string' });
+        }
+        const safeHistory = Array.isArray(history)
+            ? history
+                .filter(item =>
+                    item &&
+                    (item.role === 'user' || item.role === 'assistant') &&
+                    typeof item.content === 'string'
+                )
+                .slice(-40)
+                .map(item => ({ role: item.role, content: item.content }))
+            : [];
+        const result = await runAgentConversation({ message, history: safeHistory });
         res.json(result);
     } catch (error) {
         console.error('Chat error:', error);
@@ -5387,7 +5532,7 @@ loadScheduledTasksFromDisk();
 startScheduledTaskRunner();
 
 const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length;
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
     console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
@@ -5401,6 +5546,15 @@ app.listen(PORT, () => {
     console.log(`Outlook: ${outlookAccessToken ? `Connected (${outlookUserEmail || 'unknown'})` : 'Not connected'}`);
     console.log(`Microsoft Teams: ${outlookAccessToken && hasTeamsScopes() ? 'Connected' : 'Not connected'}`);
     console.log(`Timer Tasks: ${scheduledTasks.length} configured (${scheduledTasks.filter(task => task.enabled).length} enabled)`);
+});
+
+httpServer.on('error', (error) => {
+    if (error && error.code === 'EADDRINUSE') {
+        console.error(`Port ${PORT} is already in use. Stop the existing server process or set a different PORT in .env.`);
+        return process.exit(1);
+    }
+    console.error('Server startup error:', error?.message || error);
+    process.exit(1);
 });
 
 process.on('SIGINT', async () => {
