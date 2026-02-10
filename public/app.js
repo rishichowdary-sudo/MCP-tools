@@ -30,6 +30,7 @@ const gchatReauthBtn = document.getElementById('gchatReauthBtn');
 const driveReauthBtn = document.getElementById('driveReauthBtn');
 const sheetsReauthBtn = document.getElementById('sheetsReauthBtn');
 const githubReauthBtn = document.getElementById('githubReauthBtn');
+const docsReauthBtn = document.getElementById('docsReauthBtn');
 const githubAuthNote = document.getElementById('githubAuthNote');
 const authSection = document.getElementById('authSection');
 const connectedSection = document.getElementById('connectedSection');
@@ -58,6 +59,22 @@ const driveBadge = document.getElementById('driveBadge');
 const sheetsBadge = document.getElementById('sheetsBadge');
 const githubBadge = document.getElementById('githubBadge');
 const timerBadge = document.getElementById('timerBadge');
+const docsNavItem = document.getElementById('docsNavItem');
+const docsPanel = document.getElementById('docsPanel');
+const docsAuthSection = document.getElementById('docsAuthSection');
+const docsConnectedSection = document.getElementById('docsConnectedSection');
+const docsStatus = document.getElementById('docsStatus');
+const docsBadge = document.getElementById('docsBadge');
+const teamsNavItem = document.getElementById('teamsNavItem');
+const teamsPanel = document.getElementById('teamsPanel');
+const teamsAuthBtn = document.getElementById('teamsAuthBtn');
+const teamsDisconnectBtn = document.getElementById('teamsDisconnectBtn');
+const teamsAuthSection = document.getElementById('teamsAuthSection');
+const teamsConnectedSection = document.getElementById('teamsConnectedSection');
+const teamsSetupSection = document.getElementById('teamsSetupSection');
+const teamsStatus = document.getElementById('teamsStatus');
+const teamsBadge = document.getElementById('teamsBadge');
+const teamsUserInfo = document.getElementById('teamsUserInfo');
 const outlookNavItem = document.getElementById('outlookNavItem');
 const outlookPanel = document.getElementById('outlookPanel');
 const outlookAuthBtn = document.getElementById('outlookAuthBtn');
@@ -94,6 +111,8 @@ let isDriveConnected = false;
 let isSheetsConnected = false;
 let isGithubConnected = false;
 let isOutlookConnected = false;
+let isDocsConnected = false;
+let isTeamsConnected = false;
 let isTimerConnected = false;
 let isRecording = false;
 let recognition = null;
@@ -152,7 +171,17 @@ const TOOL_ICONS = {
     outlook_list_folders: '&#128193;', outlook_create_folder: '&#10133;',
     outlook_get_attachments: '&#128206;', outlook_create_draft: '&#128221;',
     outlook_send_draft: '&#128228;', outlook_list_drafts: '&#128196;',
-    outlook_flag_email: '&#127988;', outlook_get_user_profile: '&#128100;'
+    outlook_flag_email: '&#127988;', outlook_get_user_profile: '&#128100;',
+    // Google Docs (8)
+    list_documents: '&#128196;', get_document: '&#128196;', create_document: '&#10133;',
+    insert_text: '&#9998;', replace_text: '&#128260;', delete_content: '&#128465;',
+    append_text: '&#128228;', get_document_text: '&#128214;',
+    // Microsoft Teams (10)
+    teams_list_teams: '&#128101;', teams_get_team: '&#128196;',
+    teams_list_channels: '&#128193;', teams_send_channel_message: '&#9993;',
+    teams_list_channel_messages: '&#128221;', teams_list_chats: '&#128172;',
+    teams_send_chat_message: '&#9993;', teams_list_chat_messages: '&#128221;',
+    teams_create_chat: '&#10133;', teams_get_chat_members: '&#128101;'
 };
 
 // Tool category mappings per service
@@ -207,6 +236,18 @@ const OUTLOOK_CATEGORIES = {
     'Advanced': ['outlook_get_attachments', 'outlook_get_user_profile']
 };
 
+const DOCS_CATEGORIES = {
+    'Core': ['list_documents', 'get_document', 'create_document'],
+    'Edit': ['insert_text', 'replace_text', 'delete_content', 'append_text'],
+    'Read': ['get_document_text']
+};
+
+const TEAMS_CATEGORIES = {
+    'Teams': ['teams_list_teams', 'teams_get_team'],
+    'Channels': ['teams_list_channels', 'teams_send_channel_message', 'teams_list_channel_messages'],
+    'Chats': ['teams_list_chats', 'teams_send_chat_message', 'teams_list_chat_messages', 'teams_create_chat', 'teams_get_chat_members']
+};
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     checkAllStatuses();
@@ -237,6 +278,8 @@ function setupEventListeners() {
     driveNavItem.addEventListener('click', () => openPanel('drive'));
     sheetsNavItem.addEventListener('click', () => openPanel('sheets'));
     githubNavItem.addEventListener('click', () => openPanel('github'));
+    docsNavItem.addEventListener('click', () => openPanel('docs'));
+    teamsNavItem.addEventListener('click', () => openPanel('teams'));
     outlookNavItem.addEventListener('click', () => openPanel('outlook'));
     timerNavItem.addEventListener('click', () => {
         openPanel('timer');
@@ -291,7 +334,10 @@ function setupEventListeners() {
     gchatReauthBtn.addEventListener('click', initiateGchatAuth);
     driveReauthBtn.addEventListener('click', initiateDriveAuth);
     sheetsReauthBtn.addEventListener('click', initiateSheetsAuth);
+    docsReauthBtn.addEventListener('click', initiateGoogleAuth);
     githubReauthBtn.addEventListener('click', initiateGithubAuth);
+    teamsAuthBtn.addEventListener('click', initiateTeamsAuth);
+    teamsDisconnectBtn.addEventListener('click', disconnectTeams);
     outlookAuthBtn.addEventListener('click', initiateOutlookAuth);
     outlookDisconnectBtn.addEventListener('click', disconnectOutlook);
     outlookReauthBtn.addEventListener('click', initiateOutlookAuth);
@@ -346,8 +392,8 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, github: githubPanel, outlook: outlookPanel, timer: timerPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, github: githubNavItem, outlook: outlookNavItem, timer: timerNavItem };
+    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, docs: docsPanel, github: githubPanel, outlook: outlookPanel, teams: teamsPanel, timer: timerPanel };
+    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, docs: docsNavItem, github: githubNavItem, outlook: outlookNavItem, teams: teamsNavItem, timer: timerNavItem };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -355,8 +401,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, githubPanel, outlookPanel, timerPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, githubNavItem, outlookNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, docsPanel, githubPanel, outlookPanel, teamsPanel, timerPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, docsNavItem, githubNavItem, outlookNavItem, teamsNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -386,7 +432,9 @@ async function loadCapabilities() {
             drive: { label: 'Google Drive', dot: 'drive', categories: DRIVE_CATEGORIES },
             sheets: { label: 'Google Sheets', dot: 'sheets', categories: SHEETS_CATEGORIES },
             github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES },
-            outlook: { label: 'Outlook', dot: 'outlook', categories: OUTLOOK_CATEGORIES }
+            outlook: { label: 'Outlook', dot: 'outlook', categories: OUTLOOK_CATEGORIES },
+            docs: { label: 'Google Docs', dot: 'docs', categories: DOCS_CATEGORIES },
+            teams: { label: 'Microsoft Teams', dot: 'teams', categories: TEAMS_CATEGORIES }
         };
 
         for (const svc of services) {
@@ -452,8 +500,10 @@ async function checkAllStatuses() {
     checkGchatStatus();
     checkDriveStatus();
     checkSheetsStatus();
+    checkDocsStatus();
     checkGitHubStatus();
     checkOutlookStatus();
+    checkTeamsStatus();
     checkTimerStatus();
 
     setInterval(() => {
@@ -462,8 +512,10 @@ async function checkAllStatuses() {
         checkGchatStatus();
         checkDriveStatus();
         checkSheetsStatus();
+        checkDocsStatus();
         checkGitHubStatus();
         checkOutlookStatus();
+        checkTeamsStatus();
         checkTimerStatus();
     }, 5000);
 }
@@ -661,10 +713,29 @@ async function initiateGoogleAuth() {
         authenticateBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...`;
 
         const response = await fetch('/api/gmail/auth');
-        const data = await response.json();
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 404) {
+                throw new Error('Google auth route not found on backend. Restart the server so latest routes are loaded.');
+            }
+            throw new Error(`Unexpected non-JSON response from backend (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Google auth failed with status ${response.status}`);
+        }
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Authentication', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetGoogleAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -679,10 +750,13 @@ async function initiateGoogleAuth() {
         } else if (data.setupRequired) {
             alert('Please set up Google Cloud credentials first.');
             resetGoogleAuthButton();
+        } else {
+            alert(data.error || 'Failed to initiate Google authentication');
+            resetGoogleAuthButton();
         }
     } catch (error) {
         console.error('Google auth error:', error);
-        alert('Failed to initiate authentication');
+        alert(error.message || 'Failed to initiate authentication');
         resetGoogleAuthButton();
     }
 }
@@ -693,10 +767,29 @@ async function initiateCalendarAuth() {
         calendarAuthBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70" /></svg> Connecting...`;
 
         const response = await fetch('/api/calendar/connect');
-        const data = await response.json();
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let data = {};
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 404) {
+                throw new Error('Calendar auth route not found on backend. Restart the server so latest routes are loaded.');
+            }
+            throw new Error(`Unexpected non-JSON response from backend (${response.status}): ${text.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || `Calendar auth failed with status ${response.status}`);
+        }
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Calendar Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetCalendarAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -711,10 +804,13 @@ async function initiateCalendarAuth() {
         } else if (data.setupRequired) {
             alert('Please set up Google Cloud credentials first.');
             resetCalendarAuthButton();
+        } else {
+            alert(data.error || 'Failed to initiate calendar authentication');
+            resetCalendarAuthButton();
         }
     } catch (error) {
         console.error('Calendar auth error:', error);
-        alert('Failed to initiate calendar authentication');
+        alert(error.message || 'Failed to initiate calendar authentication');
         resetCalendarAuthButton();
     }
 }
@@ -753,6 +849,11 @@ async function initiateGchatAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Chat Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetGchatAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -807,6 +908,11 @@ async function initiateDriveAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Drive Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetDriveAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -861,6 +967,11 @@ async function initiateSheetsAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Google Sheets Auth', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetSheetsAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -916,6 +1027,11 @@ async function initiateGithubAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'GitHub Authentication', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetGithubAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -1008,6 +1124,11 @@ async function initiateOutlookAuth() {
 
         if (data.authUrl) {
             const popup = window.open(data.authUrl, 'Outlook Authentication', 'width=600,height=700,left=200,top=100');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                resetOutlookAuthButton();
+                return;
+            }
             const checkClosed = setInterval(() => {
                 if (popup.closed) {
                     clearInterval(checkClosed);
@@ -1040,6 +1161,106 @@ async function disconnectOutlook() {
         checkOutlookStatus();
     } catch (error) {
         console.error('Outlook disconnect error:', error);
+    }
+}
+
+// Google Docs status
+async function checkDocsStatus() {
+    try {
+        const response = await fetch('/api/docs/status');
+        const data = await response.json();
+        updateDocsStatus(data);
+    } catch (error) {
+        updateDocsStatus({ authenticated: false });
+    }
+}
+
+function updateDocsStatus(data) {
+    const statusDot = docsStatus.querySelector('.status-dot');
+    isDocsConnected = data.authenticated;
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        docsAuthSection.style.display = 'none';
+        docsConnectedSection.style.display = 'block';
+        docsBadge.style.display = 'inline-flex';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        docsAuthSection.style.display = 'block';
+        docsConnectedSection.style.display = 'none';
+        docsBadge.style.display = 'none';
+    }
+}
+
+// Microsoft Teams status
+async function checkTeamsStatus() {
+    try {
+        const response = await fetch('/api/teams/status');
+        const data = await response.json();
+        updateTeamsStatus(data);
+    } catch (error) {
+        updateTeamsStatus({ authenticated: false, oauthConfigured: false });
+    }
+}
+
+function updateTeamsStatus(data) {
+    const statusDot = teamsStatus.querySelector('.status-dot');
+    isTeamsConnected = data.authenticated;
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        teamsAuthSection.style.display = 'none';
+        teamsConnectedSection.style.display = 'block';
+        teamsSetupSection.style.display = 'none';
+        teamsBadge.style.display = 'inline-flex';
+        if (data.email) teamsUserInfo.textContent = `Connected as ${data.email}. 10 team tools ready!`;
+    } else if (!data.oauthConfigured) {
+        statusDot.className = 'status-dot disconnected';
+        teamsAuthSection.style.display = 'none';
+        teamsConnectedSection.style.display = 'none';
+        teamsSetupSection.style.display = 'block';
+        teamsBadge.style.display = 'none';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        teamsAuthSection.style.display = 'block';
+        teamsConnectedSection.style.display = 'none';
+        teamsSetupSection.style.display = 'none';
+        teamsBadge.style.display = 'none';
+    }
+}
+
+async function initiateTeamsAuth() {
+    try {
+        const response = await fetch('/api/teams/auth');
+        const data = await response.json();
+        if (data.authUrl) {
+            const popup = window.open(data.authUrl, 'TeamsAuth', 'width=600,height=700');
+            if (!popup) {
+                alert('Popup was blocked. Please allow popups for this site and try again.');
+                return;
+            }
+            const pollInterval = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(pollInterval);
+                    setTimeout(() => {
+                        checkTeamsStatus();
+                        checkOutlookStatus();
+                    }, 1000);
+                }
+            }, 500);
+        } else {
+            alert(data.error || 'Failed to get Teams auth URL');
+        }
+    } catch (error) {
+        alert('Failed to initiate Teams authentication: ' + error.message);
+    }
+}
+
+async function disconnectTeams() {
+    try {
+        await fetch('/api/outlook/disconnect', { method: 'POST' });
+        checkTeamsStatus();
+        checkOutlookStatus();
+    } catch (error) {
+        console.error('Teams disconnect error:', error);
     }
 }
 
@@ -1231,7 +1452,7 @@ async function sendMessage() {
             }
 
             // Suppress text response for list-type tools (only show cards)
-            const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_prs', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
+            const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_pull_requests', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
             const isListToolOnly = data.toolResults &&
                 data.toolResults.length === 1 &&
                 LIST_TOOLS.includes(data.toolResults[0].tool) &&
@@ -1242,7 +1463,7 @@ async function sendMessage() {
             }
 
             if (data.toolResults && data.toolResults.length > 0) {
-                responseHtml += formatToolResults(data.toolResults);
+                responseHtml += `<div class="tool-results-stack">${formatToolResults(data.toolResults)}</div>`;
             }
 
             addMessage('assistant', responseHtml, { allowHtml: true });
@@ -1377,27 +1598,104 @@ function formatStepsPipeline(steps) {
 
 // Format response text to HTML
 function formatResponse(text) {
-    if (!text) return '';
+    if (!text || !String(text).trim()) return '';
 
-    return text
-        .split('\n')
-        .map(line => {
-            if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
-                return `<li>${escapeHtml(line.trim().slice(2))}</li>`;
+    const codeBlocks = [];
+    const normalized = String(text).replace(/\r\n?/g, '\n');
+    const withCodePlaceholders = normalized.replace(/```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, (_, language, code) => {
+        const index = codeBlocks.length;
+        codeBlocks.push({
+            language: escapeHtml(String(language || '').trim().toLowerCase()),
+            code: escapeHtml(String(code || '').replace(/\n+$/, ''))
+        });
+        return `@@CODE_BLOCK_${index}@@`;
+    });
+
+    const htmlParts = [];
+    const lines = withCodePlaceholders.split('\n');
+    let listMode = null;
+
+    const closeOpenList = () => {
+        if (!listMode) return;
+        htmlParts.push(listMode === 'ol' ? '</ol>' : '</ul>');
+        listMode = null;
+    };
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+
+        if (!line) {
+            closeOpenList();
+            continue;
+        }
+
+        const codeMatch = line.match(/^@@CODE_BLOCK_(\d+)@@$/);
+        if (codeMatch) {
+            closeOpenList();
+            const block = codeBlocks[Number.parseInt(codeMatch[1], 10)] || { language: '', code: '' };
+            const languageClass = block.language ? ` class="language-${block.language}"` : '';
+            htmlParts.push(`<pre class="assistant-code"><code${languageClass}>${block.code}</code></pre>`);
+            continue;
+        }
+
+        const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+        if (headingMatch) {
+            closeOpenList();
+            const level = Math.min(3, headingMatch[1].length);
+            htmlParts.push(`<h${level}>${applyInlineFormatting(headingMatch[2])}</h${level}>`);
+            continue;
+        }
+
+        if (/^---+$/.test(line)) {
+            closeOpenList();
+            htmlParts.push('<hr>');
+            continue;
+        }
+
+        const unorderedMatch = line.match(/^[-*]\s+(.+)$/);
+        if (unorderedMatch) {
+            if (listMode !== 'ul') {
+                closeOpenList();
+                htmlParts.push('<ul>');
+                listMode = 'ul';
             }
-            if (/^\d+\.\s/.test(line.trim())) {
-                return `<li>${escapeHtml(line.trim().replace(/^\d+\.\s/, ''))}</li>`;
+            htmlParts.push(`<li>${applyInlineFormatting(unorderedMatch[1])}</li>`);
+            continue;
+        }
+
+        const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+        if (orderedMatch) {
+            if (listMode !== 'ol') {
+                closeOpenList();
+                htmlParts.push('<ol>');
+                listMode = 'ol';
             }
-            line = escapeHtml(line);
-            if (line.includes('`')) {
-                line = line.replace(/`([^`]+)`/g, '<code>$1</code>');
-            }
-            if (line.includes('**')) {
-                line = line.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-            }
-            return line ? `<p>${line}</p>` : '';
-        })
-        .join('');
+            htmlParts.push(`<li>${applyInlineFormatting(orderedMatch[1])}</li>`);
+            continue;
+        }
+
+        const quoteMatch = line.match(/^>\s?(.+)$/);
+        if (quoteMatch) {
+            closeOpenList();
+            htmlParts.push(`<blockquote>${applyInlineFormatting(quoteMatch[1])}</blockquote>`);
+            continue;
+        }
+
+        closeOpenList();
+        htmlParts.push(`<p>${applyInlineFormatting(line)}</p>`);
+    }
+
+    closeOpenList();
+    return `<div class="assistant-response">${htmlParts.join('')}</div>`;
+}
+
+function applyInlineFormatting(text) {
+    let safe = escapeHtml(String(text || ''));
+    safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    safe = safe.replace(/`([^`]+)`/g, '<code>$1</code>');
+    safe = safe.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    return safe;
 }
 
 // Format tool results
@@ -1497,8 +1795,8 @@ function formatToolResults(results) {
                     <div class="attachment-card">
                         <span class="attachment-icon">&#128206;</span>
                         <div>
-                            <div style="font-weight:500">${escapeHtml(a.filename)}</div>
-                            <div style="font-size:0.8rem;color:var(--text-muted)">${escapeHtml(a.mimeType)} &middot; ${formatSize(a.size)}</div>
+                            <div style="font-weight:500">${escapeHtml(a.filename || a.name || 'attachment')}</div>
+                            <div style="font-size:0.8rem;color:var(--text-muted)">${escapeHtml(a.mimeType || a.contentType || 'unknown')} &middot; ${formatSize(a.size)}</div>
                         </div>
                     </div>
                 `).join('');
@@ -1743,11 +2041,14 @@ function addMessage(role, content, { allowHtml = false } = {}) {
     const bubbleContent = allowHtml
         ? String(content || '')
         : escapeHtml(String(content || '')).replace(/\n/g, '<br>');
+    const bubbleClass = role === 'assistant' && allowHtml
+        ? 'message-bubble assistant-rich-bubble'
+        : 'message-bubble';
 
     messageDiv.innerHTML = `
         <div class="message-avatar">${avatar}</div>
         <div class="message-content">
-            <div class="message-bubble">${bubbleContent}</div>
+            <div class="${bubbleClass}">${bubbleContent}</div>
         </div>
     `;
 

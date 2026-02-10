@@ -117,6 +117,20 @@
                         </span>
                     </button>
 
+                    <!-- Google Docs Option -->
+                    <button class="nav-item" id="docsNavItem" data-service="docs">
+                        <div class="nav-item-icon docs-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#4285F4" d="M6 2h8l6 6v12c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2z"/>
+                                <path fill="#fff" d="M7 12h10v1.5H7zm0 3h7v1.5H7zm0-6h10v1.5H7z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Google Docs</span>
+                        <span class="nav-item-status" id="docsStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
                     <!-- Outlook Option -->
                     <button class="nav-item" id="outlookNavItem" data-service="outlook">
                         <div class="nav-item-icon outlook-icon">
@@ -127,6 +141,19 @@
                         </div>
                         <span class="nav-item-text">Outlook</span>
                         <span class="nav-item-status" id="outlookStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
+                    <!-- Microsoft Teams Option -->
+                    <button class="nav-item" id="teamsNavItem" data-service="teams">
+                        <div class="nav-item-icon teams-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#6264A7" d="M20.5 6a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM16 3.5a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0zM22 9h-4v10c0 .55-.45 1-1 1h-6c0 2.21 1.79 4 4 4h3c2.21 0 4-1.79 4-4V9zM15 8H3c-.55 0-1 .45-1 1v8c0 2.76 2.24 5 5 5h4c2.76 0 5-2.24 5-5V9c0-.55-.45-1-1-1z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Teams</span>
+                        <span class="nav-item-status" id="teamsStatus">
                             <span class="status-dot disconnected"></span>
                         </span>
                     </button>
@@ -190,6 +217,14 @@
                         <div class="nav-item-icon"><span style="font-size:16px">&#128233;</span></div>
                         <span class="nav-item-text">Outlook Inbox</span>
                     </button>
+                    <button class="nav-item quick-nav" data-prompt="List my Google Docs">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128196;</span></div>
+                        <span class="nav-item-text">My Docs</span>
+                    </button>
+                    <button class="nav-item quick-nav" data-prompt="List my Microsoft Teams">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#128101;</span></div>
+                        <span class="nav-item-text">My Teams</span>
+                    </button>
                 </div>
             </nav>
 
@@ -215,6 +250,8 @@
                         <button class="service-tab" data-filter="github">GitHub (20)</button>
                         <button class="service-tab" data-filter="calendar">Calendar (19)</button>
                         <button class="service-tab" data-filter="outlook">Outlook (18)</button>
+                        <button class="service-tab" data-filter="docs">Docs (8)</button>
+                        <button class="service-tab" data-filter="teams">Teams (10)</button>
                     </div>
                     <div class="capability-group">
                         <p class="capability-description"><span id="toolStatusText">Not connected</span></p>
@@ -714,6 +751,109 @@
                 </div>
             </div>
 
+            <!-- Google Docs Panel -->
+            <div class="service-panel" id="docsPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#4285F4" d="M6 2h8l6 6v12c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2z"/>
+                            <path fill="#fff" d="M7 12h10v1.5H7zm0 3h7v1.5H7zm0-6h10v1.5H7z"/>
+                        </svg>
+                        <h2>Google Docs Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="docs">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="connected-section" id="docsConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon">&#10003;</div>
+                                <div>
+                                    <h3>Google Docs Connected</h3>
+                                    <p>8 document tools ready. Create, edit, and read Google Docs!</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="List my Google Docs">List My Docs</button>
+                                <button class="quick-action-btn" data-prompt="Create a new Google Doc titled 'Meeting Notes'">Create Doc</button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="docs">Start Chatting</button>
+                        </div>
+                    </div>
+                    <div class="auth-section" id="docsAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#4285F4" d="M6 2h8l6 6v12c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2z"/>
+                                    <path fill="#fff" d="M7 12h10v1.5H7zm0 3h7v1.5H7zm0-6h10v1.5H7z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Google Docs</h3>
+                            <p>Google Docs shares authentication with Gmail. Connect Gmail first to enable Docs tools.</p>
+                            <p class="auth-note">If already connected to Gmail but Docs isn't working, reauthenticate Docs to grant the Docs scope.</p>
+                            <button class="disconnect-btn reauth-btn" id="docsReauthBtn">Reauthenticate Docs (Switch Account)</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Microsoft Teams Panel -->
+            <div class="service-panel" id="teamsPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#6264A7" d="M20.5 6a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM16 3.5a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0zM22 9h-4v10c0 .55-.45 1-1 1h-6c0 2.21 1.79 4 4 4h3c2.21 0 4-1.79 4-4V9zM15 8H3c-.55 0-1 .45-1 1v8c0 2.76 2.24 5 5 5h4c2.76 0 5-2.24 5-5V9c0-.55-.45-1-1-1z"/>
+                        </svg>
+                        <h2>Microsoft Teams Integration</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="teams">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="connected-section" id="teamsConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon">&#10003;</div>
+                                <div>
+                                    <h3>Microsoft Teams Connected</h3>
+                                    <p id="teamsUserInfo">10 team collaboration tools ready!</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="List my Microsoft Teams">List Teams</button>
+                                <button class="quick-action-btn" data-prompt="List my Teams chats">List Chats</button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="teams">Start Chatting</button>
+                            <button class="disconnect-btn" id="teamsDisconnectBtn">Disconnect Teams</button>
+                        </div>
+                    </div>
+                    <div class="auth-section" id="teamsAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#6264A7" d="M20.5 6a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM16 3.5a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0zM22 9h-4v10c0 .55-.45 1-1 1h-6c0 2.21 1.79 4 4 4h3c2.21 0 4-1.79 4-4V9zM15 8H3c-.55 0-1 .45-1 1v8c0 2.76 2.24 5 5 5h4c2.76 0 5-2.24 5-5V9c0-.55-.45-1-1-1z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Microsoft Teams</h3>
+                            <p>Sign in with your Microsoft account to access Teams, channels, and chats.</p>
+                            <button class="auth-btn teams-auth-btn" id="teamsAuthBtn">
+                                <svg viewBox="0 0 24 24" width="20" height="20">
+                                    <path fill="#fff" d="M20.5 6a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM16 3.5a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+                                </svg>
+                                Connect with Microsoft
+                            </button>
+                            <p class="auth-note">Uses Microsoft OAuth (same as Outlook). You may need to re-authenticate to grant Teams permissions.</p>
+                        </div>
+                    </div>
+                    <div class="setup-section" id="teamsSetupSection" style="display: none;">
+                        <div class="setup-card">
+                            <div class="setup-icon">&#9881;</div>
+                            <h3>Setup Required</h3>
+                            <p>Microsoft OAuth credentials needed. Same credentials as Outlook.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Outlook Panel -->
             <div class="service-panel" id="outlookPanel">
                 <div class="panel-header">
@@ -873,6 +1013,14 @@
                         <span class="service-badge outlook-badge" id="outlookBadge" style="display: none;">
                             <span class="badge-dot"></span>
                             Outlook
+                        </span>
+                        <span class="service-badge docs-badge" id="docsBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Docs
+                        </span>
+                        <span class="service-badge teams-badge" id="teamsBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Teams
                         </span>
                         <span class="service-badge timer-badge" id="timerBadge" style="display: none;">
                             <span class="badge-dot"></span>
