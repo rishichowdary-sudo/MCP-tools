@@ -36,6 +36,14 @@ const parsedOpenAiMaxOutput = Number.parseInt(process.env.OPENAI_MAX_OUTPUT_TOKE
 const OPENAI_MAX_OUTPUT_TOKENS = Number.isFinite(parsedOpenAiMaxOutput) && parsedOpenAiMaxOutput > 0
     ? parsedOpenAiMaxOutput
     : null;
+const CHAT_HISTORY_MAX_MESSAGES = 24;
+const CHAT_HISTORY_MAX_MESSAGE_CHARS = 3000;
+const CHAT_HISTORY_MAX_TOTAL_CHARS = 30000;
+const MODEL_TOOL_RESULT_MAX_CHARS = 4000;
+const MODEL_TOOL_VALUE_MAX_STRING_CHARS = 1200;
+const MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS = 25;
+const MODEL_TOOL_VALUE_MAX_OBJECT_KEYS = 60;
+const ASSISTANT_RESPONSE_MAX_CHARS = 12000;
 
 // Google OAuth scopes setup (Gmail, Calendar, Chat, Drive, Sheets, Docs)
 const SCOPES = [
@@ -310,6 +318,117 @@ function clampPagination(value, { fallback = 20, min = 1, max = 100 } = {}) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return fallback;
     return Math.min(max, Math.max(min, parsed));
+}
+
+function truncateText(value, maxChars = 2000) {
+    const text = String(value ?? '');
+    if (text.length <= maxChars) return text;
+    if (maxChars <= 20) return text.slice(0, Math.max(0, maxChars));
+    return `${text.slice(0, maxChars - 20)}\n...[truncated]`;
+}
+
+function sanitizeHistoryText(value) {
+    return String(value ?? '')
+        .replace(/\u0000/g, '')
+        .trim();
+}
+
+function buildSafeChatHistory(
+    history = [],
+    {
+        maxMessages = CHAT_HISTORY_MAX_MESSAGES,
+        maxMessageChars = CHAT_HISTORY_MAX_MESSAGE_CHARS,
+        maxTotalChars = CHAT_HISTORY_MAX_TOTAL_CHARS
+    } = {}
+) {
+    const normalized = (Array.isArray(history) ? history : [])
+        .filter(item =>
+            item &&
+            (item.role === 'user' || item.role === 'assistant') &&
+            typeof item.content === 'string'
+        )
+        .map(item => ({
+            role: item.role,
+            content: truncateText(sanitizeHistoryText(item.content), maxMessageChars)
+        }))
+        .filter(item => item.content.length > 0);
+
+    const selected = [];
+    let totalChars = 0;
+    for (let i = normalized.length - 1; i >= 0; i -= 1) {
+        if (selected.length >= maxMessages) break;
+        const item = normalized[i];
+        const remaining = maxTotalChars - totalChars;
+        if (remaining <= 80) break;
+
+        let content = item.content;
+        if (content.length > remaining) {
+            content = truncateText(content, remaining);
+        }
+        selected.unshift({ role: item.role, content });
+        totalChars += content.length;
+    }
+
+    return selected;
+}
+
+function normalizeReadableText(text, maxChars = 40000) {
+    let normalized = String(text ?? '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\u0000/g, '');
+
+    normalized = normalized
+        .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u024F\u0370-\u03FF\u0400-\u04FF]/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+    const originalLength = normalized.length;
+    const truncated = originalLength > maxChars;
+    if (truncated) {
+        normalized = `${normalized.slice(0, Math.max(0, maxChars - 20))}\n...[truncated]`;
+    }
+
+    return { text: normalized, truncated, originalLength };
+}
+
+function isLikelyTextMimeType(mimeType) {
+    const mime = String(mimeType || '').toLowerCase();
+    if (!mime) return false;
+    if (mime.startsWith('text/')) return true;
+    return [
+        'json',
+        'xml',
+        'yaml',
+        'csv',
+        'javascript',
+        'x-sh',
+        'markdown',
+        'sql'
+    ].some(token => mime.includes(token));
+}
+
+function hasHighBinaryRatio(buffer, sampleSize = 4096) {
+    if (!buffer || buffer.length === 0) return false;
+    const sample = buffer.subarray(0, Math.min(sampleSize, buffer.length));
+    let binaryCount = 0;
+    for (const byte of sample) {
+        const isPrintable = (byte >= 32 && byte <= 126) || byte === 9 || byte === 10 || byte === 13;
+        if (!isPrintable) binaryCount += 1;
+    }
+    return (binaryCount / sample.length) > 0.3;
+}
+
+function extractPrintableStringsFromBuffer(buffer, { minLength = 4, maxChars = 40000 } = {}) {
+    if (!buffer || buffer.length === 0) return '';
+    const sampled = buffer.subarray(0, Math.min(buffer.length, maxChars * 4));
+    const latinText = sampled.toString('latin1');
+    const regex = new RegExp(`[\\x20-\\x7E]{${Math.max(2, Number(minLength) || 4)},}`, 'g');
+    const matches = latinText.match(regex) || [];
+    if (matches.length === 0) return '';
+    const joined = matches.slice(0, 500).join('\n');
+    return normalizeReadableText(joined, maxChars).text;
 }
 
 function schedulerDateParts(now = new Date()) {
@@ -2066,6 +2185,37 @@ function buildDriveQueryClause(query) {
     return buildDriveKeywordClause(trimmed);
 }
 
+async function extractPdfTextViaDriveConversion({ fileId, originalName = 'document.pdf' }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    let tempDocId = null;
+    const safeName = String(originalName || 'document').replace(/\.[^.]+$/, '');
+    try {
+        const copyResponse = await driveClient.files.copy({
+            fileId,
+            supportsAllDrives: true,
+            requestBody: {
+                name: `${safeName} (temporary text extract)`,
+                mimeType: 'application/vnd.google-apps.document'
+            },
+            fields: 'id,name'
+        });
+        tempDocId = copyResponse?.data?.id || null;
+        if (!tempDocId) throw new Error('Could not create temporary conversion document.');
+
+        await sleep(250);
+        const exportResponse = await driveClient.files.export(
+            { fileId: tempDocId, mimeType: 'text/plain' },
+            { responseType: 'arraybuffer' }
+        );
+        const text = Buffer.from(exportResponse.data).toString('utf8');
+        return normalizeReadableText(text, 120000).text;
+    } finally {
+        if (tempDocId) {
+            driveClient.files.delete({ fileId: tempDocId, supportsAllDrives: true }).catch(() => { });
+        }
+    }
+}
+
 async function listDriveFiles({ query, pageSize = 100, orderBy = 'modifiedTime desc', includeTrashed = false }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
     const limit = clampPagination(pageSize, { fallback: 100, max: 200 });
@@ -2257,51 +2407,102 @@ async function shareDriveFile({ fileId, emailAddress, role = 'reader', sendNotif
     };
 }
 
-async function downloadDriveFile({ fileId, maxBytes = 200000 }) {
+async function downloadDriveFile({ fileId, maxBytes = 40000 }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
     if (!fileId) throw new Error('fileId is required');
 
     const meta = await driveClient.files.get({
         fileId,
-        fields: 'id,name,mimeType,size'
+        fields: 'id,name,mimeType,size,webViewLink'
     });
 
-    const mimeType = meta.data.mimeType || '';
+    const mimeType = String(meta.data.mimeType || '');
     if (mimeType === 'application/vnd.google-apps.spreadsheet') {
         throw new Error('This file is a Google Sheet. Use Sheets tools (read_sheet_values, get_spreadsheet) to access data.');
     }
 
-    let rawBytes;
-    if (mimeType.startsWith('application/vnd.google-apps.')) {
+    const limit = clampPagination(maxBytes, { fallback: 40000, min: 1024, max: 120000 });
+    const lowerMime = mimeType.toLowerCase();
+    let content = '';
+    let extractionMethod = 'raw';
+    let rawByteLength = Number(meta.data.size) || 0;
+
+    if (lowerMime === 'application/pdf') {
+        try {
+            const convertedText = await extractPdfTextViaDriveConversion({
+                fileId,
+                originalName: meta.data.name
+            });
+            const normalized = normalizeReadableText(convertedText, limit);
+            content = normalized.text;
+            extractionMethod = 'drive_pdf_to_text';
+        } catch {
+            const fileResponse = await driveClient.files.get(
+                { fileId, alt: 'media' },
+                { responseType: 'arraybuffer' }
+            );
+            const rawBytes = Buffer.from(fileResponse.data);
+            rawByteLength = rawBytes.length;
+            const printable = extractPrintableStringsFromBuffer(rawBytes, { maxChars: limit });
+            if (printable) {
+                content = printable;
+                extractionMethod = 'pdf_printable_strings';
+            } else {
+                throw new Error('Could not extract readable text from this PDF. Try opening it in Drive and copying text, or convert it to Google Docs.');
+            }
+        }
+    } else if (mimeType.startsWith('application/vnd.google-apps.')) {
         const exportResponse = await driveClient.files.export(
             { fileId, mimeType: 'text/plain' },
             { responseType: 'arraybuffer' }
         );
-        rawBytes = Buffer.from(exportResponse.data);
+        const normalized = normalizeReadableText(Buffer.from(exportResponse.data).toString('utf8'), limit);
+        content = normalized.text;
+        extractionMethod = 'google_workspace_export';
     } else {
         const fileResponse = await driveClient.files.get(
             { fileId, alt: 'media' },
             { responseType: 'arraybuffer' }
         );
-        rawBytes = Buffer.from(fileResponse.data);
+        const rawBytes = Buffer.from(fileResponse.data);
+        rawByteLength = rawBytes.length;
+
+        if (isLikelyTextMimeType(mimeType) || !hasHighBinaryRatio(rawBytes)) {
+            const normalized = normalizeReadableText(rawBytes.toString('utf8'), limit);
+            content = normalized.text;
+            extractionMethod = 'plain_text';
+        } else {
+            const printable = extractPrintableStringsFromBuffer(rawBytes, { maxChars: limit });
+            if (!printable) {
+                throw new Error(`"${meta.data.name}" is a binary file (${mimeType}). Text extraction is not available for this format.`);
+            }
+            content = printable;
+            extractionMethod = 'binary_printable_strings';
+        }
     }
 
-    const limit = Math.max(1024, Number(maxBytes) || 200000);
-    const truncated = rawBytes.length > limit;
-    const body = truncated ? rawBytes.subarray(0, limit) : rawBytes;
-    const content = body.toString('utf8');
+    const normalizedContent = normalizeReadableText(content, limit);
+    content = normalizedContent.text;
+    if (!content) {
+        throw new Error(`No readable text found in "${meta.data.name}".`);
+    }
+
+    const returnedBytes = Buffer.byteLength(content, 'utf8');
+    const truncated = normalizedContent.truncated || returnedBytes >= limit;
 
     return {
         fileId,
         name: meta.data.name,
         mimeType,
         content,
-        byteLength: rawBytes.length,
-        returnedBytes: body.length,
+        extractionMethod,
+        byteLength: rawByteLength || returnedBytes,
+        returnedBytes,
         truncated,
+        webViewLink: meta.data.webViewLink || null,
         message: truncated
-            ? `Downloaded truncated content for "${meta.data.name}" (${body.length}/${rawBytes.length} bytes)`
-            : `Downloaded file "${meta.data.name}"`
+            ? `Downloaded truncated readable content for "${meta.data.name}" using ${extractionMethod} (${returnedBytes}/${rawByteLength || returnedBytes} bytes).`
+            : `Downloaded readable content for "${meta.data.name}" using ${extractionMethod}.`
     };
 }
 
@@ -4257,7 +4458,7 @@ const driveTools = [
     { type: "function", function: { name: "copy_drive_file", description: "Copy an existing Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID" }, name: { type: "string", description: "Optional new file name" }, parentId: { type: "string", description: "Optional parent folder for copy" } }, required: ["fileId"] } } },
     { type: "function", function: { name: "move_drive_file", description: "Move a Drive file to another folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, newParentId: { type: "string", description: "Destination folder ID" } }, required: ["fileId", "newParentId"] } } },
     { type: "function", function: { name: "share_drive_file", description: "Share a Drive file with a user email.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, emailAddress: { type: "string", description: "User email address to share with" }, role: { type: "string", description: "Permission role: reader, commenter, writer, organizer, fileOrganizer (default reader)" }, sendNotificationEmail: { type: "boolean", description: "Send share email notification (default true)" } }, required: ["fileId", "emailAddress"] } } },
-    { type: "function", function: { name: "download_drive_file", description: "Download readable content for a Drive file (truncated for very large files).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum bytes to return (default 200000)" } }, required: ["fileId"] } } }
+    { type: "function", function: { name: "download_drive_file", description: "Download readable content for a Drive file (truncated for large files; PDFs attempt text extraction).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum text bytes to return (default 40000, max 120000)" } }, required: ["fileId"] } } }
 ];
 
 const sheetsTools = [
@@ -5340,6 +5541,50 @@ async function runAgentConversation({ message, history = [] }) {
         }
     };
 
+    const compactValueForModel = (value, depth = 0) => {
+        if (value === null || value === undefined) return value;
+        if (typeof value === 'string') {
+            return truncateText(value, MODEL_TOOL_VALUE_MAX_STRING_CHARS);
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') return value;
+        if (Array.isArray(value)) {
+            if (depth >= 4) return `[array(${value.length}) truncated]`;
+            const capped = value
+                .slice(0, MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS)
+                .map(item => compactValueForModel(item, depth + 1));
+            if (value.length > MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS) {
+                capped.push(`[${value.length - MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS} more items truncated]`);
+            }
+            return capped;
+        }
+        if (typeof value === 'object') {
+            if (depth >= 4) return '[object truncated]';
+            const entries = Object.entries(value);
+            const limitedEntries = entries.slice(0, MODEL_TOOL_VALUE_MAX_OBJECT_KEYS);
+            const out = {};
+            for (const [key, val] of limitedEntries) {
+                out[key] = compactValueForModel(val, depth + 1);
+            }
+            if (entries.length > MODEL_TOOL_VALUE_MAX_OBJECT_KEYS) {
+                out.__truncatedKeys = entries.length - MODEL_TOOL_VALUE_MAX_OBJECT_KEYS;
+            }
+            return out;
+        }
+        return truncateText(String(value), MODEL_TOOL_VALUE_MAX_STRING_CHARS);
+    };
+
+    const compactToolPayloadForModel = (payload) => {
+        const compacted = compactValueForModel(payload);
+        const json = safeJsonStringify(compacted);
+        if (json.length <= MODEL_TOOL_RESULT_MAX_CHARS) {
+            return compacted;
+        }
+        return {
+            summary: 'Tool output was too large and was compacted for model context.',
+            preview: truncateText(json, MODEL_TOOL_RESULT_MAX_CHARS)
+        };
+    };
+
     const parseToolCallArguments = (rawArguments) => {
         if (rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)) {
             return rawArguments;
@@ -5455,9 +5700,10 @@ async function runAgentConversation({ message, history = [] }) {
 - Tomorrow: ${dateContext.tomorrow}
 - Yesterday: ${dateContext.yesterday}`;
 
+    const safeHistory = buildSafeChatHistory(history);
     const messages = [
         { role: 'system', content: systemPrompt },
-        ...history,
+        ...safeHistory,
         { role: 'user', content: enrichedUserMessage }
     ];
     const toolChoice = availableTools.length > 0 ? 'auto' : undefined;
@@ -5509,12 +5755,13 @@ async function runAgentConversation({ message, history = [] }) {
             if (step) allSteps.push(step);
             allToolResults.push(error
                 ? { tool: toolCall.function.name, error }
-                : { tool: toolCall.function.name, result });
+                : { tool: toolCall.function.name, result: compactValueForModel(result) });
 
+            const toolPayloadForModel = compactToolPayloadForModel(error ? { error } : result);
             messages.push({
                 role: 'tool',
                 tool_call_id: toolCall.id,
-                content: safeJsonStringify(error ? { error } : result)
+                content: safeJsonStringify(toolPayloadForModel)
             });
         }
 
@@ -5537,6 +5784,7 @@ async function runAgentConversation({ message, history = [] }) {
     if (!finalResponse && allToolResults.length > 0) {
         finalResponse = 'Completed the requested workflow. See the tool results for details.';
     }
+    finalResponse = truncateText(finalResponse, ASSISTANT_RESPONSE_MAX_CHARS);
 
     return {
         response: finalResponse,
@@ -5650,16 +5898,7 @@ app.post('/api/chat', async (req, res) => {
         if (typeof message !== 'string' || !message.trim()) {
             return res.status(400).json({ error: 'message must be a non-empty string' });
         }
-        const safeHistory = Array.isArray(history)
-            ? history
-                .filter(item =>
-                    item &&
-                    (item.role === 'user' || item.role === 'assistant') &&
-                    typeof item.content === 'string'
-                )
-                .slice(-40)
-                .map(item => ({ role: item.role, content: item.content }))
-            : [];
+        const safeHistory = buildSafeChatHistory(history);
         const result = await runAgentConversation({ message, history: safeHistory });
         res.json(result);
     } catch (error) {
