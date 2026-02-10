@@ -1,6 +1,7 @@
 // DOM Elements
 const chatMessages = document.getElementById('chatMessages');
 const messageInput = document.getElementById('messageInput');
+const micBtn = document.getElementById('micBtn');
 const sendBtn = document.getElementById('sendBtn');
 const gmailNavItem = document.getElementById('gmailNavItem');
 const calendarNavItem = document.getElementById('calendarNavItem');
@@ -94,6 +95,8 @@ let isSheetsConnected = false;
 let isGithubConnected = false;
 let isOutlookConnected = false;
 let isTimerConnected = false;
+let isRecording = false;
+let recognition = null;
 let activeFilter = 'all';
 
 // Tool icon mapping
@@ -213,6 +216,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Event Listeners
 function setupEventListeners() {
+    setupSpeechRecognition();
+
     sendBtn.addEventListener('click', sendMessage);
     messageInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -1250,12 +1255,94 @@ async function sendMessage() {
             }
         }
     } catch (error) {
-        removeTypingIndicator(typingId);
-        addMessage('assistant', `<p style="color: #ef4444;">Failed to send message. Please try again.</p>`, { allowHtml: true });
-        turnsBadge.style.display = 'none';
         console.error('Chat error:', error);
+        removeTypingIndicator(typingId);
+        turnsBadge.style.display = 'none';
+        addMessage('assistant', `<p style="color: #ef4444;">Error: ${error.message || 'Failed to get response'}</p>`, { allowHtml: true });
+    } finally {
+        sendBtn.disabled = false;
+        // Re-focus on input
+        if (!isMobile()) {
+            messageInput.focus();
+        }
     }
 }
+
+function isMobile() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
+// Speech Recognition
+function setupSpeechRecognition() {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        micBtn.style.display = 'none';
+        return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+        isRecording = true;
+        micBtn.classList.add('listening');
+        micBtn.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+            </svg>
+        `;
+        messageInput.placeholder = "Listening...";
+    };
+
+    recognition.onend = () => {
+        isRecording = false;
+        micBtn.classList.remove('listening');
+        micBtn.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+        `;
+        messageInput.placeholder = "Ask me anything across Gmail, Calendar, Chat, Drive, Sheets, or GitHub...";
+    };
+
+    recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        const currentText = messageInput.value;
+        const spacing = currentText && !currentText.endsWith(' ') ? ' ' : '';
+        messageInput.value = currentText + spacing + transcript;
+        autoResizeTextarea();
+        sendBtn.disabled = false;
+        messageInput.focus();
+    };
+
+    recognition.onerror = (event) => {
+        console.error('Speech recognition error', event.error);
+        isRecording = false;
+        micBtn.classList.remove('listening');
+        messageInput.placeholder = "Error accessing microphone";
+        setTimeout(() => {
+            messageInput.placeholder = "Ask me anything across Gmail, Calendar, Chat, Drive, Sheets, or GitHub...";
+        }, 3000);
+    };
+
+    micBtn.addEventListener('click', () => {
+        if (isRecording) {
+            recognition.stop();
+        } else {
+            try {
+                recognition.start();
+            } catch (e) {
+                console.error('Recognition start error:', e);
+            }
+        }
+    });
+}
+
 
 // Format the step-by-step execution pipeline
 function formatStepsPipeline(steps) {
