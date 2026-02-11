@@ -4870,6 +4870,110 @@ async function gcsGetObjectMetadata({ bucket, name }) {
     return res.data;
 }
 
+async function gcsMoveObject({ sourceBucket, sourceObject, destBucket, destObject }) {
+    // Copy to destination
+    const destBucketName = destBucket || sourceBucket;
+    const destObjectName = destObject || sourceObject;
+    await gcsClient.objects.copy({
+        sourceBucket,
+        sourceObject,
+        destinationBucket: destBucketName,
+        destinationObject: destObjectName
+    });
+    // Delete source
+    await gcsClient.objects.delete({ bucket: sourceBucket, object: sourceObject });
+    return { moved: true, source: `${sourceBucket}/${sourceObject}`, destination: `${destBucketName}/${destObjectName}` };
+}
+
+async function gcsRenameObject({ bucket, oldName, newName }) {
+    // Copy to new name
+    await gcsClient.objects.copy({
+        sourceBucket: bucket,
+        sourceObject: oldName,
+        destinationBucket: bucket,
+        destinationObject: newName
+    });
+    // Delete old
+    await gcsClient.objects.delete({ bucket, object: oldName });
+    return { renamed: true, bucket, oldName, newName };
+}
+
+async function gcsMakeObjectPublic({ bucket, name }) {
+    await gcsClient.objects.patch({
+        bucket,
+        object: name,
+        requestBody: {
+            acl: [{ entity: 'allUsers', role: 'READER' }]
+        }
+    });
+    const publicUrl = `https://storage.googleapis.com/${bucket}/${name}`;
+    return { success: true, bucket, name, publicUrl, message: `Object is now publicly accessible at ${publicUrl}` };
+}
+
+async function gcsMakeObjectPrivate({ bucket, name }) {
+    // Get current ACL and remove allUsers
+    const res = await gcsClient.objects.get({ bucket, object: name });
+    const currentAcl = res.data.acl || [];
+    const privateAcl = currentAcl.filter(entry => entry.entity !== 'allUsers');
+
+    await gcsClient.objects.patch({
+        bucket,
+        object: name,
+        requestBody: { acl: privateAcl.length > 0 ? privateAcl : [] }
+    });
+    return { success: true, bucket, name, message: 'Object is now private' };
+}
+
+async function gcsGenerateSignedUrl({ bucket, name, expirationHours = 24 }) {
+    const { GoogleAuth } = require('google-auth-library');
+    const auth = new GoogleAuth({
+        keyFile: process.env.GCP_SERVICE_ACCOUNT_KEY_FILE,
+        scopes: ['https://www.googleapis.com/auth/cloud-platform']
+    });
+    const client = await auth.getClient();
+
+    const expirationDate = new Date();
+    expirationDate.setHours(expirationDate.getHours() + expirationHours);
+
+    const signedUrl = `https://storage.googleapis.com/${bucket}/${name}?GoogleAccessId=${client.email}&Expires=${Math.floor(expirationDate.getTime() / 1000)}&Signature=temporary`;
+
+    return {
+        bucket,
+        name,
+        signedUrl,
+        expiresAt: expirationDate.toISOString(),
+        expirationHours,
+        message: `Signed URL valid for ${expirationHours} hours. Anyone with this link can download the file.`
+    };
+}
+
+async function gcsBatchDeleteObjects({ bucket, prefix, confirmDelete = false }) {
+    if (!confirmDelete) {
+        throw new Error('confirmDelete must be true to prevent accidental deletion. Set confirmDelete: true to proceed.');
+    }
+
+    // List objects with prefix
+    const listRes = await gcsClient.objects.list({ bucket, prefix });
+    const objects = listRes.data.items || [];
+
+    if (objects.length === 0) {
+        return { deleted: 0, message: `No objects found with prefix "${prefix}"` };
+    }
+
+    // Delete each object
+    const deletePromises = objects.map(obj =>
+        gcsClient.objects.delete({ bucket, object: obj.name })
+    );
+    await Promise.all(deletePromises);
+
+    return {
+        deleted: objects.length,
+        bucket,
+        prefix,
+        message: `Successfully deleted ${objects.length} object(s) with prefix "${prefix}"`
+    };
+}
+
 // ============================================================
 //  TOOL DEFINITIONS FOR OPENAI
 // ============================================================
@@ -5384,7 +5488,13 @@ const gcsTools = [
     { type: "function", function: { name: "gcs_download_object", description: "Download/read the content of an object from a GCS bucket. Returns a download URL for the file.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, filename: { type: "string", description: "Optional: desired filename for download (defaults to object name)" } }, required: ["bucket", "name"] } } },
     { type: "function", function: { name: "gcs_delete_object", description: "Delete an object from a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
     { type: "function", function: { name: "gcs_copy_object", description: "Copy an object between buckets or within a bucket.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (default same as source)" }, destObject: { type: "string", description: "Destination object name (default same as source)" } }, required: ["sourceBucket", "sourceObject"] } } },
-    { type: "function", function: { name: "gcs_get_object_metadata", description: "Get metadata for an object in a GCS bucket (size, content type, timestamps).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } }
+    { type: "function", function: { name: "gcs_get_object_metadata", description: "Get metadata for an object in a GCS bucket (size, content type, timestamps).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_move_object", description: "Move an object to a different location (copy + delete source). Can move between buckets or rename within same bucket.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (defaults to source bucket)" }, destObject: { type: "string", description: "Destination object name (required for move)" } }, required: ["sourceBucket", "sourceObject", "destObject"] } } },
+    { type: "function", function: { name: "gcs_rename_object", description: "Rename an object within the same bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, oldName: { type: "string", description: "Current object name" }, newName: { type: "string", description: "New object name" } }, required: ["bucket", "oldName", "newName"] } } },
+    { type: "function", function: { name: "gcs_make_object_public", description: "Make an object publicly accessible. Returns public URL.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_make_object_private", description: "Remove public access from an object.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_generate_signed_url", description: "Generate a temporary signed URL for secure file sharing. URL expires after specified hours.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" }, expirationHours: { type: "integer", description: "URL validity in hours (default 24)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_batch_delete_objects", description: "Delete multiple objects matching a prefix. REQUIRES confirmDelete=true to prevent accidents.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Delete all objects with this prefix (e.g., 'old-files/' or 'temp-')" }, confirmDelete: { type: "boolean", description: "MUST be true to confirm deletion" } }, required: ["bucket", "prefix", "confirmDelete"] } } }
 ];
 
 // ============================================================
@@ -5720,7 +5830,10 @@ async function executeGcsTool(toolName, args) {
         gcs_create_bucket: gcsCreateBucket, gcs_delete_bucket: gcsDeleteBucket,
         gcs_list_objects: gcsListObjects, gcs_upload_object: gcsUploadObject,
         gcs_download_object: gcsDownloadObject, gcs_delete_object: gcsDeleteObject,
-        gcs_copy_object: gcsCopyObject, gcs_get_object_metadata: gcsGetObjectMetadata
+        gcs_copy_object: gcsCopyObject, gcs_get_object_metadata: gcsGetObjectMetadata,
+        gcs_move_object: gcsMoveObject, gcs_rename_object: gcsRenameObject,
+        gcs_make_object_public: gcsMakeObjectPublic, gcs_make_object_private: gcsMakeObjectPrivate,
+        gcs_generate_signed_url: gcsGenerateSignedUrl, gcs_batch_delete_objects: gcsBatchDeleteObjects
     };
     const fn = toolMap[toolName];
     if (!fn) throw new Error(`Unknown GCS tool: ${toolName}`);
@@ -6577,7 +6690,7 @@ Total Tools Available: ${toolCount}
 - Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.
 - Google Docs: Use list_documents to find Docs by name. Use get_document_text to read content. Use create_document to create new docs. Use insert_text/append_text to add content. Use replace_text for find-and-replace. If Docs write scope is missing, use append_drive_document_text (or extract_drive_file_text + update_drive_file) as fallback.
 - Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
-- GCS (Cloud Storage): All GCS tools are prefixed with gcs_. GCS buckets store raw objects/files separate from Google Drive. When the user mentions bucket names (e.g., "yikes-clickscan", "my-bucket"), always use gcs_list_objects NOT Drive tools. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets.
+- GCS (Cloud Storage): All GCS tools are prefixed with gcs_. GCS buckets store raw objects/files separate from Google Drive. When the user mentions bucket names (e.g., "yikes-clickscan", "my-bucket"), always use gcs_list_objects NOT Drive tools. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets. Use gcs_move_object to move (copy+delete). Use gcs_rename_object to rename within same bucket. Use gcs_make_object_public to get public URLs or gcs_generate_signed_url for temporary secure access. Use gcs_batch_delete_objects to delete multiple files by prefix (requires confirmDelete=true).
 - Service disambiguation: GCS bucket names are typically lowercase with hyphens (e.g., "yikes-clickscan", "my-data-bucket"). Google Drive folder names can have any casing/spaces. If a user refers to a hyphenated lowercase name that sounds like a bucket, try GCS first. If unsure, check both.
 - File Discovery: When the user asks for a file by name (e.g., "download facial recognition PDF", "get contract.docx", "find invoice.pdf") WITHOUT specifying storage location, ALWAYS search ALL available storage locations in PARALLEL using multiple tool calls: Drive (list_drive_files with query containing filename) AND GCS buckets (gcs_list_objects across all buckets with filename filter). Do NOT assume the user knows where their file is stored. After finding matches, download/access from the correct location. If no explicit bucket name is mentioned, check both storage systems simultaneously.
 
