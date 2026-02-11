@@ -1039,7 +1039,10 @@ function normalizeAddressHeader(value) {
     return sanitizeHeaderValue(value);
 }
 
-function buildRawMessage({ to, subject, body, cc, bcc, inReplyTo, references, threadId }) {
+function buildRawMessage({ to, subject, body, cc, bcc, inReplyTo, references, threadId, attachments }) {
+    // Format body with proper line breaks for better readability
+    const formattedBody = body ? body.replace(/\n/g, '<br>') : '';
+
     const lines = [];
     const toHeader = normalizeAddressHeader(to);
     const ccHeader = normalizeAddressHeader(cc);
@@ -1050,9 +1053,38 @@ function buildRawMessage({ to, subject, body, cc, bcc, inReplyTo, references, th
     lines.push(`Subject: ${sanitizeHeaderValue(subject || '')}`);
     if (inReplyTo) lines.push(`In-Reply-To: ${sanitizeHeaderValue(inReplyTo)}`);
     if (references) lines.push(`References: ${sanitizeHeaderValue(references)}`);
-    lines.push('Content-Type: text/html; charset=utf-8');
-    lines.push('');
-    lines.push(body || '');
+
+    // If attachments, use multipart/mixed
+    if (attachments && attachments.length > 0) {
+        const boundary = `----=_Part_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+        lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+        lines.push('');
+
+        // Body part
+        lines.push(`--${boundary}`);
+        lines.push('Content-Type: text/html; charset=utf-8');
+        lines.push('');
+        lines.push(formattedBody);
+        lines.push('');
+
+        // Attachment parts
+        for (const attachment of attachments) {
+            lines.push(`--${boundary}`);
+            lines.push(`Content-Type: ${attachment.mimeType || 'application/octet-stream'}`);
+            lines.push('Content-Transfer-Encoding: base64');
+            lines.push(`Content-Disposition: attachment; filename="${attachment.filename}"`);
+            lines.push('');
+            lines.push(attachment.content); // Already base64 encoded
+            lines.push('');
+        }
+
+        lines.push(`--${boundary}--`);
+    } else {
+        // Simple email without attachments
+        lines.push('Content-Type: text/html; charset=utf-8');
+        lines.push('');
+        lines.push(formattedBody);
+    }
 
     const raw = Buffer.from(lines.join('\r\n'))
         .toString('base64')
@@ -1129,17 +1161,74 @@ async function getEmailMetadata(messageId) {
 // ============================================================
 
 // 1. Send Email
-async function sendEmail({ to, subject, body, cc, bcc }) {
+async function sendEmail({ to, subject, body, cc, bcc, attachments }) {
     if (!gmailClient) throw new Error('Gmail not authenticated');
     const toRecipients = await normalizeMessageRecipients(to, { fieldName: 'to', requireAtLeastOne: true });
     const ccRecipients = await normalizeMessageRecipients(cc, { fieldName: 'cc' });
     const bccRecipients = await normalizeMessageRecipients(bcc, { fieldName: 'bcc' });
-    const raw = buildRawMessage({ to: toRecipients, subject, body, cc: ccRecipients, bcc: bccRecipients });
+
+    // Process attachments if provided
+    let processedAttachments = [];
+    if (attachments && Array.isArray(attachments)) {
+        for (const att of attachments) {
+            if (att.localPath && fs.existsSync(att.localPath)) {
+                // Read file from disk and encode as base64
+                const fileContent = fs.readFileSync(att.localPath);
+                const base64Content = fileContent.toString('base64');
+
+                // Get MIME type from extension if not provided
+                let mimeType = att.mimeType;
+                if (!mimeType) {
+                    const ext = path.extname(att.localPath).toLowerCase();
+                    const mimeTypes = {
+                        '.pdf': 'application/pdf',
+                        '.doc': 'application/msword',
+                        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        '.xls': 'application/vnd.ms-excel',
+                        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.png': 'image/png',
+                        '.txt': 'text/plain',
+                        '.csv': 'text/csv',
+                        '.zip': 'application/zip'
+                    };
+                    mimeType = mimeTypes[ext] || 'application/octet-stream';
+                }
+
+                processedAttachments.push({
+                    filename: att.filename || path.basename(att.localPath),
+                    mimeType,
+                    content: base64Content
+                });
+            }
+        }
+    }
+
+    const raw = buildRawMessage({
+        to: toRecipients,
+        subject,
+        body,
+        cc: ccRecipients,
+        bcc: bccRecipients,
+        attachments: processedAttachments.length > 0 ? processedAttachments : undefined
+    });
+
     const result = await gmailClient.users.messages.send({
         userId: 'me',
         requestBody: { raw }
     });
-    return { success: true, messageId: result.data.id, message: `Email sent to ${toRecipients.join(', ')}` };
+
+    const attachmentMsg = processedAttachments.length > 0
+        ? ` with ${processedAttachments.length} attachment(s)`
+        : '';
+
+    return {
+        success: true,
+        messageId: result.data.id,
+        message: `Email sent to ${toRecipients.join(', ')}${attachmentMsg}`,
+        attachmentCount: processedAttachments.length
+    };
 }
 
 // 2. Search Emails
@@ -4785,15 +4874,28 @@ const gmailTools = [
         type: "function",
         function: {
             name: "send_email",
-            description: "Send a new email to recipients. Supports CC/BCC. Body can be plain text or HTML.",
+            description: "Send a new email to recipients. Supports CC/BCC and file attachments. Body supports \\n for line breaks and will be properly formatted.",
             parameters: {
                 type: "object",
                 properties: {
                     to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
                     subject: { type: "string", description: "Email subject line" },
-                    body: { type: "string", description: "Email body (plain text or HTML)" },
+                    body: { type: "string", description: "Email body (use \\n for line breaks, will be converted to proper formatting)" },
                     cc: { type: "array", items: { type: "string" }, description: "CC addresses" },
-                    bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" }
+                    bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" },
+                    attachments: {
+                        type: "array",
+                        items: {
+                            type: "object",
+                            properties: {
+                                localPath: { type: "string", description: "Local server file path (from attached files)" },
+                                filename: { type: "string", description: "Optional: desired filename for attachment" },
+                                mimeType: { type: "string", description: "Optional: MIME type (auto-detected if not provided)" }
+                            },
+                            required: ["localPath"]
+                        },
+                        description: "Array of file attachments to include in the email"
+                    }
                 },
                 required: ["to", "subject", "body"]
             }
@@ -6454,6 +6556,8 @@ Total Tools Available: ${toolCount}
 - Calendar: Use list_events with timeMin/timeMax for date ranges. Use create_meet_event or create_event with createMeetLink=true for Google Meet.
 - Calendar attendees: If the user gives a person name (not exact email), resolve it from Gmail history first and do not use placeholder domains like example.com.
 - Email recipients: For send_email/create_draft/forward_email and Outlook equivalents, resolve person names from Gmail history first. If an email cannot be resolved, ask the user for the exact email address and do not use placeholder domains (example.com/test.com/etc.).
+- Email formatting: Use \n for line breaks in email body (will be converted to proper HTML breaks). For professional emails, include proper greetings, spacing, and signatures.
+- Email attachments: To attach uploaded files, use the attachments parameter with localPath from attached files. Example: attachments: [{ localPath: "path/from/attached/files" }]
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
