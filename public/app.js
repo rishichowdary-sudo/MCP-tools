@@ -1599,7 +1599,7 @@ async function sendMessage() {
                         .filter(result =>
                             result &&
                             !result.error &&
-                            (result.tool === 'download_drive_file' || result.tool === 'convert_file_to_google_doc' || result.tool === 'convert_file_to_google_sheet') &&
+                            (result.tool === 'download_drive_file' || result.tool === 'convert_file_to_google_doc' || result.tool === 'convert_file_to_google_sheet' || result.tool === 'gcs_download_object') &&
                             result.result &&
                             result.result.downloadUrl
                         );
@@ -2037,6 +2037,23 @@ function formatToolResults(results) {
                         ${actionRow(
                             actionLink({ href: downloadHref, label: 'Download File', variant: 'primary', download: downloadName }),
                             result.result.webViewLink ? actionLink({ href: result.result.webViewLink, label: 'Open in Drive', variant: 'secondary' }) : ''
+                        )}
+                    </div>
+                `;
+                // GCS download payload
+            } else if (result.tool === 'gcs_download_object' && result.result.downloadUrl) {
+                const downloadHref = result.result.downloadUrl;
+                const downloadName = result.result.downloadName || result.result.name || 'download';
+                const sizeLabel = result.result.size ? `${(Number(result.result.size) / 1024).toFixed(1)} KB` : '';
+                content = `
+                    <div class="email-card vertical">
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(result.result.name || 'GCS object')}</span>
+                            ${sizeLabel ? `<span class="email-card-date">${escapeHtml(sizeLabel)}</span>` : ''}
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(result.result.bucket || '')}</code></div>
+                        ${actionRow(
+                            actionLink({ href: downloadHref, label: 'Download File', variant: 'primary', download: downloadName })
                         )}
                     </div>
                 `;
