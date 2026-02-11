@@ -1985,9 +1985,10 @@ async function createEvent({ calendarId = 'primary', summary, description, locat
     const event = { summary };
     if (description) event.description = description;
     if (location) event.location = location;
-    if (startDateTime) event.start = { dateTime: startDateTime, timeZone: timeZone || 'UTC' };
+    const defaultTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    if (startDateTime) event.start = { dateTime: startDateTime, timeZone: timeZone || defaultTz };
     else if (startDate) event.start = { date: startDate };
-    if (endDateTime) event.end = { dateTime: endDateTime, timeZone: timeZone || 'UTC' };
+    if (endDateTime) event.end = { dateTime: endDateTime, timeZone: timeZone || defaultTz };
     else if (endDate) event.end = { date: endDate };
     if (attendees) {
         const resolvedAttendees = await normalizeEventAttendees(attendees);
@@ -2013,18 +2014,19 @@ async function createEvent({ calendarId = 'primary', summary, description, locat
 }
 
 // 3b. Create Google Meet event
-async function createMeetEvent({ calendarId = 'primary', summary, description, startDateTime, endDateTime, attendees = [], timeZone = 'UTC' }) {
+async function createMeetEvent({ calendarId = 'primary', summary, description, startDateTime, endDateTime, attendees = [], timeZone }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
     if (!summary || !startDateTime || !endDateTime) {
         throw new Error('summary, startDateTime, and endDateTime are required to create a Meet event');
     }
 
+    const effectiveTz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     const resolvedAttendees = await normalizeEventAttendees(attendees);
     const requestBody = {
         summary,
         description,
-        start: { dateTime: startDateTime, timeZone },
-        end: { dateTime: endDateTime, timeZone },
+        start: { dateTime: startDateTime, timeZone: effectiveTz },
+        end: { dateTime: endDateTime, timeZone: effectiveTz },
         attendees: resolvedAttendees.map(email => ({ email })),
         conferenceData: {
             createRequest: {
@@ -6554,6 +6556,7 @@ Total Tools Available: ${toolCount}
 ## TOOL USAGE TIPS:
 - Gmail: search_emails supports full Gmail query syntax (from:, to:, subject:, is:unread, has:attachment, etc.)
 - Calendar: Use list_events with timeMin/timeMax for date ranges. Use create_meet_event or create_event with createMeetLink=true for Google Meet.
+- Calendar timezone: ALWAYS pass the timeZone parameter when creating or updating calendar events. CRITICAL: When the user says a time like "12pm", use that time DIRECTLY in the ISO string (e.g. "2026-02-11T12:00:00") — do NOT convert it to UTC. The timeZone parameter tells the API what timezone the datetime is in. Example: if user says "12pm to 1pm" and timezone is Asia/Kolkata, use startDateTime="2026-02-11T12:00:00" endDateTime="2026-02-11T13:00:00" timeZone="Asia/Kolkata". NEVER subtract or add UTC offsets to the time the user specified.
 - Calendar attendees: If the user gives a person name (not exact email), resolve it from Gmail history first and do not use placeholder domains like example.com.
 - Email recipients: For send_email/create_draft/forward_email and Outlook equivalents, resolve person names from Gmail history first. If an email cannot be resolved, ask the user for the exact email address and do not use placeholder domains (example.com/test.com/etc.).
 - Email formatting: Use \n for line breaks in email body (will be converted to proper HTML breaks). For professional emails, include proper greetings, spacing, and signatures.
@@ -6584,13 +6587,15 @@ Total Tools Available: ${toolCount}
     const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
 - Current timestamp (UTC): ${dateContext.nowIso}
 - Local timezone: ${dateContext.timeZone}
+- Local time now: ${new Date().toLocaleString('en-US', { timeZone: dateContext.timeZone, hour12: true, hour: 'numeric', minute: '2-digit' })}
 - Today: ${dateContext.today} (${dateContext.weekday})
 - Tomorrow: ${dateContext.tomorrow}
 - Yesterday: ${dateContext.yesterday}
 
 Rules:
 - Resolve relative date words (today, tomorrow, yesterday, this week, next week) using this context.
-- For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events, get_free_busy, check_person_availability, and find_common_free_slots.`;
+- For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events, get_free_busy, check_person_availability, and find_common_free_slots.
+- IMPORTANT: When creating calendar events, use the user's spoken time directly in the ISO datetime string WITHOUT converting to UTC. Pass the timeZone parameter separately. For example, "meeting at 3pm" with timezone Asia/Kolkata → startDateTime: "2026-02-11T15:00:00", timeZone: "Asia/Kolkata".`;
 
     return `${basePrompt}\n\n${dateContextPrompt}`;
 }
@@ -6802,8 +6807,10 @@ ${attachedFilesBlock}
     const allToolResults = [];
     const allSteps = [];
     const MAX_TURNS = 15;
+    const MAX_DUPLICATE_CALLS = 3;
     let turnCount = 0;
     let activeModel = OPENAI_MODEL;
+    const toolCallCounts = new Map(); // track duplicate tool calls
 
     // Continue with tool execution loop (non-streaming for tool calls)
     while (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && turnCount < MAX_TURNS) {
@@ -6817,6 +6824,17 @@ ${attachedFilesBlock}
                 args = parseToolCallArguments(toolCall.function.arguments);
             } catch (error) {
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
+            }
+
+            // Detect duplicate tool calls
+            const callKey = `${toolName}:${JSON.stringify(args)}`;
+            const callCount = (toolCallCounts.get(callKey) || 0) + 1;
+            toolCallCounts.set(callKey, callCount);
+            if (callCount > MAX_DUPLICATE_CALLS) {
+                const errMsg = `Tool '${toolName}' called ${callCount} times with identical arguments. Stopping to avoid infinite loop. Please try a different approach or ask the user for clarification.`;
+                if (onToolStart) onToolStart(toolName, args, turnCount);
+                if (onToolEnd) onToolEnd(toolName, errMsg, false, turnCount);
+                return { toolCall, error: errMsg };
             }
 
             if (onToolStart) onToolStart(toolName, args, turnCount);
@@ -7155,7 +7173,9 @@ ${attachedFilesBlock}
     const allToolResults = [];
     const allSteps = [];
     const MAX_TURNS = 15;
+    const MAX_DUPLICATE_CALLS = 3;
     let turnCount = 0;
+    const toolCallCounts = new Map();
 
     while (assistantMessage.tool_calls && turnCount < MAX_TURNS) {
         turnCount += 1;
@@ -7169,7 +7189,13 @@ ${attachedFilesBlock}
             } catch (error) {
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
             }
-
+            // Detect duplicate tool calls
+            const callKey = `${toolName}:${JSON.stringify(args)}`;
+            const callCount = (toolCallCounts.get(callKey) || 0) + 1;
+            toolCallCounts.set(callKey, callCount);
+            if (callCount > MAX_DUPLICATE_CALLS) {
+                return { toolCall, error: `Tool '${toolName}' called ${callCount} times with identical arguments. Stopping to avoid infinite loop. Please try a different approach or ask the user for clarification.` };
+            }
             const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
             try {
                 const result = await executeTool(toolName, args);
