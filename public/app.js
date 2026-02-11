@@ -1862,6 +1862,30 @@ function applyInlineFormatting(text) {
 
 // Format tool results
 function formatToolResults(results) {
+    const truncateText = (value, max = 500) => {
+        const text = String(value || '');
+        if (text.length <= max) return text;
+        return `${text.slice(0, max)}...`;
+    };
+
+    const formatPre = (value, extraClass = '') => {
+        const className = ['result-pre', extraClass].filter(Boolean).join(' ');
+        return `<pre class="${className}">${escapeHtml(String(value || ''))}</pre>`;
+    };
+
+    const actionLink = ({ href, label, variant = 'primary', download }) => {
+        if (!href || !label) return '';
+        const linkClass = variant === 'secondary' ? 'result-link result-link-secondary' : 'result-link result-link-primary';
+        const downloadAttr = download ? ` download="${escapeHtml(download)}"` : '';
+        return `<a href="${escapeHtml(href)}"${downloadAttr} target="_blank" rel="noopener noreferrer" class="${linkClass}">${escapeHtml(label)}</a>`;
+    };
+
+    const actionRow = (...links) => {
+        const valid = links.filter(Boolean);
+        if (!valid.length) return '';
+        return `<div class="result-actions">${valid.join('')}</div>`;
+    };
+
     return results.map(result => {
         const isError = result.error;
         const icon = isError ? '&#10007;' : '&#10003;';
@@ -1902,7 +1926,7 @@ function formatToolResults(results) {
                         </div>
                         <div class="email-card-from">From: ${escapeHtml(result.result.from || '')}</div>
                         ${result.result.hasAttachments ? `<div class="email-card-attachments">${result.result.attachments.length} attachment(s)</div>` : ''}
-                        <p style="margin-top: 0.5rem; white-space: pre-wrap; font-size:0.85rem; color:var(--text-secondary)">${escapeHtml((result.result.body || '').slice(0, 500))}${(result.result.body || '').length > 500 ? '...' : ''}</p>
+                        <p class="result-body-preview">${escapeHtml(truncateText(result.result.body || '', 500))}</p>
                     </div>
                 `;
                 // Labels
@@ -1934,7 +1958,7 @@ function formatToolResults(results) {
                 content = result.result.messages.map(msg => `
                     <div class="email-card thread-msg vertical">
                         <div class="email-card-header">
-                            <span class="email-card-from" style="font-weight:600">${escapeHtml(msg.sender || '')}</span>
+                            <span class="email-card-from result-strong">${escapeHtml(msg.sender || '')}</span>
                             <span class="email-card-date">${formatDate(msg.createTime)}</span>
                         </div>
                         <div class="email-card-snippet">${escapeHtml(msg.text || '')}</div>
@@ -1945,10 +1969,10 @@ function formatToolResults(results) {
                 content = result.result.messages.map(msg => `
                     <div class="email-card thread-msg vertical">
                         <div class="email-card-header">
-                            <span class="email-card-from" style="font-weight:600">${escapeHtml(msg.from || '')}</span>
+                            <span class="email-card-from result-strong">${escapeHtml(msg.from || '')}</span>
                             <span class="email-card-date">${formatDate(msg.date)}</span>
                         </div>
-                        <p style="margin-top:0.25rem;font-size:0.85rem;color:var(--text-secondary)">${escapeHtml((msg.body || msg.snippet || '').slice(0, 200))}...</p>
+                        <p class="result-line-preview">${escapeHtml(truncateText(msg.body || msg.snippet || '', 200))}</p>
                     </div>
                 `).join('');
                 // Attachments
@@ -1956,9 +1980,9 @@ function formatToolResults(results) {
                 content = result.result.attachments.map(a => `
                     <div class="attachment-card">
                         <span class="attachment-icon">&#128206;</span>
-                        <div>
-                            <div style="font-weight:500">${escapeHtml(a.filename || a.name || 'attachment')}</div>
-                            <div style="font-size:0.8rem;color:var(--text-muted)">${escapeHtml(a.mimeType || a.contentType || 'unknown')} &middot; ${formatSize(a.size)}</div>
+                        <div class="attachment-meta">
+                            <div class="attachment-title">${escapeHtml(a.filename || a.name || 'attachment')}</div>
+                            <div class="attachment-subtext">${escapeHtml(a.mimeType || a.contentType || 'unknown')} &middot; ${formatSize(a.size)}</div>
                         </div>
                     </div>
                 `).join('');
@@ -1981,7 +2005,7 @@ function formatToolResults(results) {
                     <div class="email-card vertical">
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(c.summary || c.id)}</span>
-                            ${c.primary ? '<span style="color:var(--accent-primary);font-size:0.75rem">Primary</span>' : ''}
+                            ${c.primary ? '<span class="result-pill">Primary</span>' : ''}
                         </div>
                         ${c.description ? `<div class="email-card-snippet">${escapeHtml(c.description)}</div>` : ''}
                     </div>
@@ -2000,8 +2024,8 @@ function formatToolResults(results) {
                 `).join('');
                 // Drive download payload
             } else if (result.tool === 'download_drive_file' && result.result.downloadUrl) {
-                const downloadHref = escapeHtml(result.result.downloadUrl);
-                const downloadName = escapeHtml(result.result.downloadName || result.result.name || 'download');
+                const downloadHref = result.result.downloadUrl;
+                const downloadName = result.result.downloadName || result.result.name || 'download';
                 const formatLabel = escapeHtml(result.result.format || 'raw');
                 content = `
                     <div class="email-card vertical">
@@ -2010,10 +2034,10 @@ function formatToolResults(results) {
                             <span class="email-card-date">${formatLabel.toUpperCase()}</span>
                         </div>
                         <div class="email-card-from"><code>${escapeHtml(result.result.fileId || '')}</code></div>
-                        <div class="email-card-snippet" style="margin-top:0.6rem;display:flex;gap:0.6rem;flex-wrap:wrap">
-                            <a href="${downloadHref}" download="${downloadName}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;text-decoration:none">Download File</a>
-                            ${result.result.webViewLink ? `<a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--text-secondary);text-decoration:none">Open in Drive</a>` : ''}
-                        </div>
+                        ${actionRow(
+                            actionLink({ href: downloadHref, label: 'Download File', variant: 'primary', download: downloadName }),
+                            result.result.webViewLink ? actionLink({ href: result.result.webViewLink, label: 'Open in Drive', variant: 'secondary' }) : ''
+                        )}
                     </div>
                 `;
                 // Extracted Drive text
@@ -2025,7 +2049,7 @@ function formatToolResults(results) {
                             <span class="email-card-subject">${escapeHtml(result.result.name || 'Extracted text')}</span>
                             <span class="email-card-date">${escapeHtml(result.result.extractionMethod || '')}</span>
                         </div>
-                        <pre style="max-height:260px;overflow:auto;white-space:pre-wrap">${escapeHtml(preview)}</pre>
+                        ${formatPre(preview, 'result-pre-tall')}
                     </div>
                 `;
                 // Appended text to Drive document
@@ -2037,10 +2061,10 @@ function formatToolResults(results) {
                             <span class="email-card-date">${result.result.usedDocsApi ? 'Docs API' : 'Drive Fallback'}</span>
                         </div>
                         <div class="email-card-from"><code>${escapeHtml(result.result.fileId || '')}</code></div>
-                        <div class="email-card-snippet" style="margin-top:0.6rem">
+                        <div class="email-card-snippet result-note">
                             ${result.result.message ? escapeHtml(result.result.message) : 'Text appended successfully.'}
                         </div>
-                        ${result.result.webViewLink ? `<div class="email-card-snippet" style="margin-top:0.6rem"><a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:none">Open in Drive</a></div>` : ''}
+                        ${result.result.webViewLink ? actionRow(actionLink({ href: result.result.webViewLink, label: 'Open in Drive', variant: 'primary' })) : ''}
                     </div>
                 `;
                 // Converted file to Google Doc
@@ -2052,10 +2076,17 @@ function formatToolResults(results) {
                             <span class="email-card-date">Google Doc</span>
                         </div>
                         <div class="email-card-from">Source: ${escapeHtml(result.result.sourceName || result.result.sourceFileId || '')}</div>
-                        <div class="email-card-snippet" style="margin-top:0.6rem;display:flex;gap:0.6rem;flex-wrap:wrap">
-                            ${result.result.webViewLink ? `<a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;text-decoration:none">Open Converted Doc</a>` : ''}
-                            ${result.result.downloadUrl ? `<a href="${escapeHtml(result.result.downloadUrl)}" download="${escapeHtml(result.result.downloadName || result.result.name || 'converted-document')}" target="_blank" rel="noopener noreferrer" style="color:var(--text-secondary);text-decoration:none">Download Converted File</a>` : ''}
-                        </div>
+                        ${actionRow(
+                            result.result.webViewLink ? actionLink({ href: result.result.webViewLink, label: 'Open Converted Doc', variant: 'primary' }) : '',
+                            result.result.downloadUrl
+                                ? actionLink({
+                                    href: result.result.downloadUrl,
+                                    label: 'Download Converted File',
+                                    variant: 'secondary',
+                                    download: result.result.downloadName || result.result.name || 'converted-document'
+                                })
+                                : ''
+                        )}
                     </div>
                 `;
                 // Converted file to Google Sheet
@@ -2067,10 +2098,17 @@ function formatToolResults(results) {
                             <span class="email-card-date">Google Sheet</span>
                         </div>
                         <div class="email-card-from">Source: ${escapeHtml(result.result.sourceName || result.result.sourceFileId || '')}</div>
-                        <div class="email-card-snippet" style="margin-top:0.6rem;display:flex;gap:0.6rem;flex-wrap:wrap">
-                            ${result.result.webViewLink ? `<a href="${escapeHtml(result.result.webViewLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;text-decoration:none">Open Converted Sheet</a>` : ''}
-                            ${result.result.downloadUrl ? `<a href="${escapeHtml(result.result.downloadUrl)}" download="${escapeHtml(result.result.downloadName || result.result.name || 'converted-sheet')}" target="_blank" rel="noopener noreferrer" style="color:var(--text-secondary);text-decoration:none">Download Converted File</a>` : ''}
-                        </div>
+                        ${actionRow(
+                            result.result.webViewLink ? actionLink({ href: result.result.webViewLink, label: 'Open Converted Sheet', variant: 'primary' }) : '',
+                            result.result.downloadUrl
+                                ? actionLink({
+                                    href: result.result.downloadUrl,
+                                    label: 'Download Converted File',
+                                    variant: 'secondary',
+                                    download: result.result.downloadName || result.result.name || 'converted-sheet'
+                                })
+                                : ''
+                        )}
                     </div>
                 `;
                 // Spreadsheet list
@@ -2091,7 +2129,7 @@ function formatToolResults(results) {
                 // Sheet values
             } else if (result.result.values && Array.isArray(result.result.values)) {
                 const preview = result.result.values.slice(0, 20);
-                content = `<pre style="font-size:0.8rem;max-height:180px;overflow:auto">${escapeHtml(JSON.stringify(preview, null, 2))}</pre>`;
+                content = formatPre(JSON.stringify(preview, null, 2), 'result-pre-compact');
                 // GitHub repos
             } else if (result.result.repos && Array.isArray(result.result.repos)) {
                 content = result.result.repos.map(r => `
@@ -2101,8 +2139,8 @@ function formatToolResults(results) {
                             <span class="email-card-date">${r.language || ''}</span>
                         </div>
                         ${r.description ? `<div class="email-card-snippet">${escapeHtml(r.description.slice(0, 100))}</div>` : ''}
-                        <div class="email-card-from" style="margin-top:0.25rem">&#11088; ${r.stars || 0} &middot; &#128204; ${r.forks || 0}${r.private ? ' &middot; Private' : ''}</div>
-                        ${r.url ? `<div class="email-card-snippet" style="margin-top:0.5rem"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);text-decoration:none;font-weight:600">Go to Repo &rarr;</a></div>` : ''}
+                        <div class="email-card-from result-metrics">&#11088; ${r.stars || 0} &middot; &#128204; ${r.forks || 0}${r.private ? ' &middot; Private' : ''}</div>
+                        ${r.url ? actionRow(actionLink({ href: r.url, label: 'Go to Repo', variant: 'primary' })) : ''}
                     </div>
                 `).join('');
                 // GitHub issues
@@ -2114,7 +2152,7 @@ function formatToolResults(results) {
                             <span class="email-card-date">${i.state}</span>
                         </div>
                         <div class="email-card-from">by ${escapeHtml(i.user || '')} &middot; ${i.comments || 0} comments</div>
-                        ${i.labels && i.labels.length > 0 ? `<div class="labels-list" style="margin-top:0.25rem">${i.labels.map(l => `<span class="label-chip">${escapeHtml(l)}</span>`).join('')}</div>` : ''}
+                        ${i.labels && i.labels.length > 0 ? `<div class="labels-list compact">${i.labels.map(l => `<span class="label-chip">${escapeHtml(l)}</span>`).join('')}</div>` : ''}
                     </div>
                 `).join('');
                 // GitHub PRs
@@ -2136,7 +2174,7 @@ function formatToolResults(results) {
                 content = result.result.commits.map(c => `
                     <div class="email-card vertical">
                         <div class="email-card-header">
-                            <code style="font-size:0.8rem;color:var(--accent-secondary)">${escapeHtml(c.sha)}</code>
+                            <code class="result-code-highlight">${escapeHtml(c.sha)}</code>
                             <span class="email-card-date">${formatDate(c.date)}</span>
                         </div>
                         <div class="email-card-from">${escapeHtml((c.message || '').split('\n')[0])}</div>
@@ -2168,17 +2206,18 @@ function formatToolResults(results) {
                 // Generic JSON display
             } else {
                 const summary = result.result.message || JSON.stringify(result.result, null, 2);
-                content = `<pre style="font-size:0.8rem;max-height:150px;overflow:auto">${escapeHtml(typeof summary === 'string' ? summary : JSON.stringify(summary, null, 2))}</pre>`;
+                content = formatPre(typeof summary === 'string' ? summary : JSON.stringify(summary, null, 2), 'result-pre-compact');
             }
         } else if (result.error) {
-            content = `<p style="color: #ef4444;">${escapeHtml(result.error)}</p>`;
+            content = `<p class="result-error-text">${escapeHtml(result.error)}</p>`;
         }
 
         return `
             <div class="tool-result ${isError ? 'tool-result-error' : ''}">
                 <div class="tool-result-header">
                     <span class="tool-result-icon">${toolIcon}</span>
-                    ${icon} ${title}
+                    <span class="tool-result-title">${title}</span>
+                    <span class="tool-result-status ${isError ? 'is-error' : 'is-success'}">${icon}</span>
                 </div>
                 ${content}
             </div>
