@@ -4621,9 +4621,27 @@ async function gcsUploadObject({ bucket, name, content, contentType }) {
     return { uploaded: true, bucket, name: res.data.name, size: res.data.size, contentType: res.data.contentType };
 }
 
-async function gcsDownloadObject({ bucket, name }) {
-    const res = await gcsClient.objects.get({ bucket, object: name, alt: 'media' }, { responseType: 'text' });
-    return { bucket, name, content: res.data };
+async function gcsDownloadObject({ bucket, name, filename }) {
+    // Get object metadata to verify it exists and get properties
+    const meta = await gcsClient.objects.get({ bucket, object: name });
+    const size = meta.data.size ? Number(meta.data.size) : null;
+    const contentType = meta.data.contentType || 'application/octet-stream';
+
+    // Build download URL that points to our Express endpoint
+    const encodedBucket = encodeURIComponent(bucket);
+    const encodedName = encodeURIComponent(name);
+    const downloadName = filename || name.split('/').pop(); // Use last part of object name as filename
+    const downloadUrl = `/api/gcs/download/${encodedBucket}/${encodedName}?filename=${encodeURIComponent(downloadName)}`;
+
+    return {
+        bucket,
+        name,
+        size,
+        contentType,
+        downloadName,
+        downloadUrl,
+        message: `Download ready for "${name}" from bucket "${bucket}". Use the provided link to save the file.`
+    };
 }
 
 async function gcsDeleteObject({ bucket, name }) {
@@ -5144,7 +5162,7 @@ const gcsTools = [
     { type: "function", function: { name: "gcs_delete_bucket", description: "Delete a GCS bucket (must be empty).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
     { type: "function", function: { name: "gcs_list_objects", description: "List objects in a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Filter objects by prefix (folder path)" }, maxResults: { type: "integer", description: "Maximum number of objects to return" } }, required: ["bucket"] } } },
     { type: "function", function: { name: "gcs_upload_object", description: "Upload text or JSON content to a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, content: { type: "string", description: "Content to upload" }, contentType: { type: "string", description: "MIME type (default application/octet-stream)" } }, required: ["bucket", "name", "content"] } } },
-    { type: "function", function: { name: "gcs_download_object", description: "Download/read the content of an object from a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_download_object", description: "Download/read the content of an object from a GCS bucket. Returns a download URL for the file.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, filename: { type: "string", description: "Optional: desired filename for download (defaults to object name)" } }, required: ["bucket", "name"] } } },
     { type: "function", function: { name: "gcs_delete_object", description: "Delete an object from a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
     { type: "function", function: { name: "gcs_copy_object", description: "Copy an object between buckets or within a bucket.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (default same as source)" }, destObject: { type: "string", description: "Destination object name (default same as source)" } }, required: ["sourceBucket", "sourceObject"] } } },
     { type: "function", function: { name: "gcs_get_object_metadata", description: "Get metadata for an object in a GCS bucket (size, content type, timestamps).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } }
@@ -5734,6 +5752,48 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
             return res.status(401).json({ error: permissionError });
         }
         return res.status(500).json({ error: error.message || 'Failed to download Drive file' });
+    }
+});
+
+// GCS download endpoint
+app.get('/api/gcs/download/:bucket/:objectName(*)', async (req, res) => {
+    try {
+        if (!gcsAuthenticated || !gcsClient) {
+            return res.status(401).json({ error: 'GCS not connected' });
+        }
+        const bucket = String(req.params.bucket || '').trim();
+        const objectName = String(req.params.objectName || '').trim();
+        if (!bucket || !objectName) {
+            return res.status(400).json({ error: 'bucket and objectName are required' });
+        }
+
+        const requestedFilename = String(req.query.filename || '').trim();
+
+        // Get object metadata
+        const meta = await gcsClient.objects.get({ bucket, object: objectName });
+        const contentType = meta.data.contentType || 'application/octet-stream';
+        const downloadName = requestedFilename || objectName.split('/').pop() || 'download';
+
+        // Download the file content
+        const fileResponse = await gcsClient.objects.get(
+            { bucket, object: objectName, alt: 'media' },
+            { responseType: 'arraybuffer' }
+        );
+        const payload = Buffer.from(fileResponse.data);
+
+        // Sanitize filename for Content-Disposition
+        const asciiFileName = downloadName
+            .replace(/[^\x20-\x7E]/g, '_')
+            .replace(/["\\]/g, '_');
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', String(payload.length));
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Content-Disposition', `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`);
+        return res.status(200).send(payload);
+    } catch (error) {
+        console.error('GCS download error:', error?.message || error);
+        return res.status(500).json({ error: error.message || 'Failed to download GCS object' });
     }
 });
 
