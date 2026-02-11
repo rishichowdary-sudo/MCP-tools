@@ -1506,81 +1506,145 @@ async function sendMessage() {
     sendBtn.disabled = true;
 
     addMessage('user', message);
-    const typingId = addTypingIndicator();
+
+    // Create assistant message bubble immediately for streaming
+    const assistantMsgDiv = document.createElement('div');
+    assistantMsgDiv.className = 'message assistant';
+    assistantMsgDiv.innerHTML = `
+        <div class="message-avatar">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="#6366f1" stroke-width="2" />
+                <path fill="none" stroke="#6366f1" stroke-width="2" d="M8 12l3 3 5-6" />
+            </svg>
+        </div>
+        <div class="message-content">
+            <div class="message-bubble">
+                <div class="streaming-text"></div>
+                <div class="streaming-tools"></div>
+            </div>
+        </div>
+    `;
+    chatMessages.appendChild(assistantMsgDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    const streamingText = assistantMsgDiv.querySelector('.streaming-text');
+    const streamingTools = assistantMsgDiv.querySelector('.streaming-tools');
+    let accumulatedText = '';
+    let steps = [];
+    let toolResults = [];
 
     turnsBadge.style.display = 'inline-flex';
     turnsCount.textContent = '...';
 
     try {
-        const response = await fetch('/api/chat', {
+        const response = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message, history: chatHistory })
         });
 
-        const data = await response.json();
-        removeTypingIndicator(typingId);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        if (data.error) {
-            addMessage('assistant', `<p style="color: #ef4444;">Error: ${escapeHtml(data.error)}</p>`, { allowHtml: true });
-            turnsBadge.style.display = 'none';
-            if (/maximum context length|too many tokens|context length/i.test(String(data.error))) {
-                chatHistory = chatHistory.slice(-6);
-                addMessage('assistant', '<p style="color: var(--text-secondary);">I trimmed old chat context. Please retry that request now.</p>', { allowHtml: true });
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                const eventMatch = line.match(/^event: (\w+)\ndata: (.+)$/s);
+                if (!eventMatch) continue;
+
+                const [, event, dataStr] = eventMatch;
+                const data = JSON.parse(dataStr);
+
+                if (event === 'text') {
+                    // Append text chunk in real-time
+                    accumulatedText += data.chunk;
+                    streamingText.innerHTML = formatResponse(accumulatedText);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                } else if (event === 'tool_start') {
+                    // Show tool execution indicator
+                    const toolId = `tool-${data.tool}-${data.turn}`;
+                    const toolDiv = document.createElement('div');
+                    toolDiv.id = toolId;
+                    toolDiv.className = 'tool-indicator executing';
+                    toolDiv.innerHTML = `<span class="tool-spinner">⟳</span> ${data.tool}...`;
+                    streamingTools.appendChild(toolDiv);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                } else if (event === 'tool_end') {
+                    // Update tool indicator to completed
+                    const toolId = `tool-${data.tool}-${data.turn}`;
+                    const toolDiv = document.getElementById(toolId);
+                    if (toolDiv) {
+                        toolDiv.className = `tool-indicator ${data.success ? 'success' : 'error'}`;
+                        toolDiv.innerHTML = `<span>${data.success ? '✓' : '✗'}</span> ${data.tool}`;
+                    }
+                    steps.push({ tool: data.tool, result: data.result, success: data.success, turn: data.turn });
+                } else if (event === 'done') {
+                    // Final result received
+                    if (data.turnsUsed > 0) {
+                        turnsCount.textContent = data.turnsUsed;
+                    } else {
+                        turnsBadge.style.display = 'none';
+                    }
+
+                    // Handle automatic downloads
+                    const automaticDownloads = (data.toolResults || [])
+                        .filter(result =>
+                            result &&
+                            !result.error &&
+                            (result.tool === 'download_drive_file' || result.tool === 'convert_file_to_google_doc' || result.tool === 'convert_file_to_google_sheet') &&
+                            result.result &&
+                            result.result.downloadUrl
+                        );
+                    for (const item of automaticDownloads) {
+                        triggerBrowserDownload(item.result.downloadUrl, item.result.downloadName || item.result.name || 'download');
+                    }
+
+                    // Clear temporary streaming elements and build final HTML
+                    streamingText.innerHTML = '';
+                    streamingTools.innerHTML = '';
+
+                    let finalHtml = '';
+                    if (data.steps && data.steps.length > 0) {
+                        finalHtml += formatStepsPipeline(data.steps);
+                    }
+
+                    const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_pull_requests', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
+                    const isListToolOnly = data.toolResults &&
+                        data.toolResults.length === 1 &&
+                        LIST_TOOLS.includes(data.toolResults[0].tool) &&
+                        data.toolResults[0].result;
+
+                    if (!isListToolOnly) {
+                        finalHtml += formatResponse(data.response);
+                    }
+
+                    if (data.toolResults && data.toolResults.length > 0) {
+                        finalHtml += `<div class="tool-results-stack">${formatToolResults(data.toolResults)}</div>`;
+                    }
+
+                    assistantMsgDiv.querySelector('.message-bubble').innerHTML = finalHtml;
+                    pushChatHistoryEntry('user', message);
+                    pushChatHistoryEntry('assistant', data.response || '');
+                } else if (event === 'error') {
+                    streamingText.innerHTML = `<p style="color: #ef4444;">Error: ${escapeHtml(data.error)}</p>`;
+                    turnsBadge.style.display = 'none';
+                }
             }
-        } else {
-            if (data.turnsUsed > 0) {
-                turnsCount.textContent = data.turnsUsed;
-            } else {
-                turnsBadge.style.display = 'none';
-            }
-
-            const automaticDownloads = (data.toolResults || [])
-                .filter(result =>
-                    result &&
-                    !result.error &&
-                    (result.tool === 'download_drive_file' || result.tool === 'convert_file_to_google_doc' || result.tool === 'convert_file_to_google_sheet') &&
-                    result.result &&
-                    result.result.downloadUrl
-                );
-            for (const item of automaticDownloads) {
-                triggerBrowserDownload(item.result.downloadUrl, item.result.downloadName || item.result.name || 'download');
-            }
-
-            let responseHtml = '';
-
-            if (data.steps && data.steps.length > 0) {
-                responseHtml += formatStepsPipeline(data.steps);
-            }
-
-            // Suppress text response for list-type tools (only show cards)
-            const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_pull_requests', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
-            const isListToolOnly = data.toolResults &&
-                data.toolResults.length === 1 &&
-                LIST_TOOLS.includes(data.toolResults[0].tool) &&
-                data.toolResults[0].result;
-
-            if (!isListToolOnly) {
-                responseHtml += formatResponse(data.response);
-            }
-
-            if (data.toolResults && data.toolResults.length > 0) {
-                responseHtml += `<div class="tool-results-stack">${formatToolResults(data.toolResults)}</div>`;
-            }
-
-            addMessage('assistant', responseHtml, { allowHtml: true });
-
-            pushChatHistoryEntry('user', message);
-            pushChatHistoryEntry('assistant', data.response || '');
         }
     } catch (error) {
-        console.error('Chat error:', error);
-        removeTypingIndicator(typingId);
+        console.error('Stream error:', error);
+        streamingText.innerHTML = `<p style="color: #ef4444;">Error: ${error.message || 'Failed to get response'}</p>`;
         turnsBadge.style.display = 'none';
-        addMessage('assistant', `<p style="color: #ef4444;">Error: ${error.message || 'Failed to get response'}</p>`, { allowHtml: true });
     } finally {
         sendBtn.disabled = false;
-        // Re-focus on input
         if (!isMobile()) {
             messageInput.focus();
         }

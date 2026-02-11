@@ -6294,7 +6294,8 @@ Total Tools Available: ${toolCount}
 - Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.
 - Google Docs: Use list_documents to find Docs by name. Use get_document_text to read content. Use create_document to create new docs. Use insert_text/append_text to add content. Use replace_text for find-and-replace. If Docs write scope is missing, use append_drive_document_text (or extract_drive_file_text + update_drive_file) as fallback.
 - Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
-- GCS (Cloud Storage): All GCS tools are prefixed with gcs_. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets.
+- GCS (Cloud Storage): All GCS tools are prefixed with gcs_. GCS buckets store raw objects/files separate from Google Drive. When the user mentions bucket names (e.g., "yikes-clickscan", "my-bucket"), always use gcs_list_objects NOT Drive tools. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets.
+- Service disambiguation: GCS bucket names are typically lowercase with hyphens (e.g., "yikes-clickscan", "my-data-bucket"). Google Drive folder names can have any casing/spaces. If a user refers to a hyphenated lowercase name that sounds like a bucket, try GCS first. If unsure, check both.
 
 ## FINAL RESPONSE QUALITY:
 - Provide a concise outcome summary of what was completed.
@@ -6314,6 +6315,332 @@ Rules:
 - For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events, get_free_busy, check_person_availability, and find_common_free_slots.`;
 
     return `${basePrompt}\n\n${dateContextPrompt}`;
+}
+
+// Streaming version with real-time callbacks
+async function runAgentConversationStreaming({ message, history = [], onTextChunk, onToolStart, onToolEnd }) {
+    if (!process.env.OPENAI_API_KEY) {
+        throw new Error('OpenAI API key missing');
+    }
+
+    const normalizeAssistantText = (content) => {
+        if (typeof content === 'string') return content.trim();
+        if (Array.isArray(content)) {
+            return content.map(part => {
+                if (typeof part === 'string') return part;
+                if (part && typeof part.text === 'string') return part.text;
+                return '';
+            }).join('\n').trim();
+        }
+        return '';
+    };
+
+    const safeJsonStringify = (value) => {
+        try {
+            return JSON.stringify(value);
+        } catch (error) {
+            return JSON.stringify({ error: 'Unable to serialize tool output', message: String(error?.message || error) });
+        }
+    };
+
+    const compactValueForModel = (value, depth = 0) => {
+        if (value === null || value === undefined) return value;
+        if (typeof value === 'string') {
+            return truncateText(value, MODEL_TOOL_VALUE_MAX_STRING_CHARS);
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') return value;
+        if (Array.isArray(value)) {
+            if (depth >= 4) return `[array(${value.length}) truncated]`;
+            const capped = value
+                .slice(0, MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS)
+                .map(item => compactValueForModel(item, depth + 1));
+            if (value.length > MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS) {
+                capped.push(`[${value.length - MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS} more items truncated]`);
+            }
+            return capped;
+        }
+        if (typeof value === 'object') {
+            if (depth >= 4) return '[object truncated]';
+            const entries = Object.entries(value);
+            const limitedEntries = entries.slice(0, MODEL_TOOL_VALUE_MAX_OBJECT_KEYS);
+            const out = {};
+            for (const [key, val] of limitedEntries) {
+                out[key] = compactValueForModel(val, depth + 1);
+            }
+            if (entries.length > MODEL_TOOL_VALUE_MAX_OBJECT_KEYS) {
+                out.__truncatedKeys = entries.length - MODEL_TOOL_VALUE_MAX_OBJECT_KEYS;
+            }
+            return out;
+        }
+        return truncateText(String(value), MODEL_TOOL_VALUE_MAX_STRING_CHARS);
+    };
+
+    const compactToolPayloadForModel = (payload) => {
+        const compacted = compactValueForModel(payload);
+        const json = safeJsonStringify(compacted);
+        if (json.length <= MODEL_TOOL_RESULT_MAX_CHARS) {
+            return compacted;
+        }
+        return {
+            summary: 'Tool output was too large and was compacted for model context.',
+            preview: truncateText(json, MODEL_TOOL_RESULT_MAX_CHARS)
+        };
+    };
+
+    const parseToolCallArguments = (rawArguments) => {
+        if (rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)) {
+            return rawArguments;
+        }
+        const raw = String(rawArguments || '').trim();
+        if (!raw) return {};
+        const candidates = [];
+        const pushCandidate = (value) => {
+            const normalized = String(value || '').trim();
+            if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+        };
+        pushCandidate(raw);
+        const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+        if (fenced && fenced[1]) pushCandidate(fenced[1]);
+        const latest = candidates[candidates.length - 1] || raw;
+        const firstBrace = latest.search(/[{\[]/);
+        const lastBrace = Math.max(latest.lastIndexOf('}'), latest.lastIndexOf(']'));
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+            pushCandidate(latest.slice(firstBrace, lastBrace + 1));
+        }
+        const quoteNormalized = (candidates[candidates.length - 1] || raw)
+            .replace(/[""]/g, '"')
+            .replace(/['']/g, "'");
+        pushCandidate(quoteNormalized);
+        pushCandidate(quoteNormalized.replace(/,\s*([}\]])/g, '$1'));
+        let lastError = null;
+        for (const candidate of candidates) {
+            try {
+                const parsed = JSON.parse(candidate);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    throw new Error('Tool arguments must be a JSON object.');
+                }
+                return parsed;
+            } catch (error) {
+                lastError = error;
+            }
+        }
+        throw new Error(`Invalid arguments JSON: ${lastError ? lastError.message : 'Unable to parse tool arguments'}`);
+    };
+
+    const toolContext = getConnectedToolContext();
+    const { selectedTools: availableTools, routingHints } = selectToolsForMessageIntent({
+        userMessage: message,
+        availableTools: toolContext.availableTools,
+        docsConnected: toolContext.docsConnected,
+        docsListOnlyConnected: toolContext.docsListOnlyConnected
+    });
+    const dateContext = getCurrentDateContext();
+    const systemPrompt = buildAgentSystemPrompt({
+        statusText: toolContext.statusText,
+        toolCount: availableTools.length,
+        dateContext
+    });
+    const routingHintBlock = routingHints.length > 0
+        ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
+        : '';
+    const enrichedUserMessage = `${message}
+${routingHintBlock}
+
+[Runtime Date Context]
+- Current timestamp (UTC): ${dateContext.nowIso}
+- Local timezone: ${dateContext.timeZone}
+- Today: ${dateContext.today}
+- Tomorrow: ${dateContext.tomorrow}
+- Yesterday: ${dateContext.yesterday}`;
+
+    const safeHistory = buildSafeChatHistory(history);
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        ...safeHistory,
+        { role: 'user', content: enrichedUserMessage }
+    ];
+    const toolChoice = availableTools.length > 0 ? 'auto' : undefined;
+
+    // Use OpenAI streaming for the first call
+    const request = {
+        model: OPENAI_MODEL,
+        messages,
+        temperature: OPENAI_TEMPERATURE,
+        stream: true
+    };
+    if (Array.isArray(availableTools) && availableTools.length > 0) {
+        request.tools = availableTools;
+        request.tool_choice = toolChoice || 'auto';
+        request.parallel_tool_calls = true;
+    }
+    if (OPENAI_MAX_OUTPUT_TOKENS) {
+        request.max_tokens = OPENAI_MAX_OUTPUT_TOKENS;
+    }
+
+    const stream = await openai.chat.completions.create(request);
+    let assistantMessage = { role: 'assistant', content: '', tool_calls: [] };
+    let currentToolCall = null;
+
+    // Process stream
+    for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        // Stream text content
+        if (delta.content) {
+            assistantMessage.content += delta.content;
+            if (onTextChunk) onTextChunk(delta.content);
+        }
+
+        // Collect tool calls
+        if (delta.tool_calls) {
+            for (const toolDelta of delta.tool_calls) {
+                if (toolDelta.index !== undefined) {
+                    if (!assistantMessage.tool_calls[toolDelta.index]) {
+                        assistantMessage.tool_calls[toolDelta.index] = {
+                            id: toolDelta.id || '',
+                            type: 'function',
+                            function: { name: '', arguments: '' }
+                        };
+                    }
+                    const toolCall = assistantMessage.tool_calls[toolDelta.index];
+                    if (toolDelta.id) toolCall.id = toolDelta.id;
+                    if (toolDelta.function?.name) toolCall.function.name += toolDelta.function.name;
+                    if (toolDelta.function?.arguments) toolCall.function.arguments += toolDelta.function.arguments;
+                }
+            }
+        }
+    }
+
+    // Clean up tool_calls array (remove empty entries)
+    assistantMessage.tool_calls = assistantMessage.tool_calls.filter(tc => tc && tc.function?.name);
+
+    const allToolResults = [];
+    const allSteps = [];
+    const MAX_TURNS = 15;
+    let turnCount = 0;
+    let activeModel = OPENAI_MODEL;
+
+    // Continue with tool execution loop (non-streaming for tool calls)
+    while (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && turnCount < MAX_TURNS) {
+        turnCount += 1;
+        messages.push(assistantMessage);
+
+        const toolPromises = assistantMessage.tool_calls.map(async (toolCall) => {
+            const toolName = toolCall.function.name;
+            let args;
+            try {
+                args = parseToolCallArguments(toolCall.function.arguments);
+            } catch (error) {
+                return { toolCall, error: `Invalid arguments: ${error.message}` };
+            }
+
+            if (onToolStart) onToolStart(toolName, args, turnCount);
+            const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
+            try {
+                const result = await executeTool(toolName, args);
+                step.result = result;
+                step.success = true;
+                if (onToolEnd) onToolEnd(toolName, result, true, turnCount);
+                return { toolCall, result, step };
+            } catch (error) {
+                step.error = error.message;
+                step.success = false;
+                if (onToolEnd) onToolEnd(toolName, error.message, false, turnCount);
+                return { toolCall, error: error.message, step };
+            }
+        });
+
+        const toolResults = await Promise.all(toolPromises);
+        for (const { toolCall, result, error, step } of toolResults) {
+            if (step) allSteps.push(step);
+            allToolResults.push(error
+                ? { tool: toolCall.function.name, error }
+                : { tool: toolCall.function.name, result: compactValueForModel(result) });
+
+            const toolPayloadForModel = compactToolPayloadForModel(error ? { error } : result);
+            messages.push({
+                role: 'tool',
+                tool_call_id: toolCall.id,
+                content: safeJsonStringify(toolPayloadForModel)
+            });
+        }
+
+        const userInputRequiredResult = toolResults.find(item => item?.error && shouldRequestUserInputForToolError(item.error));
+        if (userInputRequiredResult) {
+            return {
+                response: userInputRequiredResult.error,
+                toolResults: allToolResults,
+                steps: allSteps,
+                turnsUsed: turnCount,
+                model: activeModel
+            };
+        }
+
+        // Next turn - use streaming again
+        const nextRequest = {
+            model: OPENAI_MODEL,
+            messages,
+            temperature: OPENAI_TEMPERATURE,
+            stream: true
+        };
+        if (Array.isArray(availableTools) && availableTools.length > 0) {
+            nextRequest.tools = availableTools;
+            nextRequest.tool_choice = toolChoice || 'auto';
+            nextRequest.parallel_tool_calls = true;
+        }
+        if (OPENAI_MAX_OUTPUT_TOKENS) {
+            nextRequest.max_tokens = OPENAI_MAX_OUTPUT_TOKENS;
+        }
+
+        const nextStream = await openai.chat.completions.create(nextRequest);
+        assistantMessage = { role: 'assistant', content: '', tool_calls: [] };
+
+        for await (const chunk of nextStream) {
+            const delta = chunk.choices?.[0]?.delta;
+            if (!delta) continue;
+            if (delta.content) {
+                assistantMessage.content += delta.content;
+                if (onTextChunk) onTextChunk(delta.content);
+            }
+            if (delta.tool_calls) {
+                for (const toolDelta of delta.tool_calls) {
+                    if (toolDelta.index !== undefined) {
+                        if (!assistantMessage.tool_calls[toolDelta.index]) {
+                            assistantMessage.tool_calls[toolDelta.index] = {
+                                id: toolDelta.id || '',
+                                type: 'function',
+                                function: { name: '', arguments: '' }
+                            };
+                        }
+                        const toolCall = assistantMessage.tool_calls[toolDelta.index];
+                        if (toolDelta.id) toolCall.id = toolDelta.id;
+                        if (toolDelta.function?.name) toolCall.function.name += toolDelta.function.name;
+                        if (toolDelta.function?.arguments) toolCall.function.arguments += toolDelta.function.arguments;
+                    }
+                }
+            }
+        }
+
+        assistantMessage.tool_calls = assistantMessage.tool_calls.filter(tc => tc && tc.function?.name);
+    }
+
+    let finalResponse = normalizeAssistantText(assistantMessage.content);
+    if (turnCount >= MAX_TURNS && assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+        finalResponse += '\n\n(Reached maximum steps for this request. Some operations may still be pending.)';
+    }
+    if (!finalResponse && allToolResults.length > 0) {
+        finalResponse = 'Completed the requested workflow. See the tool results for details.';
+    }
+    finalResponse = truncateText(finalResponse, ASSISTANT_RESPONSE_MAX_CHARS);
+
+    return {
+        response: finalResponse,
+        toolResults: allToolResults,
+        steps: allSteps,
+        turnsUsed: turnCount,
+        model: activeModel
+    };
 }
 
 async function runAgentConversation({ message, history = [] }) {
@@ -6719,6 +7046,46 @@ app.get('/api/gmail/message/:id', async (req, res) => {
     }
 });
 
+// Streaming chat endpoint (Server-Sent Events)
+app.post('/api/chat/stream', async (req, res) => {
+    const { message, history = [] } = req.body;
+    try {
+        if (typeof message !== 'string' || !message.trim()) {
+            return res.status(400).json({ error: 'message must be a non-empty string' });
+        }
+
+        // Set up SSE headers
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        const sendEvent = (event, data) => {
+            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+
+        const safeHistory = buildSafeChatHistory(history);
+
+        // Run agent with streaming callbacks
+        const result = await runAgentConversationStreaming({
+            message,
+            history: safeHistory,
+            onTextChunk: (chunk) => sendEvent('text', { chunk }),
+            onToolStart: (tool, args, turn) => sendEvent('tool_start', { tool, args, turn }),
+            onToolEnd: (tool, result, success, turn) => sendEvent('tool_end', { tool, result, success, turn })
+        });
+
+        // Send final result
+        sendEvent('done', result);
+        res.end();
+    } catch (error) {
+        console.error('Stream chat error:', error);
+        res.write(`event: error\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
+        res.end();
+    }
+});
+
+// Non-streaming chat endpoint (legacy, for backward compatibility)
 app.post('/api/chat', async (req, res) => {
     const { message, history = [] } = req.body;
     try {
