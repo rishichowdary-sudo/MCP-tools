@@ -1381,6 +1381,109 @@ body {
     animation: pulse 1.5s infinite;
 }
 
+.attach-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--glass-border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-normal);
+    flex-shrink: 0;
+    margin-right: auto;
+}
+
+.attach-btn:hover {
+    background: var(--glass-bg);
+    border-color: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+.attach-btn.has-files {
+    background: rgba(99, 102, 241, 0.2);
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+/* Attached Files Preview */
+.attached-files-preview {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+}
+
+.attached-file-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+}
+
+.attached-file-item:last-child {
+    margin-bottom: 0;
+}
+
+.attached-file-icon {
+    width: 32px;
+    height: 32px;
+    background: rgba(99, 102, 241, 0.2);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent-primary);
+    flex-shrink: 0;
+}
+
+.attached-file-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.attached-file-name {
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.attached-file-size {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 0.125rem;
+}
+
+.attached-file-remove {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.attached-file-remove:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: var(--error);
+    color: var(--error);
+}
+
 .send-btn {
     width: 48px;
     height: 48px;
