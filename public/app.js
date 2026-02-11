@@ -3,6 +3,9 @@ const chatMessages = document.getElementById('chatMessages');
 const messageInput = document.getElementById('messageInput');
 const micBtn = document.getElementById('micBtn');
 const sendBtn = document.getElementById('sendBtn');
+const attachBtn = document.getElementById('attachBtn');
+const fileInput = document.getElementById('fileInput');
+const attachedFilesPreview = document.getElementById('attachedFilesPreview');
 const gmailNavItem = document.getElementById('gmailNavItem');
 const calendarNavItem = document.getElementById('calendarNavItem');
 const gchatNavItem = document.getElementById('gchatNavItem');
@@ -1496,6 +1499,118 @@ async function runTimerTaskNow(taskId) {
     }
 }
 
+// ============================================================
+//  FILE UPLOAD LOGIC
+// ============================================================
+
+let attachedFiles = []; // Array of { fileId, name, size, mimeType }
+
+// Handle attach button click
+attachBtn.addEventListener('click', () => {
+    fileInput.click();
+});
+
+// Handle file selection
+fileInput.addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    try {
+        // Upload files to server
+        const formData = new FormData();
+        files.forEach(file => {
+            formData.append('files', file);
+        });
+
+        const response = await fetch('/api/upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to upload files');
+        }
+
+        const data = await response.json();
+
+        // Add uploaded files to attachedFiles array
+        attachedFiles.push(...data.files);
+
+        // Update UI
+        updateAttachedFilesUI();
+
+        // Clear file input
+        fileInput.value = '';
+    } catch (error) {
+        console.error('Upload error:', error);
+        alert('Failed to upload files. Please try again.');
+    }
+});
+
+// Update attached files UI
+function updateAttachedFilesUI() {
+    if (attachedFiles.length === 0) {
+        attachedFilesPreview.style.display = 'none';
+        attachBtn.classList.remove('has-files');
+        attachedFilesPreview.innerHTML = '';
+        return;
+    }
+
+    attachBtn.classList.add('has-files');
+    attachedFilesPreview.style.display = 'block';
+
+    attachedFilesPreview.innerHTML = attachedFiles.map((file, index) => `
+        <div class="attached-file-item" data-index="${index}">
+            <div class="attached-file-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                    <polyline points="13 2 13 9 20 9"/>
+                </svg>
+            </div>
+            <div class="attached-file-info">
+                <div class="attached-file-name">${escapeHtml(file.name)}</div>
+                <div class="attached-file-size">${formatFileSize(file.size)}</div>
+            </div>
+            <button class="attached-file-remove" data-file-id="${file.fileId}" title="Remove file">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+            </button>
+        </div>
+    `).join('');
+
+    // Add remove button event listeners
+    attachedFilesPreview.querySelectorAll('.attached-file-remove').forEach(btn => {
+        btn.addEventListener('click', () => removeAttachedFile(btn.dataset.fileId));
+    });
+}
+
+// Remove attached file
+async function removeAttachedFile(fileId) {
+    try {
+        // Delete from server
+        await fetch(`/api/upload/${fileId}`, {
+            method: 'DELETE'
+        });
+
+        // Remove from local array
+        attachedFiles = attachedFiles.filter(f => f.fileId !== fileId);
+
+        // Update UI
+        updateAttachedFilesUI();
+    } catch (error) {
+        console.error('Failed to remove file:', error);
+    }
+}
+
+// Format file size helper
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
 // Send message
 async function sendMessage() {
     const message = messageInput.value.trim();
@@ -1537,10 +1652,17 @@ async function sendMessage() {
     turnsCount.textContent = '...';
 
     try {
+        // Get file IDs from attached files
+        const fileIds = attachedFiles.map(f => f.fileId);
+
         const response = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, history: chatHistory })
+            body: JSON.stringify({
+                message,
+                history: chatHistory,
+                attachedFiles: fileIds
+            })
         });
 
         const reader = response.body.getReader();
@@ -1644,6 +1766,10 @@ async function sendMessage() {
         streamingText.innerHTML = `<p style="color: #ef4444;">Error: ${error.message || 'Failed to get response'}</p>`;
         turnsBadge.style.display = 'none';
     } finally {
+        // Clear attached files after sending
+        attachedFiles = [];
+        updateAttachedFilesUI();
+
         sendBtn.disabled = false;
         if (!isMobile()) {
             messageInput.focus();

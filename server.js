@@ -10,6 +10,7 @@ const { Readable } = require('stream');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,6 +18,56 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+// File upload configuration
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, UPLOADS_DIR);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+        const ext = path.extname(file.originalname);
+        const basename = path.basename(file.originalname, ext);
+        cb(null, `${basename}-${uniqueSuffix}${ext}`);
+    }
+});
+
+const upload = multer({
+    storage,
+    limits: {
+        fileSize: 50 * 1024 * 1024 // 50MB max file size
+    },
+    fileFilter: (req, file, cb) => {
+        // Allow all file types for now
+        cb(null, true);
+    }
+});
+
+// Store uploaded files metadata temporarily (in-memory)
+const uploadedFiles = new Map(); // fileId -> { path, originalName, size, mimeType, uploadedAt }
+
+// Clean up old uploads every hour
+setInterval(() => {
+    const ONE_HOUR = 60 * 60 * 1000;
+    const now = Date.now();
+    for (const [fileId, fileInfo] of uploadedFiles.entries()) {
+        if (now - fileInfo.uploadedAt > ONE_HOUR) {
+            try {
+                if (fs.existsSync(fileInfo.path)) {
+                    fs.unlinkSync(fileInfo.path);
+                }
+                uploadedFiles.delete(fileId);
+            } catch (error) {
+                console.error('Failed to clean up old upload:', error);
+            }
+        }
+    }
+}, 60 * 60 * 1000); // Run every hour
 
 // OpenAI setup
 const openai = new OpenAI({
@@ -2478,22 +2529,53 @@ async function createDriveFolder({ name, parentId }) {
     };
 }
 
-async function createDriveFile({ name, content = '', mimeType = 'text/plain', parentId }) {
+async function createDriveFile({ name, content = '', mimeType = 'text/plain', parentId, localPath }) {
     if (!driveClient) throw new Error('Google Drive not authenticated');
     if (!name) throw new Error('name is required');
 
     const requestBody = { name };
     if (parentId) requestBody.parents = [parentId];
 
+    let fileBody = content;
+    let resolvedMimeType = mimeType;
+
+    // If localPath is provided, read the file from disk
+    if (localPath && fs.existsSync(localPath)) {
+        fileBody = fs.createReadStream(localPath);
+        // If mimeType is default and we have a file, try to infer from extension
+        if (mimeType === 'text/plain' || !mimeType) {
+            const ext = path.extname(localPath).toLowerCase();
+            const mimeTypes = {
+                '.pdf': 'application/pdf',
+                '.doc': 'application/msword',
+                '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                '.xls': 'application/vnd.ms-excel',
+                '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                '.ppt': 'application/vnd.ms-powerpoint',
+                '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.txt': 'text/plain',
+                '.csv': 'text/csv',
+                '.json': 'application/json',
+                '.zip': 'application/zip'
+            };
+            resolvedMimeType = mimeTypes[ext] || 'application/octet-stream';
+        }
+    }
+
     const response = await driveClient.files.create({
         requestBody,
-        media: { mimeType, body: content },
+        media: { mimeType: resolvedMimeType, body: fileBody },
         fields: 'id,name,mimeType,webViewLink,parents,size,modifiedTime'
     });
     return {
         success: true,
         file: normalizeDriveFile(response.data),
-        message: `File "${response.data.name}" created`
+        message: `File "${response.data.name}" created`,
+        uploadedFromLocal: !!localPath
     };
 }
 
@@ -4612,13 +4694,44 @@ async function gcsListObjects({ bucket, prefix, maxResults }) {
     return { objects, count: objects.length, bucket };
 }
 
-async function gcsUploadObject({ bucket, name, content, contentType }) {
+async function gcsUploadObject({ bucket, name, content, contentType, localPath }) {
+    let mediaBody;
+    let resolvedContentType = contentType || 'application/octet-stream';
+
+    // If localPath is provided, read file from disk
+    if (localPath && fs.existsSync(localPath)) {
+        mediaBody = fs.createReadStream(localPath);
+        // Auto-detect MIME type from extension if not provided
+        if (!contentType) {
+            const ext = path.extname(localPath).toLowerCase();
+            const mimeTypes = {
+                '.pdf': 'application/pdf',
+                '.doc': 'application/msword',
+                '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                '.xls': 'application/vnd.ms-excel',
+                '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.txt': 'text/plain',
+                '.csv': 'text/csv',
+                '.json': 'application/json',
+                '.zip': 'application/zip'
+            };
+            resolvedContentType = mimeTypes[ext] || 'application/octet-stream';
+        }
+    } else {
+        // Use provided content string
+        mediaBody = Readable.from(Buffer.from(content || ''));
+    }
+
     const media = {
-        mimeType: contentType || 'application/octet-stream',
-        body: Readable.from(Buffer.from(content))
+        mimeType: resolvedContentType,
+        body: mediaBody
     };
     const res = await gcsClient.objects.insert({ bucket, name, media });
-    return { uploaded: true, bucket, name: res.data.name, size: res.data.size, contentType: res.data.contentType };
+    return { uploaded: true, bucket, name: res.data.name, size: res.data.size, contentType: res.data.contentType, uploadedFromLocal: !!localPath };
 }
 
 async function gcsDownloadObject({ bucket, name, filename }) {
@@ -5059,7 +5172,7 @@ const driveTools = [
     { type: "function", function: { name: "list_drive_files", description: "List Google Drive files/folders you can access. Supports Drive query syntax.", parameters: { type: "object", properties: { query: { type: "string", description: "Drive query string, e.g. name contains 'Q1' and mimeType contains 'spreadsheet'" }, pageSize: { type: "integer", description: "Max files to return (default 25)" }, orderBy: { type: "string", description: "Sort order (default 'modifiedTime desc')" }, includeTrashed: { type: "boolean", description: "Include trashed files (default false)" } } } } },
     { type: "function", function: { name: "get_drive_file", description: "Get metadata/details for a specific Drive file or folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" } }, required: ["fileId"] } } },
     { type: "function", function: { name: "create_drive_folder", description: "Create a new folder in Google Drive.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder name" }, parentId: { type: "string", description: "Optional parent folder ID" } }, required: ["name"] } } },
-    { type: "function", function: { name: "create_drive_file", description: "Create a text file in Drive with optional parent folder.", parameters: { type: "object", properties: { name: { type: "string", description: "File name" }, content: { type: "string", description: "Text content" }, mimeType: { type: "string", description: "MIME type (default text/plain)" }, parentId: { type: "string", description: "Optional parent folder ID" } }, required: ["name"] } } },
+    { type: "function", function: { name: "create_drive_file", description: "Create a file in Drive. Can upload text content OR a file from server using localPath. For uploaded files, use the localPath from attached files.", parameters: { type: "object", properties: { name: { type: "string", description: "File name" }, content: { type: "string", description: "Text content (use this OR localPath, not both)" }, mimeType: { type: "string", description: "MIME type (auto-detected from file extension if using localPath)" }, parentId: { type: "string", description: "Optional parent folder ID" }, localPath: { type: "string", description: "Local server file path (from attached files). Use this to upload user's attached files to Drive." } }, required: ["name"] } } },
     { type: "function", function: { name: "update_drive_file", description: "Update file content and/or rename a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, content: { type: "string", description: "New text content" }, name: { type: "string", description: "New file name" }, mimeType: { type: "string", description: "MIME type for content uploads (default text/plain)" } }, required: ["fileId"] } } },
     { type: "function", function: { name: "delete_drive_file", description: "Trash or permanently delete a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, permanent: { type: "boolean", description: "If true, permanently delete. Otherwise move to trash." } }, required: ["fileId"] } } },
     { type: "function", function: { name: "copy_drive_file", description: "Copy an existing Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID" }, name: { type: "string", description: "Optional new file name" }, parentId: { type: "string", description: "Optional parent folder for copy" } }, required: ["fileId"] } } },
@@ -5161,7 +5274,7 @@ const gcsTools = [
     { type: "function", function: { name: "gcs_create_bucket", description: "Create a new GCS bucket.", parameters: { type: "object", properties: { name: { type: "string", description: "Bucket name (globally unique)" }, location: { type: "string", description: "Bucket location (default US)" }, storageClass: { type: "string", description: "Storage class: STANDARD, NEARLINE, COLDLINE, ARCHIVE (default STANDARD)" } }, required: ["name"] } } },
     { type: "function", function: { name: "gcs_delete_bucket", description: "Delete a GCS bucket (must be empty).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
     { type: "function", function: { name: "gcs_list_objects", description: "List objects in a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Filter objects by prefix (folder path)" }, maxResults: { type: "integer", description: "Maximum number of objects to return" } }, required: ["bucket"] } } },
-    { type: "function", function: { name: "gcs_upload_object", description: "Upload text or JSON content to a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, content: { type: "string", description: "Content to upload" }, contentType: { type: "string", description: "MIME type (default application/octet-stream)" } }, required: ["bucket", "name", "content"] } } },
+    { type: "function", function: { name: "gcs_upload_object", description: "Upload content OR a file to a GCS bucket. Can upload text content OR a file from server using localPath. For uploaded files, use the localPath from attached files.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, content: { type: "string", description: "Text content to upload (use this OR localPath, not both)" }, contentType: { type: "string", description: "MIME type (auto-detected from file extension if using localPath)" }, localPath: { type: "string", description: "Local server file path (from attached files). Use this to upload user's attached files to GCS." } }, required: ["bucket", "name"] } } },
     { type: "function", function: { name: "gcs_download_object", description: "Download/read the content of an object from a GCS bucket. Returns a download URL for the file.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, filename: { type: "string", description: "Optional: desired filename for download (defaults to object name)" } }, required: ["bucket", "name"] } } },
     { type: "function", function: { name: "gcs_delete_object", description: "Delete an object from a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
     { type: "function", function: { name: "gcs_copy_object", description: "Copy an object between buckets or within a bucket.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (default same as source)" }, destObject: { type: "string", description: "Destination object name (default same as source)" } }, required: ["sourceBucket", "sourceObject"] } } },
@@ -6379,7 +6492,7 @@ Rules:
 }
 
 // Streaming version with real-time callbacks
-async function runAgentConversationStreaming({ message, history = [], onTextChunk, onToolStart, onToolEnd }) {
+async function runAgentConversationStreaming({ message, history = [], attachedFiles = [], onTextChunk, onToolStart, onToolEnd }) {
     if (!process.env.OPENAI_API_KEY) {
         throw new Error('OpenAI API key missing');
     }
@@ -6504,8 +6617,14 @@ async function runAgentConversationStreaming({ message, history = [], onTextChun
     const routingHintBlock = routingHints.length > 0
         ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
         : '';
+
+    const attachedFilesBlock = attachedFiles.length > 0
+        ? `\n\n[Attached Files]\nThe user has attached ${attachedFiles.length} file(s) to this message:\n${attachedFiles.map((f, i) => `${i + 1}. "${f.name}" (${(f.size / 1024).toFixed(1)} KB, ${f.mimeType})\n   - File ID: ${f.fileId}\n   - Local path: ${f.localPath}`).join('\n')}\n\n**IMPORTANT**: To upload these files, use the localPath parameter:\n- Upload to Drive: create_drive_file({ name: "filename", localPath: "path/from/above" })\n- Upload to GCS: gcs_upload_object({ bucket: "bucket-name", name: "filename", localPath: "path/from/above" })\n- For emails: Read file content from localPath and encode as base64 for attachment\n- DO NOT pass localPath as content - use it as the localPath parameter!`
+        : '';
+
     const enrichedUserMessage = `${message}
 ${routingHintBlock}
+${attachedFilesBlock}
 
 [Runtime Date Context]
 - Current timestamp (UTC): ${dateContext.nowIso}
@@ -6704,7 +6823,7 @@ ${routingHintBlock}
     };
 }
 
-async function runAgentConversation({ message, history = [] }) {
+async function runAgentConversation({ message, history = [], attachedFiles = [] }) {
     if (!process.env.OPENAI_API_KEY) {
         throw new Error('OpenAI API key missing');
     }
@@ -6894,8 +7013,14 @@ async function runAgentConversation({ message, history = [] }) {
     const routingHintBlock = routingHints.length > 0
         ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
         : '';
+
+    const attachedFilesBlock = attachedFiles.length > 0
+        ? `\n\n[Attached Files]\nThe user has attached ${attachedFiles.length} file(s) to this message:\n${attachedFiles.map((f, i) => `${i + 1}. "${f.name}" (${(f.size / 1024).toFixed(1)} KB, ${f.mimeType})\n   - File ID: ${f.fileId}\n   - Local path: ${f.localPath}`).join('\n')}\n\n**IMPORTANT**: To upload these files, use the localPath parameter:\n- Upload to Drive: create_drive_file({ name: "filename", localPath: "path/from/above" })\n- Upload to GCS: gcs_upload_object({ bucket: "bucket-name", name: "filename", localPath: "path/from/above" })\n- For emails: Read file content from localPath and encode as base64 for attachment\n- DO NOT pass localPath as content - use it as the localPath parameter!`
+        : '';
+
     const enrichedUserMessage = `${message}
 ${routingHintBlock}
+${attachedFilesBlock}
 
 [Runtime Date Context]
 - Current timestamp (UTC): ${dateContext.nowIso}
@@ -7107,9 +7232,81 @@ app.get('/api/gmail/message/:id', async (req, res) => {
     }
 });
 
+// File upload endpoint
+app.post('/api/upload', upload.array('files', 10), (req, res) => {
+    try {
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ error: 'No files uploaded' });
+        }
+
+        const uploadedFileInfos = req.files.map(file => {
+            const fileId = crypto.randomBytes(16).toString('hex');
+            const fileInfo = {
+                fileId,
+                path: file.path,
+                originalName: file.originalname,
+                size: file.size,
+                mimeType: file.mimetype,
+                uploadedAt: Date.now()
+            };
+            uploadedFiles.set(fileId, fileInfo);
+
+            return {
+                fileId,
+                name: file.originalname,
+                size: file.size,
+                mimeType: file.mimetype
+            };
+        });
+
+        res.json({ files: uploadedFileInfos });
+    } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({ error: 'Failed to upload files' });
+    }
+});
+
+// Get uploaded file info
+app.get('/api/upload/:fileId', (req, res) => {
+    const fileId = req.params.fileId;
+    const fileInfo = uploadedFiles.get(fileId);
+
+    if (!fileInfo) {
+        return res.status(404).json({ error: 'File not found' });
+    }
+
+    res.json({
+        fileId,
+        name: fileInfo.originalName,
+        size: fileInfo.size,
+        mimeType: fileInfo.mimeType
+    });
+});
+
+// Delete uploaded file
+app.delete('/api/upload/:fileId', (req, res) => {
+    const fileId = req.params.fileId;
+    const fileInfo = uploadedFiles.get(fileId);
+
+    if (!fileInfo) {
+        return res.status(404).json({ error: 'File not found' });
+    }
+
+    try {
+        if (fs.existsSync(fileInfo.path)) {
+            fs.unlinkSync(fileInfo.path);
+        }
+        uploadedFiles.delete(fileId);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Failed to delete file:', error);
+        res.status(500).json({ error: 'Failed to delete file' });
+    }
+});
+
 // Streaming chat endpoint (Server-Sent Events)
 app.post('/api/chat/stream', async (req, res) => {
-    const { message, history = [] } = req.body;
+    const { message, history = [], attachedFiles = [] } = req.body;
     try {
         if (typeof message !== 'string' || !message.trim()) {
             return res.status(400).json({ error: 'message must be a non-empty string' });
@@ -7127,10 +7324,28 @@ app.post('/api/chat/stream', async (req, res) => {
 
         const safeHistory = buildSafeChatHistory(history);
 
+        // Process attached files
+        const fileContexts = [];
+        if (Array.isArray(attachedFiles) && attachedFiles.length > 0) {
+            for (const fileId of attachedFiles) {
+                const fileInfo = uploadedFiles.get(fileId);
+                if (fileInfo) {
+                    fileContexts.push({
+                        fileId,
+                        name: fileInfo.originalName,
+                        size: fileInfo.size,
+                        mimeType: fileInfo.mimeType,
+                        localPath: fileInfo.path
+                    });
+                }
+            }
+        }
+
         // Run agent with streaming callbacks
         const result = await runAgentConversationStreaming({
             message,
             history: safeHistory,
+            attachedFiles: fileContexts,
             onTextChunk: (chunk) => sendEvent('text', { chunk }),
             onToolStart: (tool, args, turn) => sendEvent('tool_start', { tool, args, turn }),
             onToolEnd: (tool, result, success, turn) => sendEvent('tool_end', { tool, result, success, turn })
@@ -7148,13 +7363,31 @@ app.post('/api/chat/stream', async (req, res) => {
 
 // Non-streaming chat endpoint (legacy, for backward compatibility)
 app.post('/api/chat', async (req, res) => {
-    const { message, history = [] } = req.body;
+    const { message, history = [], attachedFiles = [] } = req.body;
     try {
         if (typeof message !== 'string' || !message.trim()) {
             return res.status(400).json({ error: 'message must be a non-empty string' });
         }
+
+        // Process attached files
+        const fileContexts = [];
+        if (Array.isArray(attachedFiles) && attachedFiles.length > 0) {
+            for (const fileId of attachedFiles) {
+                const fileInfo = uploadedFiles.get(fileId);
+                if (fileInfo) {
+                    fileContexts.push({
+                        fileId,
+                        name: fileInfo.originalName,
+                        size: fileInfo.size,
+                        mimeType: fileInfo.mimeType,
+                        localPath: fileInfo.path
+                    });
+                }
+            }
+        }
+
         const safeHistory = buildSafeChatHistory(history);
-        const result = await runAgentConversation({ message, history: safeHistory });
+        const result = await runAgentConversation({ message, history: safeHistory, attachedFiles: fileContexts });
         res.json(result);
     } catch (error) {
         console.error('Chat error:', error);
