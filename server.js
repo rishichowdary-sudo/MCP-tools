@@ -2100,7 +2100,7 @@ async function updateEvent({ calendarId = 'primary', eventId, summary, descripti
     else if (startDate) existing.start = { date: startDate };
     if (endDateTime) existing.end = { dateTime: endDateTime, timeZone: timeZone || existing.end?.timeZone || 'UTC' };
     else if (endDate) existing.end = { date: endDate };
-    const result = await calendarClient.events.update({ calendarId, eventId, requestBody: existing });
+    const result = await calendarClient.events.update({ calendarId, eventId, requestBody: existing, sendUpdates: 'all' });
     return { success: true, eventId: result.data.id, message: `Event "${result.data.summary}" updated` };
 }
 
@@ -2287,24 +2287,26 @@ async function moveEvent({ calendarId = 'primary', eventId, destinationCalendarI
 }
 
 // 12. Update Event Attendees
-async function updateEventAttendees({ calendarId = 'primary', eventId, addAttendees = [], removeAttendees = [] }) {
+async function updateEventAttendees({ calendarId = 'primary', eventId, addAttendees = [], removeAttendees = [], attendees }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
     const existing = (await calendarClient.events.get({ calendarId, eventId })).data;
-    let attendees = existing.attendees || [];
-    if (addAttendees.length > 0) {
-        const resolvedAdditions = await normalizeEventAttendees(addAttendees);
-        const existingEmails = new Set(attendees.map(a => a.email));
+    // Accept 'attendees' as fallback for 'addAttendees' (AI sometimes uses wrong param name)
+    const toAdd = addAttendees.length > 0 ? addAttendees : (attendees || []);
+    let currentAttendees = existing.attendees || [];
+    if (toAdd.length > 0) {
+        const resolvedAdditions = await normalizeEventAttendees(toAdd);
+        const existingEmails = new Set(currentAttendees.map(a => a.email));
         for (const email of resolvedAdditions) {
-            if (!existingEmails.has(email)) attendees.push({ email });
+            if (!existingEmails.has(email)) currentAttendees.push({ email });
         }
     }
     if (removeAttendees.length > 0) {
         const resolvedRemovals = await normalizeEventAttendees(removeAttendees);
         const removeSet = new Set(resolvedRemovals.map(email => email.toLowerCase()));
-        attendees = attendees.filter(a => !removeSet.has(String(a.email || '').toLowerCase()));
+        currentAttendees = currentAttendees.filter(a => !removeSet.has(String(a.email || '').toLowerCase()));
     }
-    existing.attendees = attendees;
-    const result = await calendarClient.events.update({ calendarId, eventId, requestBody: existing });
+    existing.attendees = currentAttendees;
+    const result = await calendarClient.events.update({ calendarId, eventId, requestBody: existing, sendUpdates: 'all' });
     return { success: true, attendeeCount: (result.data.attendees || []).length, message: `Attendees updated for event "${result.data.summary}"` };
 }
 
@@ -5260,7 +5262,7 @@ const calendarTools = [
     { type: "function", function: { name: "find_common_free_slots", description: "Find common free slots across multiple people and/or calendars.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, people: { type: "array", items: { type: "string" }, description: "Names or emails to resolve and include" }, calendarIds: { type: "array", items: { type: "string" }, description: "Optional calendar IDs to include" }, includePrimary: { type: "boolean", description: "Include your primary calendar (default true)" }, durationMinutes: { type: "integer", description: "Minimum free slot length in minutes (default 30)" } }, required: ["timeMin", "timeMax"] } } },
     { type: "function", function: { name: "list_recurring_instances", description: "List individual occurrences of a recurring event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The recurring event ID" }, maxResults: { type: "integer", description: "Max instances to return" }, timeMin: { type: "string", description: "Start time filter" }, timeMax: { type: "string", description: "End time filter" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "move_event", description: "Move an event from one calendar to another.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Source calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to move" }, destinationCalendarId: { type: "string", description: "Destination calendar ID" } }, required: ["eventId", "destinationCalendarId"] } } },
-    { type: "function", function: { name: "update_event_attendees", description: "Add or remove attendees from a calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" }, addAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to add" }, removeAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to remove" } }, required: ["eventId"] } } },
+    { type: "function", function: { name: "update_event_attendees", description: "Add or remove attendees from a calendar event. Use addAttendees to add people (also accepts 'attendees' as alias). Availability check is NOT required before adding attendees.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" }, addAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to add (preferred parameter name)" }, attendees: { type: "array", items: { type: "string" }, description: "Alias for addAttendees - email addresses to add" }, removeAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to remove" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "get_calendar_colors", description: "Get available color options for calendars and events.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "clear_calendar", description: "Clear all events from a calendar. WARNING: This is destructive!", parameters: { type: "object", properties: { calendarId: { type: "string", description: "The calendar ID to clear (cannot be primary)" } }, required: ["calendarId"] } } },
     { type: "function", function: { name: "watch_events", description: "Set up push notifications for calendar changes (requires a public webhook URL).", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, webhookUrl: { type: "string", description: "Public webhook URL to receive notifications" } }, required: ["webhookUrl"] } } }
@@ -6562,13 +6564,13 @@ Total Tools Available: ${toolCount}
 - Email formatting: Use \n for line breaks in email body (will be converted to proper HTML breaks). For professional emails, include proper greetings, spacing, and signatures.
 - Email attachments: To attach uploaded files, use the attachments parameter with localPath from attached files. Example: attachments: [{ localPath: "path/from/attached/files" }]
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
+- Calendar attendees vs availability: Checking availability and adding attendees are COMPLETELY SEPARATE. If check_person_availability fails (calendar not shared), you can STILL add them as an attendee using update_event_attendees or create the event with them in the attendees list. Google Calendar will automatically send them an email invitation. NEVER skip adding an attendee just because availability check failed. NEVER send a manual email invitation instead — just add them directly as an attendee.
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
 - Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access. Use download_drive_file for real file downloads, extract_drive_file_text for summarization/Q&A, append_drive_document_text to append text to docs/files, convert_file_to_google_doc to convert PDFs/files into Docs stored in Drive, and convert_file_to_google_sheet to convert CSV/XLSX/files into Sheets stored in Drive.
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
 - Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
 - Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
-- Sheets timesheet "last X days": When user says "last 3 days tasks" or "yesterday's row" in timesheet context, they mean the most recent X WORK-DAY ENTRIES in the sheet. PROCESS: 1) Read sheet (read_sheet_values range A1:Z3000). 2) Find rows with dates in date column (usually B). 3) Sort by date descending (newest first). 4) SKIP weekend days (Saturday/Sunday) - if an entry falls on weekend, ignore it and continue to next. 5) Take the first X non-weekend entries as "last X days". 6) First non-weekend entry = "yesterday". Example: Today is Monday Feb 10. Sheet has entries for Feb 10(Mon), 9(Sun), 8(Sat), 7(Fri), 6(Thu), 5(Wed). "Last 3 days" = Feb 7(Fri), 6(Thu), 5(Wed) - skipping the weekend. "Yesterday" = Feb 7(Fri).
 - Sheets MCP: MCP tools are prefixed with ${SHEETS_MCP_TOOL_PREFIX} and provide fallback read/update operations when needed.
 - Sheets write safety: Never claim a sheet update succeeded unless tool output indicates verification/read-back succeeded.
 - GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.
@@ -6808,10 +6810,8 @@ ${attachedFilesBlock}
     const allToolResults = [];
     const allSteps = [];
     const MAX_TURNS = 15;
-    const MAX_DUPLICATE_CALLS = 3;
     let turnCount = 0;
     let activeModel = OPENAI_MODEL;
-    const toolCallCounts = new Map(); // track duplicate tool calls
 
     // Continue with tool execution loop (non-streaming for tool calls)
     while (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && turnCount < MAX_TURNS) {
@@ -6825,17 +6825,6 @@ ${attachedFilesBlock}
                 args = parseToolCallArguments(toolCall.function.arguments);
             } catch (error) {
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
-            }
-
-            // Detect duplicate tool calls
-            const callKey = `${toolName}:${JSON.stringify(args)}`;
-            const callCount = (toolCallCounts.get(callKey) || 0) + 1;
-            toolCallCounts.set(callKey, callCount);
-            if (callCount > MAX_DUPLICATE_CALLS) {
-                const errMsg = `Tool '${toolName}' called ${callCount} times with identical arguments. Stopping to avoid infinite loop. Please try a different approach or ask the user for clarification.`;
-                if (onToolStart) onToolStart(toolName, args, turnCount);
-                if (onToolEnd) onToolEnd(toolName, errMsg, false, turnCount);
-                return { toolCall, error: errMsg };
             }
 
             if (onToolStart) onToolStart(toolName, args, turnCount);
@@ -7174,9 +7163,7 @@ ${attachedFilesBlock}
     const allToolResults = [];
     const allSteps = [];
     const MAX_TURNS = 15;
-    const MAX_DUPLICATE_CALLS = 3;
     let turnCount = 0;
-    const toolCallCounts = new Map();
 
     while (assistantMessage.tool_calls && turnCount < MAX_TURNS) {
         turnCount += 1;
@@ -7190,13 +7177,7 @@ ${attachedFilesBlock}
             } catch (error) {
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
             }
-            // Detect duplicate tool calls
-            const callKey = `${toolName}:${JSON.stringify(args)}`;
-            const callCount = (toolCallCounts.get(callKey) || 0) + 1;
-            toolCallCounts.set(callKey, callCount);
-            if (callCount > MAX_DUPLICATE_CALLS) {
-                return { toolCall, error: `Tool '${toolName}' called ${callCount} times with identical arguments. Stopping to avoid infinite loop. Please try a different approach or ask the user for clarification.` };
-            }
+
             const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
             try {
                 const result = await executeTool(toolName, args);
