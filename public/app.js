@@ -413,6 +413,22 @@ function setupEventListeners() {
             await runTimerTaskNow(taskId);
             return;
         }
+        if (action === 'edit') {
+            // Populate form with existing task data
+            timerTaskNameInput.value = button.dataset.taskName || '';
+            timerTaskInstructionInput.value = button.dataset.taskInstruction || '';
+            timerTaskTimeInput.value = button.dataset.taskTime || '';
+            timerTaskEnabledInput.checked = button.dataset.taskEnabled === 'true';
+
+            // Change save button to update mode
+            timerTaskSaveBtn.textContent = 'Update Task';
+            timerTaskSaveBtn.dataset.editingTaskId = taskId;
+
+            // Scroll to form
+            timerTaskNameInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            timerTaskInstructionInput.focus();
+            return;
+        }
         if (action === 'toggle') {
             const enabled = button.dataset.enabled === 'true';
             await updateTimerTask(taskId, { enabled: !enabled });
@@ -1412,6 +1428,7 @@ function renderTimerTaskList(tasks) {
             <div class="timer-task-instruction">${escapeHtml(task.instruction || '')}</div>
             <div class="timer-task-actions">
                 <button class="timer-task-action-btn" data-action="run" data-task-id="${escapeHtml(task.id)}">Run Now</button>
+                <button class="timer-task-action-btn" data-action="edit" data-task-id="${escapeHtml(task.id)}" data-task-name="${escapeHtml(task.name || '')}" data-task-instruction="${escapeHtml(task.instruction || '')}" data-task-time="${escapeHtml(task.time || '')}" data-task-enabled="${task.enabled ? 'true' : 'false'}">Edit</button>
                 <button class="timer-task-action-btn" data-action="toggle" data-enabled="${task.enabled ? 'true' : 'false'}" data-task-id="${escapeHtml(task.id)}">${task.enabled ? 'Disable' : 'Enable'}</button>
                 <button class="timer-task-action-btn" data-action="delete" data-task-id="${escapeHtml(task.id)}">Delete</button>
             </div>
@@ -1424,6 +1441,7 @@ async function createTimerTask() {
     const time = (timerTaskTimeInput.value || '').trim();
     const name = (timerTaskNameInput.value || '').trim();
     const enabled = !!timerTaskEnabledInput.checked;
+    const editingTaskId = timerTaskSaveBtn.dataset.editingTaskId;
 
     if (!instruction) {
         alert('Please enter task instructions.');
@@ -1438,20 +1456,29 @@ async function createTimerTask() {
     const originalLabel = timerTaskSaveBtn.innerHTML;
     timerTaskSaveBtn.innerHTML = '&#9201; Saving...';
     try {
-        const response = await fetch('/api/timer-tasks', {
-            method: 'POST',
+        // Check if we're editing or creating
+        const isEditing = !!editingTaskId;
+        const url = isEditing ? `/api/timer-tasks/${encodeURIComponent(editingTaskId)}` : '/api/timer-tasks';
+        const method = isEditing ? 'PATCH' : 'POST';
+
+        const response = await fetch(url, {
+            method: method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, instruction, time, enabled })
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || `Failed to create task (${response.status})`);
+        if (!response.ok) throw new Error(data.error || `Failed to ${isEditing ? 'update' : 'create'} task (${response.status})`);
 
+        // Clear form and reset to create mode
         timerTaskNameInput.value = '';
         timerTaskInstructionInput.value = '';
         timerTaskEnabledInput.checked = true;
+        timerTaskSaveBtn.textContent = 'Create Task';
+        delete timerTaskSaveBtn.dataset.editingTaskId;
+
         await loadTimerTasks();
     } catch (error) {
-        alert(error.message || 'Failed to create timer task');
+        alert(error.message || 'Failed to save timer task');
     } finally {
         timerTaskSaveBtn.disabled = false;
         timerTaskSaveBtn.innerHTML = originalLabel;
