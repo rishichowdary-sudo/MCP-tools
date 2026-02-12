@@ -40,7 +40,7 @@ const storage = multer.diskStorage({
 const upload = multer({
     storage,
     limits: {
-        fileSize: 50 * 1024 * 1024 // 50MB max file size
+        fileSize: 5 * 1024 * 1024 * 1024 // 5GB max file size for Drive/GCS uploads
     },
     fileFilter: (req, file, cb) => {
         // Allow all file types for now
