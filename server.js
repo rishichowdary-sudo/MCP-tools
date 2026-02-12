@@ -396,6 +396,18 @@ const EMAIL_SEND_CONFIRMATION_TOOLS = new Set([
     'outlook_send_draft'
 ]);
 
+const SEND_TO_RECIPIENT_TOOLS = new Set([
+    'send_email',
+    'forward_email',
+    'outlook_send_email',
+    'outlook_forward_email'
+]);
+
+const SEND_CC_BCC_RECIPIENT_TOOLS = new Set([
+    'send_email',
+    'outlook_send_email'
+]);
+
 function isTruthyConfirmationValue(value) {
     if (value === true) return true;
     if (typeof value === 'number') return value === 1;
@@ -465,9 +477,9 @@ function buildEmailSendConfirmationMessage(toolName, args = {}) {
         'Email send confirmation required before sending.',
         '',
         'Please review:',
-        to ? `- To: ${to}` : '- To: (not provided)',
-        cc ? `- CC: ${cc}` : '',
-        bcc ? `- BCC: ${bcc}` : '',
+        to ? `- To (resolved email): ${to}` : '- To (resolved email): (not provided)',
+        cc ? `- CC (resolved email): ${cc}` : '',
+        bcc ? `- BCC (resolved email): ${bcc}` : '',
         `- Subject: ${subject}`
     ].filter(Boolean);
 
@@ -501,6 +513,24 @@ function stripSendConfirmationFlags(args) {
     delete nextArgs.confirmed;
     delete nextArgs.approved;
     return nextArgs;
+}
+
+async function prepareEmailSendArgs(toolName, args = {}) {
+    const normalizedArgs = (args && typeof args === 'object') ? { ...args } : {};
+
+    if (SEND_TO_RECIPIENT_TOOLS.has(toolName)) {
+        normalizedArgs.to = await normalizeMessageRecipients(normalizedArgs.to, {
+            fieldName: 'to',
+            requireAtLeastOne: true
+        });
+    }
+
+    if (SEND_CC_BCC_RECIPIENT_TOOLS.has(toolName)) {
+        normalizedArgs.cc = await normalizeMessageRecipients(normalizedArgs.cc, { fieldName: 'cc' });
+        normalizedArgs.bcc = await normalizeMessageRecipients(normalizedArgs.bcc, { fieldName: 'bcc' });
+    }
+
+    return normalizedArgs;
 }
 
 function shouldRequestUserInputForToolError(errorMessage) {
@@ -1837,7 +1867,6 @@ async function resolveEmailFromGmailHistory(identity) {
                     const matchedIdentity = keyTokens.length > 1
                         ? keyTokens.every(token => normalizedHeader.includes(token))
                         : normalizedHeader.includes(key);
-                    if (requiresStrictHeaderMatch && !matchedIdentity) continue;
                     const emails = extractEmailsFromText(value);
 
                     for (const email of emails) {
@@ -1847,9 +1876,12 @@ async function resolveEmailFromGmailHistory(identity) {
                         const matchedLocalPart = keyTokens.length > 1
                             ? keyTokens.every(token => localPart.includes(token))
                             : localPart.includes(key);
+                        if (!matchedIdentity && !matchedLocalPart) continue;
                         if (requiresStrictHeaderMatch && !matchedIdentity && !matchedLocalPart) continue;
                         const existing = scoreByEmail.get(email) || 0;
-                        const bump = matchedIdentity ? 5 : (matchedLocalPart ? 4 : 1);
+                        const bump = matchedIdentity && matchedLocalPart
+                            ? 8
+                            : (matchedIdentity ? 6 : 4);
                         scoreByEmail.set(email, existing + bump);
                     }
                 }
@@ -1861,6 +1893,15 @@ async function resolveEmailFromGmailHistory(identity) {
 
     if (scoreByEmail.size === 0) return null;
     const ranked = [...scoreByEmail.entries()].sort((a, b) => b[1] - a[1]);
+
+    if (ranked.length > 1) {
+        const topScore = ranked[0][1];
+        const secondScore = ranked[1][1];
+        if (topScore <= secondScore + 1) {
+            return null;
+        }
+    }
+
     return ranked[0][0];
 }
 
@@ -6045,13 +6086,18 @@ async function executeGcsTool(toolName, args) {
 async function executeTool(toolName, args) {
     console.log(`[Tool] ${toolName}`, JSON.stringify(args).slice(0, 200));
 
-    if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName) && !hasEmailSendConfirmation(args)) {
-        throw new Error(buildEmailSendConfirmationMessage(toolName, args || {}));
+    let normalizedArgs = args;
+    if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)) {
+        normalizedArgs = await prepareEmailSendArgs(toolName, args || {});
+    }
+
+    if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName) && !hasEmailSendConfirmation(normalizedArgs)) {
+        throw new Error(buildEmailSendConfirmationMessage(toolName, normalizedArgs || {}));
     }
 
     const sanitizedArgs = EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)
-        ? stripSendConfirmationFlags(args)
-        : args;
+        ? stripSendConfirmationFlags(normalizedArgs)
+        : normalizedArgs;
 
     if (gmailToolNames.has(toolName)) return await executeGmailTool(toolName, sanitizedArgs);
     if (calendarToolNames.has(toolName)) return await executeCalendarTool(toolName, sanitizedArgs);
@@ -7179,6 +7225,15 @@ ${attachedFilesBlock}
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
             }
 
+            if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)) {
+                try {
+                    args = await prepareEmailSendArgs(toolName, args || {});
+                } catch (error) {
+                    const prepError = error.message;
+                    if (onToolEnd) onToolEnd(toolName, prepError, false, turnCount);
+                    return { toolCall, error: prepError };
+                }
+            }
             if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName) && !emailSendConfirmedForTurn) {
                 const confirmationError = buildEmailSendConfirmationMessage(toolName, args || {});
                 if (onToolEnd) onToolEnd(toolName, confirmationError, false, turnCount);
@@ -7541,6 +7596,13 @@ ${attachedFilesBlock}
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
             }
 
+            if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)) {
+                try {
+                    args = await prepareEmailSendArgs(toolName, args || {});
+                } catch (error) {
+                    return { toolCall, error: error.message };
+                }
+            }
             if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName) && !emailSendConfirmedForTurn) {
                 return { toolCall, error: buildEmailSendConfirmationMessage(toolName, args || {}) };
             }
