@@ -385,9 +385,128 @@ function truncateText(value, maxChars = 2000) {
     return `${text.slice(0, maxChars - 20)}\n...[truncated]`;
 }
 
+const EMAIL_SEND_CONFIRMATION_TOOLS = new Set([
+    'send_email',
+    'reply_to_email',
+    'forward_email',
+    'send_draft',
+    'outlook_send_email',
+    'outlook_reply_to_email',
+    'outlook_forward_email',
+    'outlook_send_draft'
+]);
+
+function isTruthyConfirmationValue(value) {
+    if (value === true) return true;
+    if (typeof value === 'number') return value === 1;
+    if (typeof value !== 'string') return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === 'yes' || normalized === 'y' || normalized === 'confirm' || normalized === 'confirmed' || normalized === 'ok';
+}
+
+function hasEmailSendConfirmation(args) {
+    if (!args || typeof args !== 'object') return false;
+    const confirmationCandidates = [
+        args.confirmSend,
+        args.confirm_send,
+        args.userConfirmed,
+        args.confirmed,
+        args.approved
+    ];
+    return confirmationCandidates.some(isTruthyConfirmationValue);
+}
+
+function isAffirmativeEmailSendReply(value) {
+    const text = String(value || '').trim().toLowerCase();
+    if (!text) return false;
+    if (/\b(cancel|stop|dont|don't|not now|wait)\b/.test(text)) return false;
+    return /\b(yes|yep|yeah|confirm|confirmed|looks good|all good|proceed|go ahead|send it|send now|ok)\b/.test(text);
+}
+
+function historyContainsEmailSendConfirmationPrompt(history = []) {
+    if (!Array.isArray(history)) return false;
+    return history.some(item => {
+        if (!item || item.role !== 'assistant' || typeof item.content !== 'string') return false;
+        return item.content.toLowerCase().includes('email send confirmation required before sending');
+    });
+}
+
+function isEmailSendConfirmedForTurn({ message, history = [] }) {
+    return historyContainsEmailSendConfirmationPrompt(history) && isAffirmativeEmailSendReply(message);
+}
+
+function sanitizeEmailPreviewText(value, maxChars = 240) {
+    const plain = String(value ?? '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return truncateText(plain, maxChars);
+}
+
+function normalizeRecipientPreview(value) {
+    if (!value) return '';
+    if (Array.isArray(value)) {
+        return value.map(item => String(item || '').trim()).filter(Boolean).join(', ');
+    }
+    return String(value).trim();
+}
+
+function buildEmailSendConfirmationMessage(toolName, args = {}) {
+    const to = normalizeRecipientPreview(args.to);
+    const cc = normalizeRecipientPreview(args.cc);
+    const bcc = normalizeRecipientPreview(args.bcc);
+    const subject = sanitizeEmailPreviewText(args.subject || '(no subject)', 180);
+    const bodySource = args.body ?? args.comment ?? args.additionalMessage ?? '';
+    const bodyPreview = sanitizeEmailPreviewText(bodySource || '(empty body)', 320);
+    const draftId = args.draftId ? String(args.draftId) : '';
+    const messageId = args.messageId ? String(args.messageId) : '';
+
+    const lines = [
+        'Email send confirmation required before sending.',
+        '',
+        'Please review:',
+        to ? `- To: ${to}` : '- To: (not provided)',
+        cc ? `- CC: ${cc}` : '',
+        bcc ? `- BCC: ${bcc}` : '',
+        `- Subject: ${subject}`
+    ].filter(Boolean);
+
+    if (toolName.includes('reply')) {
+        lines.push(messageId ? `- Replying to message ID: ${messageId}` : '- Replying to: (message ID missing)');
+    } else if (toolName.includes('forward')) {
+        lines.push(messageId ? `- Forwarding message ID: ${messageId}` : '- Forwarding: (message ID missing)');
+    } else if (toolName.includes('draft')) {
+        if (draftId) {
+            lines.push(`- Draft ID: ${draftId}`);
+        } else if (messageId) {
+            lines.push(`- Draft message ID: ${messageId}`);
+        } else {
+            lines.push('- Draft ID: (not provided)');
+        }
+    }
+
+    lines.push(`- Body preview: ${bodyPreview}`);
+    lines.push('');
+    lines.push('If everything looks correct, ask the user for confirmation and then call the same send tool again with `confirmSend: true`.');
+
+    return lines.join('\n');
+}
+
+function stripSendConfirmationFlags(args) {
+    if (!args || typeof args !== 'object') return args;
+    const nextArgs = { ...args };
+    delete nextArgs.confirmSend;
+    delete nextArgs.confirm_send;
+    delete nextArgs.userConfirmed;
+    delete nextArgs.confirmed;
+    delete nextArgs.approved;
+    return nextArgs;
+}
+
 function shouldRequestUserInputForToolError(errorMessage) {
     const text = String(errorMessage || '').toLowerCase();
     if (!text) return false;
+    if (text.includes('email send confirmation required')) return true;
     if (text.includes('please provide exact email address')) return true;
     if (text.includes('could not resolve') && text.includes('email')) return true;
     if (text.includes('no valid') && text.includes('email')) return true;
@@ -5066,6 +5185,7 @@ const gmailTools = [
                     to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
                     subject: { type: "string", description: "Email subject line" },
                     body: { type: "string", description: "Email body (use \\n for line breaks, will be converted to proper formatting)" },
+                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients, subject, and body are correct." },
                     cc: { type: "array", items: { type: "string" }, description: "CC addresses" },
                     bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" },
                     attachments: {
@@ -5187,6 +5307,7 @@ const gmailTools = [
                 properties: {
                     messageId: { type: "string", description: "The message ID to reply to" },
                     body: { type: "string", description: "Reply body text" },
+                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and reply content are correct." },
                     cc: { type: "array", items: { type: "string" }, description: "Additional CC addresses" }
                 },
                 required: ["messageId", "body"]
@@ -5203,6 +5324,7 @@ const gmailTools = [
                 properties: {
                     messageId: { type: "string", description: "The message ID to forward" },
                     to: { type: "array", items: { type: "string" }, description: "Forward recipients" },
+                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and forward content are correct." },
                     additionalMessage: { type: "string", description: "Optional message to add above the forwarded content" }
                 },
                 required: ["messageId", "to"]
@@ -5381,7 +5503,8 @@ const gmailTools = [
             parameters: {
                 type: "object",
                 properties: {
-                    draftId: { type: "string", description: "The draft ID to send" }
+                    draftId: { type: "string", description: "The draft ID to send" },
+                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms the draft should be sent." }
                 },
                 required: ["draftId"]
             }
@@ -5512,12 +5635,12 @@ const githubTools = [
 ];
 
 const outlookTools = [
-    { type: "function", function: { name: "outlook_send_email", description: "Send an email via Outlook. Supports CC/BCC. Body can be plain text or HTML.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" }, subject: { type: "string", description: "Email subject line" }, body: { type: "string", description: "Email body (plain text or HTML)" }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } }, required: ["to", "subject", "body"] } } },
+    { type: "function", function: { name: "outlook_send_email", description: "Send an email via Outlook. Supports CC/BCC. Body can be plain text or HTML.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" }, subject: { type: "string", description: "Email subject line" }, body: { type: "string", description: "Email body (plain text or HTML)" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients, subject, and body are correct." }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } }, required: ["to", "subject", "body"] } } },
     { type: "function", function: { name: "outlook_list_emails", description: "List recent emails from an Outlook folder (default: inbox).", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of emails to return (default 20)" }, folder: { type: "string", description: "Folder name: inbox, sentitems, drafts, deleteditems, junkemail (default: inbox)" } } } } },
     { type: "function", function: { name: "outlook_read_email", description: "Read full content of an Outlook email by message ID.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Outlook message ID" } }, required: ["messageId"] } } },
     { type: "function", function: { name: "outlook_search_emails", description: "Search Outlook emails using Microsoft Search syntax (supports KQL: from:, subject:, hasAttachment:true, etc.).", parameters: { type: "object", properties: { query: { type: "string", description: "Search query (e.g., 'from:john subject:meeting')" }, maxResults: { type: "integer", description: "Number of results (default 20)" } }, required: ["query"] } } },
-    { type: "function", function: { name: "outlook_reply_to_email", description: "Reply to an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to reply to" }, body: { type: "string", description: "Reply body (HTML or text)" } }, required: ["messageId", "body"] } } },
-    { type: "function", function: { name: "outlook_forward_email", description: "Forward an Outlook email to new recipients.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to forward" }, to: { type: "array", items: { type: "string" }, description: "Forward recipient addresses" }, comment: { type: "string", description: "Comment to include" } }, required: ["messageId", "to"] } } },
+    { type: "function", function: { name: "outlook_reply_to_email", description: "Reply to an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to reply to" }, body: { type: "string", description: "Reply body (HTML or text)" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and reply content are correct." } }, required: ["messageId", "body"] } } },
+    { type: "function", function: { name: "outlook_forward_email", description: "Forward an Outlook email to new recipients.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to forward" }, to: { type: "array", items: { type: "string" }, description: "Forward recipient addresses" }, comment: { type: "string", description: "Comment to include" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and forward content are correct." } }, required: ["messageId", "to"] } } },
     { type: "function", function: { name: "outlook_delete_email", description: "Delete an Outlook email permanently.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to delete" } }, required: ["messageId"] } } },
     { type: "function", function: { name: "outlook_move_email", description: "Move an Outlook email to a different folder.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to move" }, destinationFolderId: { type: "string", description: "Destination folder ID (use outlook_list_folders to find IDs)" } }, required: ["messageId", "destinationFolderId"] } } },
     { type: "function", function: { name: "outlook_mark_as_read", description: "Mark an Outlook email as read.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
@@ -5526,7 +5649,7 @@ const outlookTools = [
     { type: "function", function: { name: "outlook_create_folder", description: "Create a new Outlook mail folder.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder display name" }, parentFolderId: { type: "string", description: "Parent folder ID (omit for top-level)" } }, required: ["name"] } } },
     { type: "function", function: { name: "outlook_get_attachments", description: "List attachments on an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
     { type: "function", function: { name: "outlook_create_draft", description: "Create a draft email in Outlook.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient addresses" }, subject: { type: "string", description: "Subject line" }, body: { type: "string", description: "Email body (HTML or text)" }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } } } } },
-    { type: "function", function: { name: "outlook_send_draft", description: "Send an existing Outlook draft.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Draft message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_send_draft", description: "Send an existing Outlook draft.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Draft message ID" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms the draft should be sent." } }, required: ["messageId"] } } },
     { type: "function", function: { name: "outlook_list_drafts", description: "List Outlook draft emails.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of drafts to return (default 20)" } } } } },
     { type: "function", function: { name: "outlook_flag_email", description: "Set or clear a flag on an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" }, flagStatus: { type: "string", description: "Flag status: flagged, complete, notFlagged (default: flagged)" } }, required: ["messageId"] } } },
     { type: "function", function: { name: "outlook_get_user_profile", description: "Get the connected Outlook/Microsoft user's profile information.", parameters: { type: "object", properties: {} } } }
@@ -5921,17 +6044,26 @@ async function executeGcsTool(toolName, args) {
 // Master dispatcher
 async function executeTool(toolName, args) {
     console.log(`[Tool] ${toolName}`, JSON.stringify(args).slice(0, 200));
-    if (gmailToolNames.has(toolName)) return await executeGmailTool(toolName, args);
-    if (calendarToolNames.has(toolName)) return await executeCalendarTool(toolName, args);
-    if (gchatToolNames.has(toolName)) return await executeGchatTool(toolName, args);
-    if (driveToolNames.has(toolName)) return await executeDriveTool(toolName, args);
-    if (sheetsToolNames.has(toolName)) return await executeSheetsTool(toolName, args);
-    if (toolName.startsWith(SHEETS_MCP_TOOL_PREFIX)) return await executeSheetsMcpTool(toolName, args);
-    if (docsToolNames.has(toolName)) return await executeDocsTool(toolName, args);
-    if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, args);
-    if (outlookToolNames.has(toolName)) return await executeOutlookTool(toolName, args);
-    if (teamsToolNames.has(toolName)) return await executeTeamsTool(toolName, args);
-    if (gcsToolNames.has(toolName)) return await executeGcsTool(toolName, args);
+
+    if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName) && !hasEmailSendConfirmation(args)) {
+        throw new Error(buildEmailSendConfirmationMessage(toolName, args || {}));
+    }
+
+    const sanitizedArgs = EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)
+        ? stripSendConfirmationFlags(args)
+        : args;
+
+    if (gmailToolNames.has(toolName)) return await executeGmailTool(toolName, sanitizedArgs);
+    if (calendarToolNames.has(toolName)) return await executeCalendarTool(toolName, sanitizedArgs);
+    if (gchatToolNames.has(toolName)) return await executeGchatTool(toolName, sanitizedArgs);
+    if (driveToolNames.has(toolName)) return await executeDriveTool(toolName, sanitizedArgs);
+    if (sheetsToolNames.has(toolName)) return await executeSheetsTool(toolName, sanitizedArgs);
+    if (toolName.startsWith(SHEETS_MCP_TOOL_PREFIX)) return await executeSheetsMcpTool(toolName, sanitizedArgs);
+    if (docsToolNames.has(toolName)) return await executeDocsTool(toolName, sanitizedArgs);
+    if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, sanitizedArgs);
+    if (outlookToolNames.has(toolName)) return await executeOutlookTool(toolName, sanitizedArgs);
+    if (teamsToolNames.has(toolName)) return await executeTeamsTool(toolName, sanitizedArgs);
+    if (gcsToolNames.has(toolName)) return await executeGcsTool(toolName, sanitizedArgs);
     throw new Error(`Unknown tool: ${toolName}`);
 }
 
@@ -6738,7 +6870,9 @@ Total Tools Available: ${toolCount}
 4. **SEQUENCE WHEN DEPENDENT**: If a later step needs output from an earlier step, chain tools in order.
    - Example: search -> read -> extract recipient -> draft/send.
 
-5. **NEVER STOP MID-TASK**: Continue tool execution until completion. Do not ask for confirmation between non-destructive intermediate steps.
+5. **NEVER STOP MID-TASK**: Continue tool execution until completion for normal workflows.
+
+5b. **EMAIL SEND CONFIRMATION REQUIRED**: Before calling any send action (send_email, reply_to_email, forward_email, send_draft, outlook_send_email, outlook_reply_to_email, outlook_forward_email, outlook_send_draft), show the final recipients/target, subject (if available), and body summary and ask the user to confirm. Only send after explicit confirmation, and pass confirmSend: true.
 
 6. **RECOVER FROM FAILURES**: If a tool fails due to missing ID, scope, or lookup ambiguity, run the appropriate discovery/diagnostic tool and retry with corrected arguments. Explain blockers only after retry paths are exhausted.
 
@@ -6765,6 +6899,7 @@ Total Tools Available: ${toolCount}
   4. NEVER guess email formats like firstname@domain.com, firstname.lastname@domain.com, etc.
   5. NEVER use placeholder domains (example.com, test.com, domain.com).
 - Email formatting: Use \n for line breaks in email body (will be converted to proper HTML breaks). For professional emails, include proper greetings, spacing, and signatures.
+- Email sending confirmation: Always ask the user to confirm final details before any send action (send_email, reply_to_email, forward_email, send_draft, outlook_send_email, outlook_reply_to_email, outlook_forward_email, outlook_send_draft). After confirmation, call with confirmSend: true.
 - Email attachments: To attach uploaded files, use the attachments parameter with localPath from attached files. Example: attachments: [{ localPath: "path/from/attached/files" }]
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
 - Calendar attendees vs availability: Checking availability and adding attendees are COMPLETELY SEPARATE. If check_person_availability fails (calendar not shared), you can STILL add them as an attendee using update_event_attendees or create the event with them in the attendees list. Google Calendar will automatically send them an email invitation. NEVER skip adding an attendee just because availability check failed. NEVER send a manual email invitation instead — just add them directly as an attendee.
@@ -6823,6 +6958,8 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
     if (!process.env.OPENAI_API_KEY) {
         throw new Error('OpenAI API key missing');
     }
+
+    const emailSendConfirmedForTurn = isEmailSendConfirmedForTurn({ message, history });
 
     const normalizeAssistantText = (content) => {
         if (typeof content === 'string') return content.trim();
@@ -7042,6 +7179,15 @@ ${attachedFilesBlock}
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
             }
 
+            if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName) && !emailSendConfirmedForTurn) {
+                const confirmationError = buildEmailSendConfirmationMessage(toolName, args || {});
+                if (onToolEnd) onToolEnd(toolName, confirmationError, false, turnCount);
+                return { toolCall, error: confirmationError };
+            }
+            if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)) {
+                args = { ...(args || {}), confirmSend: true };
+            }
+
             if (onToolStart) onToolStart(toolName, args, turnCount);
             const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
             try {
@@ -7154,6 +7300,8 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
     if (!process.env.OPENAI_API_KEY) {
         throw new Error('OpenAI API key missing');
     }
+
+    const emailSendConfirmedForTurn = isEmailSendConfirmedForTurn({ message, history });
 
     const normalizeAssistantText = (content) => {
         if (typeof content === 'string') return content.trim();
@@ -7391,6 +7539,13 @@ ${attachedFilesBlock}
                 args = parseToolCallArguments(toolCall.function.arguments);
             } catch (error) {
                 return { toolCall, error: `Invalid arguments: ${error.message}` };
+            }
+
+            if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName) && !emailSendConfirmedForTurn) {
+                return { toolCall, error: buildEmailSendConfirmationMessage(toolName, args || {}) };
+            }
+            if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)) {
+                args = { ...(args || {}), confirmSend: true };
             }
 
             const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
