@@ -1171,7 +1171,10 @@ async function sendEmail({ to, subject, body, cc, bcc, attachments }) {
     let processedAttachments = [];
     if (attachments && Array.isArray(attachments)) {
         for (const att of attachments) {
-            if (att.localPath && fs.existsSync(att.localPath)) {
+            if (att.localPath) {
+                if (!fs.existsSync(att.localPath)) {
+                    throw new Error(`Attachment file not found at path: "${att.localPath}". Make sure to use the exact localPath returned by download_drive_file_to_local.`);
+                }
                 // Read file from disk and encode as base64
                 const fileContent = fs.readFileSync(att.localPath);
                 const base64Content = fileContent.toString('base64');
@@ -1632,11 +1635,11 @@ async function normalizeMessageRecipients(recipientsInput, { fieldName = 'recipi
     }
 
     const deduped = [...new Set(resolved)];
-    if (requireAtLeastOne && deduped.length === 0) {
-        throw new Error(`No valid ${fieldName} email addresses could be resolved. Please provide exact email address(es).`);
+    if (requireAtLeastOne && deduped.length === 0 && unresolved.length === 0) {
+        throw new Error(`No valid ${fieldName} email addresses could be resolved. ASK THE USER: "Could you please provide the exact email address for the recipient?".`);
     }
     if (unresolved.length > 0) {
-        throw new Error(`Could not resolve ${fieldName} email(s) from Gmail history: ${unresolved.join(', ')}. Please provide exact email address(es).`);
+        throw new Error(`Could not resolve email address for: ${unresolved.join(', ')}. ASK THE USER: "I couldn't find an email address for ${unresolved.join(', ')} in your Gmail history. Could you provide their exact email address?"`);
     }
     return deduped;
 }
@@ -2813,6 +2816,80 @@ async function downloadDriveFile({ fileId, format, filename }) {
         downloadUrl,
         webViewLink: meta.data.webViewLink || null,
         message: `Download ready for "${meta.data.name}". Use the provided link to save the file.`
+    };
+}
+
+// Download Drive file to local disk (for use as email attachment or upload to other services)
+async function downloadDriveFileToLocal({ fileId, format }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+    if (!fileId) throw new Error('fileId is required');
+
+    const meta = await driveClient.files.get({
+        fileId,
+        supportsAllDrives: true,
+        fields: 'id,name,mimeType,size'
+    });
+    const sourceName = sanitizeDownloadFilename(meta.data.name || 'download');
+    const mimeType = String(meta.data.mimeType || 'application/octet-stream');
+
+    let downloadStream;
+    let downloadName = sourceName;
+
+    if (mimeType.startsWith('application/vnd.google-apps.')) {
+        // Google Workspace file — need to export
+        const exportInfo = resolveDriveExportFormat(mimeType, format);
+        if (!exportInfo) {
+            throw new Error(`Google Workspace file type "${mimeType}" is not supported for export.`);
+        }
+        downloadName = ensureFilenameExtension(downloadName, exportInfo.extension);
+        const res = await driveClient.files.export(
+            { fileId, mimeType: exportInfo.mimeType },
+            { responseType: 'stream' }
+        );
+        downloadStream = res.data;
+    } else {
+        // Regular file — direct download
+        const res = await driveClient.files.get(
+            { fileId, alt: 'media' },
+            { responseType: 'stream' }
+        );
+        downloadStream = res.data;
+    }
+
+    // Save to uploads directory
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+    const ext = path.extname(downloadName);
+    const basename = path.basename(downloadName, ext);
+    const localFilename = `${basename}-${uniqueSuffix}${ext}`;
+    const localPath = path.join(UPLOADS_DIR, localFilename);
+
+    await new Promise((resolve, reject) => {
+        const writeStream = fs.createWriteStream(localPath);
+        downloadStream.pipe(writeStream);
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+    });
+
+    // Register in uploadedFiles map so it can be referenced
+    const localFileId = crypto.randomBytes(16).toString('hex');
+    const stats = fs.statSync(localPath);
+    uploadedFiles.set(localFileId, {
+        fileId: localFileId,
+        path: localPath,
+        originalName: downloadName,
+        size: stats.size,
+        mimeType: mimeType,
+        uploadedAt: Date.now()
+    });
+
+    return {
+        success: true,
+        fileId: localFileId,
+        localPath,
+        name: downloadName,
+        size: stats.size,
+        mimeType,
+        message: `File "${downloadName}" downloaded to server. Use localPath "${localPath}" to attach it to emails or upload to other services.`
     };
 }
 
@@ -4996,13 +5073,13 @@ const gmailTools = [
                         items: {
                             type: "object",
                             properties: {
-                                localPath: { type: "string", description: "Local server file path (from attached files)" },
+                                localPath: { type: "string", description: "FULL absolute local file path. Get this from download_drive_file_to_local result or from user-uploaded files. Must be a full path like C:\\...\\uploads\\file.txt, NOT just a filename." },
                                 filename: { type: "string", description: "Optional: desired filename for attachment" },
                                 mimeType: { type: "string", description: "Optional: MIME type (auto-detected if not provided)" }
                             },
                             required: ["localPath"]
                         },
-                        description: "Array of file attachments to include in the email"
+                        description: "File attachments. For Drive files: FIRST call download_drive_file_to_local to get localPath, THEN use that exact localPath here."
                     }
                 },
                 required: ["to", "subject", "body"]
@@ -5388,7 +5465,8 @@ const driveTools = [
     { type: "function", function: { name: "copy_drive_file", description: "Copy an existing Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID" }, name: { type: "string", description: "Optional new file name" }, parentId: { type: "string", description: "Optional parent folder for copy" } }, required: ["fileId"] } } },
     { type: "function", function: { name: "move_drive_file", description: "Move a Drive file to another folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, newParentId: { type: "string", description: "Destination folder ID" } }, required: ["fileId", "newParentId"] } } },
     { type: "function", function: { name: "share_drive_file", description: "Share a Drive file with a user email.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, emailAddress: { type: "string", description: "User email address to share with" }, role: { type: "string", description: "Permission role: reader, commenter, writer, organizer, fileOrganizer (default reader)" }, sendNotificationEmail: { type: "boolean", description: "Send share email notification (default true)" } }, required: ["fileId", "emailAddress"] } } },
-    { type: "function", function: { name: "download_drive_file", description: "Prepare a real browser download link for a Drive file. For Google Workspace files, choose export format (docx/pdf/txt/xlsx/etc.).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Optional export format for Google Workspace files (e.g. docx, pdf, txt, xlsx, csv)." }, filename: { type: "string", description: "Optional custom downloaded file name." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "download_drive_file", description: "Prepare a real browser download link for a Drive file. For attaching Drive files to emails, use download_drive_file_to_local instead.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Optional export format for Google Workspace files (e.g. docx, pdf, txt, xlsx, csv)." }, filename: { type: "string", description: "Optional custom downloaded file name." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "download_drive_file_to_local", description: "Download a Drive file to the server's local disk. Returns a localPath that can be used to attach the file to emails (via send_email attachments) or upload to GCS. Use this when you need to transfer a Drive file to another service.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Export format for Google Workspace files (pdf, docx, xlsx, csv, pptx, txt)" } }, required: ["fileId"] } } },
     { type: "function", function: { name: "extract_drive_file_text", description: "Extract readable text from a Drive file (best for summarization/Q&A; PDFs attempt conversion to text).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum text bytes to return (default 40000, max 120000)." } }, required: ["fileId"] } } },
     { type: "function", function: { name: "append_drive_document_text", description: "Append text to a Drive document. Uses Docs API when available; otherwise safely falls back to Drive text rewrite.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID (Google Doc or text-like file)." }, text: { type: "string", description: "Text to append to the end of the document." } }, required: ["fileId", "text"] } } },
     { type: "function", function: { name: "convert_file_to_google_doc", description: "Convert a file (like PDF) into a Google Doc stored in Drive. Optionally return a download link for the converted doc.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. a PDF)." }, title: { type: "string", description: "Optional title for the converted Google Doc." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted doc." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted document." }, downloadFormat: { type: "string", description: "Optional export format for converted doc (docx, pdf, txt). Default docx." } }, required: ["fileId"] } } },
@@ -5670,7 +5748,7 @@ async function executeDriveTool(toolName, args) {
         copy_drive_file: copyDriveFile,
         move_drive_file: moveDriveFile,
         share_drive_file: shareDriveFile,
-        download_drive_file: downloadDriveFile,
+        download_drive_file: downloadDriveFile, download_drive_file_to_local: downloadDriveFileToLocal,
         extract_drive_file_text: extractDriveFileText,
         append_drive_document_text: appendDriveDocumentText,
         convert_file_to_google_doc: convertFileToGoogleDoc,
@@ -6680,7 +6758,7 @@ Total Tools Available: ${toolCount}
 - Calendar event creation (CRITICAL - MUST FOLLOW): BEFORE calling create_event or create_meet_event, validate required information. If user says "create a meeting" or "schedule a meeting" without details: 1) Meeting title - if missing or generic ("meeting", "event"), STOP and ask "What should I name this meeting?", 2) Attendees - if missing and NOT a personal reminder, STOP and ask "Who should I invite to this meeting?". DO NOT proceed with tool call until you have this information. Generic titles like "Meeting" or "Event" are NOT acceptable without user confirmation. ONLY skip attendees if user explicitly says "personal", "reminder", "block time", or "just for me".
 - Calendar timezone: ALWAYS pass the timeZone parameter when creating or updating calendar events. CRITICAL: When the user says a time like "12pm", use that time DIRECTLY in the ISO string (e.g. "2026-02-11T12:00:00") — do NOT convert it to UTC. The timeZone parameter tells the API what timezone the datetime is in. Example: if user says "12pm to 1pm" and timezone is Asia/Kolkata, use startDateTime="2026-02-11T12:00:00" endDateTime="2026-02-11T13:00:00" timeZone="Asia/Kolkata". NEVER subtract or add UTC offsets to the time the user specified.
 - Calendar attendees: If the user gives a person name (not exact email), resolve it from Gmail history first and do not use placeholder domains like example.com.
-- Email recipients: For send_email/create_draft/forward_email and Outlook equivalents, resolve person names from Gmail history first. If an email cannot be resolved, ask the user for the exact email address and do not use placeholder domains (example.com/test.com/etc.).
+- Email recipients: For send_email/create_draft/forward_email and Outlook equivalents, the system automatically resolves person names from Gmail history. If resolution fails (error says "Could not resolve email"), you MUST ask the user for the exact email address — do NOT show the raw error, do NOT guess, do NOT use placeholder domains (example.com/test.com/domain.com). Say something like: "I couldn't find an email for [name]. Could you provide their exact email address?"
 - Email formatting: Use \n for line breaks in email body (will be converted to proper HTML breaks). For professional emails, include proper greetings, spacing, and signatures.
 - Email attachments: To attach uploaded files, use the attachments parameter with localPath from attached files. Example: attachments: [{ localPath: "path/from/attached/files" }]
 - Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
@@ -6688,6 +6766,18 @@ Total Tools Available: ${toolCount}
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
 - Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access. Use download_drive_file for real file downloads, extract_drive_file_text for summarization/Q&A, append_drive_document_text to append text to docs/files, convert_file_to_google_doc to convert PDFs/files into Docs stored in Drive, and convert_file_to_google_sheet to convert CSV/XLSX/files into Sheets stored in Drive.
+- SENDING FILES FROM DRIVE VIA EMAIL (MANDATORY 3-STEP PROCESS - NO EXCEPTIONS):
+  When a user says "send [file] from Drive to [person]" or "email [file] to [person]" or "attach [file] from Drive", you MUST follow these exact steps:
+  Step 1: list_drive_files to find the file and get its fileId
+  Step 2: download_drive_file_to_local with that fileId → this returns { localPath: "C:\\...\\uploads\\filename.txt" }
+  Step 3: send_email with attachments: [{ localPath: "<EXACT localPath from Step 2 result>" }]
+  CRITICAL RULES:
+  - The localPath in Step 3 MUST be the EXACT full absolute path returned by Step 2 (e.g., "C:\\Meghan\\MCP-tools\\uploads\\Creating PR-1739...txt")
+  - NEVER use just the filename (e.g., "Creating PR.txt") as localPath — it MUST be the full path
+  - NEVER skip Step 2 — without it, there is NO file to attach
+  - NEVER paste file content into the email body as a substitute for attaching
+  - NEVER use extract_drive_file_text for sending files — that is for reading/summarizing, NOT for email attachments
+  - NEVER use download_drive_file for email attachments — it returns a browser URL, NOT a local file
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
 - Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
 - Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
