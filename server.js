@@ -8248,10 +8248,130 @@ app.post('/api/meet/finalize', async (req, res) => {
             return sections.join('\n').trim();
         }
 
+        function parseJsonFromModelOutput(text) {
+            const raw = String(text || '').trim();
+            if (!raw) return null;
+
+            const candidates = [raw];
+            const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+            if (fenced && fenced[1]) {
+                candidates.push(String(fenced[1]).trim());
+            }
+
+            const firstBrace = raw.indexOf('{');
+            const lastBrace = raw.lastIndexOf('}');
+            if (firstBrace >= 0 && lastBrace > firstBrace) {
+                candidates.push(raw.slice(firstBrace, lastBrace + 1));
+            }
+
+            for (const candidate of candidates) {
+                try {
+                    const parsed = JSON.parse(candidate);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        return parsed;
+                    }
+                } catch {
+                    continue;
+                }
+            }
+
+            return null;
+        }
+
+        async function polishTranscriptCaptions(captions) {
+            if (!Array.isArray(captions) || captions.length === 0) {
+                return captions;
+            }
+
+            const totalChars = captions.reduce((sum, caption) => sum + String(caption.text || '').length, 0);
+            if (captions.length > 400 || totalChars > 40000) {
+                console.log('[Meet] Skipping transcript polishing due to size.');
+                return captions;
+            }
+
+            const turnsForModel = captions.map((caption, index) => ({
+                index: index + 1,
+                speaker: caption.speaker,
+                time: formatCaptionTime(caption.timestamp),
+                text: caption.text
+            }));
+
+            const polishPrompt = `You are cleaning an automatic meeting transcript.
+
+Input turns (JSON):
+${JSON.stringify(turnsForModel)}
+
+Return ONLY valid JSON in this exact shape:
+{
+  "turns": [
+    { "index": 1, "text": "..." }
+  ]
+}
+
+Rules:
+- Keep the same number of turns and same indices.
+- Do NOT merge, split, remove, reorder, or invent turns.
+- Do NOT add speaker names to text.
+- Fix obvious spelling, punctuation, and capitalization only.
+- Preserve meaning; if uncertain, keep original wording.
+- No markdown, no code fences, no extra keys.`;
+
+            try {
+                console.log('[Meet] Polishing transcript text with OpenAI...');
+
+                const polishCompletion = await openai.chat.completions.create({
+                    model: OPENAI_MODEL,
+                    messages: [
+                        {
+                            role: 'system',
+                            content: 'You are a strict transcript cleaner. Return JSON only.'
+                        },
+                        {
+                            role: 'user',
+                            content: polishPrompt
+                        }
+                    ],
+                    temperature: 0.1,
+                    max_tokens: 2500
+                });
+
+                const raw = polishCompletion.choices?.[0]?.message?.content || '';
+                const parsed = parseJsonFromModelOutput(raw);
+                const modelTurns = Array.isArray(parsed?.turns) ? parsed.turns : [];
+                if (modelTurns.length === 0) {
+                    return captions;
+                }
+
+                const textByIndex = new Map();
+                for (const turn of modelTurns) {
+                    const index = Number(turn?.index);
+                    const text = typeof turn?.text === 'string'
+                        ? turn.text.replace(/\s+/g, ' ').trim()
+                        : '';
+
+                    if (!Number.isInteger(index) || index < 1 || !text) {
+                        continue;
+                    }
+
+                    textByIndex.set(index, text);
+                }
+
+                return captions.map((caption, idx) => {
+                    const polishedText = textByIndex.get(idx + 1);
+                    if (!polishedText) return caption;
+                    return { ...caption, text: polishedText };
+                });
+            } catch (error) {
+                console.error('[Meet] Transcript polishing failed, using cleaned transcript:', error.message);
+                return captions;
+            }
+        }
+
         const normalizedCaptions = normalizeCaptions(session.captions);
         const cleanedCaptions = deduplicateCaptions(normalizedCaptions);
-        const transcriptStepByStep = formatStepByStepTranscript(cleanedCaptions);
-        const transcriptSpeakerWise = formatSpeakerWiseTranscript(cleanedCaptions);
+        const polishedCaptions = await polishTranscriptCaptions(cleanedCaptions);
+        const transcriptStepByStep = formatStepByStepTranscript(polishedCaptions);
+        const transcriptSpeakerWise = formatSpeakerWiseTranscript(polishedCaptions);
 
         if (!transcriptStepByStep || transcriptStepByStep.trim().length === 0) {
             return res.status(400).json({ error: 'No captions captured' });
@@ -8327,13 +8447,13 @@ ${summary}
 
 ---
 
-## Full Transcript (Step-by-Step)
+## Full Transcript (Polished Step-by-Step)
 
 ${transcriptStepByStep}
 
 ---
 
-## Full Transcript (Speaker-Wise)
+## Full Transcript (Polished Speaker-Wise)
 
 ${transcriptSpeakerWise}
 
