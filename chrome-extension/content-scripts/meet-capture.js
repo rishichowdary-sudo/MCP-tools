@@ -144,7 +144,37 @@ function extractCaptionFromElement(element) {
     speaker = getCurrentUserName();
   }
 
+  // Clean up text - remove common prefixes
+  text = cleanCaptionText(text, speaker);
+
   return { speaker, text };
+}
+
+/**
+ * Clean up caption text (remove "You" prefix and other artifacts)
+ */
+function cleanCaptionText(text, speaker) {
+  // Remove "You" prefix (e.g., "YouHello" → "Hello")
+  if (text.startsWith('You') && text.length > 3) {
+    // Check if next character is uppercase (like "YouHello")
+    if (text[3] && text[3] === text[3].toUpperCase()) {
+      text = text.substring(3);
+    }
+  }
+
+  // Remove "You " prefix with space
+  text = text.replace(/^You\s+/, '');
+
+  // Remove speaker name prefix if it's duplicated
+  if (speaker && text.startsWith(speaker)) {
+    text = text.substring(speaker.length).trim();
+    text = text.replace(/^[:,-]\s*/, ''); // Remove leading : or , -
+  }
+
+  // Remove extra whitespace
+  text = text.trim().replace(/\s+/g, ' ');
+
+  return text;
 }
 
 /**
