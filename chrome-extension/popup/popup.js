@@ -36,6 +36,47 @@ let captions = [];
 let meetingMetadata = null;
 let currentDocumentId = null;
 
+function normalizeMeetingTitle(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function isLikelyInvalidMeetingTitle(title) {
+  const normalized = normalizeMeetingTitle(title);
+  if (!normalized) return true;
+
+  const lower = normalized.toLowerCase();
+  if (
+    lower === 'google meet' ||
+    lower === 'meet' ||
+    lower === 'ready' ||
+    lower === 'start' ||
+    lower === 'start capture'
+  ) {
+    return true;
+  }
+
+  // Ignore date/time strings accidentally picked from Meet UI.
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4},?\s+\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?$/i.test(normalized)) {
+    return true;
+  }
+  if (/^\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)$/i.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function pickMeetingTitle(...candidates) {
+  for (const candidate of candidates) {
+    const title = normalizeMeetingTitle(candidate);
+    if (!isLikelyInvalidMeetingTitle(title)) {
+      return title;
+    }
+  }
+  return 'Google Meet';
+}
+
 /**
  * Initialize popup
  */
@@ -86,7 +127,7 @@ async function fetchMeetingInfo() {
 
     // Get detected title from storage (set by content script)
     const storage = await chrome.storage.local.get(['lastMeetingTitle']);
-    const detectedTitle = storage.lastMeetingTitle;
+    const detectedTitle = normalizeMeetingTitle(storage.lastMeetingTitle);
 
     // Fetch metadata from backend
     showLoading('Fetching meeting info...');
@@ -104,7 +145,7 @@ async function fetchMeetingInfo() {
       // No metadata found (meeting not in calendar)
       // Use detected title or fallback to 'Google Meet'
       meetingMetadata = {
-        title: detectedTitle || 'Google Meet',
+        title: pickMeetingTitle(detectedTitle),
         meetingCode,
         startTime: new Date().toISOString(),
         attendees: []
@@ -133,7 +174,10 @@ async function detectMeetingTitle() {
       // Tab title format is usually: "Meeting Name - Google Meet"
       const titleParts = tabTitle.split(' - ');
       if (titleParts.length > 1) {
-        return titleParts[0].trim();
+        const candidate = titleParts[0].trim();
+        if (!isLikelyInvalidMeetingTitle(candidate)) {
+          return candidate;
+        }
       }
     }
 
@@ -154,7 +198,7 @@ async function displayMeetingInfo(metadata) {
 
   // Try to detect meeting title from page
   const detectedTitle = await detectMeetingTitle();
-  const title = metadata.title || detectedTitle || 'Google Meet';
+  const title = pickMeetingTitle(metadata.title, detectedTitle);
 
   meetingTitleInput.value = title;
 
@@ -279,11 +323,20 @@ async function handleStopCapture() {
 
       // Store document ID for sharing
       currentDocumentId = result.documentId;
+      const attendeeList = Array.isArray(result.attendees) ? result.attendees : [];
 
       // Show success message with doc link
       successText.textContent = `Meeting notes created with ${captions.length} captions`;
       docLink.href = result.docUrl;
       docLink.style.display = 'flex';
+
+      // Sharing is always manual from UI.
+      attendeeEmails.value = attendeeList.join(', ');
+      if (attendeeList.length > 0) {
+        showShareStatus('Document created. Click "Share Document" to send to attendees.', 'success');
+      } else {
+        showShareStatus('Document created. Add attendee emails and click "Share Document".', 'success');
+      }
 
       showSuccess('Meeting notes saved successfully!', true);
 
