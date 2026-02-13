@@ -1765,23 +1765,23 @@ async function sendMessage() {
                         finalHtml += formatStepsPipeline(data.steps);
                     }
 
-                    const LIST_TOOLS = ['list_emails', 'search_emails', 'list_events', 'list_repos', 'list_issues', 'list_pull_requests', 'list_drive_files', 'list_spreadsheets', 'list_chat_spaces'];
-                    const isListToolOnly = data.toolResults &&
-                        data.toolResults.length === 1 &&
-                        LIST_TOOLS.includes(data.toolResults[0].tool) &&
-                        data.toolResults[0].result;
-
-                    if (!isListToolOnly) {
-                        finalHtml += formatResponse(data.response);
+                    const finalResponseText = String(data.response || '').trim() || String(accumulatedText || '').trim();
+                    if (finalResponseText) {
+                        finalHtml += formatResponse(finalResponseText);
                     }
 
                     if (data.toolResults && data.toolResults.length > 0) {
                         finalHtml += `<div class="tool-results-stack">${formatToolResults(data.toolResults)}</div>`;
                     }
 
+                    // Never leave an empty assistant bubble after streaming.
+                    if (!finalHtml.trim()) {
+                        finalHtml = formatResponse('I completed your request, but no response text was returned. Please try again.');
+                    }
+
                     assistantMsgDiv.querySelector('.message-bubble').innerHTML = finalHtml;
                     pushChatHistoryEntry('user', message);
-                    pushChatHistoryEntry('assistant', data.response || '');
+                    pushChatHistoryEntry('assistant', finalResponseText || '');
                 } else if (event === 'error') {
                     streamingText.innerHTML = `<p style="color: #ef4444;">Error: ${escapeHtml(data.error)}</p>`;
                     turnsBadge.style.display = 'none';
