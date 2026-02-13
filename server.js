@@ -1713,6 +1713,47 @@ function normalizeIdentity(text) {
         .trim();
 }
 
+function normalizeAttendeeDirective(text) {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function isSelfReferenceAttendeeToken(text) {
+    const normalized = normalizeAttendeeDirective(text);
+    return normalized === 'me' || normalized === 'myself' || normalized === 'i';
+}
+
+function isSelfOnlyAttendeeDirective(text) {
+    const normalized = normalizeAttendeeDirective(text);
+    if (!normalized) return false;
+
+    if (normalized === 'just me' || normalized === 'only me') return true;
+    if (normalized === 'just myself' || normalized === 'only myself') return true;
+    if (normalized === 'me only' || normalized === 'myself only') return true;
+    if (normalized === 'for me only' || normalized === 'just for me') return true;
+    if (normalized === 'no attendees') return true;
+    return /\b(just|only)\s+(me|myself)\b/.test(normalized);
+}
+
+function hasSelfOnlyAttendeeIntentInMessage(message) {
+    const normalized = normalizeAttendeeDirective(message);
+    if (!normalized) return false;
+    if (/\b(just|only)\s+(me|myself)\b/.test(normalized)) return true;
+    if (/\b(me|myself)\s+only\b/.test(normalized)) return true;
+    if (/\bjust for me\b/.test(normalized)) return true;
+    return false;
+}
+
+function hasMeetingIntentInMessage(message) {
+    const text = String(message || '').toLowerCase();
+    if (!text) return false;
+    return /\b(create|schedule|book|set up|setup)\b[\s\S]*\b(meeting|meet|call|sync|standup)\b/.test(text)
+        || /\b(meeting|google meet|video call)\b/.test(text);
+}
+
 function isValidEmail(value) {
     if (!value || typeof value !== 'string') return false;
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
@@ -1909,12 +1950,26 @@ async function resolveEmailFromGmailHistory(identity) {
 async function normalizeEventAttendees(attendeesInput = []) {
     if (!Array.isArray(attendeesInput) || attendeesInput.length === 0) return [];
 
+    const ownEmail = await getPrimaryEmailAddress();
     const resolved = [];
     const unresolved = [];
+    let selfOnlyRequested = false;
 
     for (const item of attendeesInput) {
         const raw = String(item || '').trim();
         if (!raw) continue;
+
+        if (isSelfOnlyAttendeeDirective(raw)) {
+            selfOnlyRequested = true;
+            continue;
+        }
+
+        if (isSelfReferenceAttendeeToken(raw)) {
+            if (ownEmail && !isDisallowedAttendeeEmail(ownEmail)) {
+                resolved.push(ownEmail.toLowerCase());
+            }
+            continue;
+        }
 
         if (isValidEmail(raw) && !isDisallowedAttendeeEmail(raw)) {
             resolved.push(raw.toLowerCase());
@@ -1927,6 +1982,12 @@ async function normalizeEventAttendees(attendeesInput = []) {
     }
 
     const deduped = [...new Set(resolved)];
+    if (selfOnlyRequested) {
+        if (ownEmail && !isDisallowedAttendeeEmail(ownEmail)) {
+            return [ownEmail.toLowerCase()];
+        }
+        return [];
+    }
     if (unresolved.length > 0) {
         throw new Error(`Could not resolve attendee email(s) from Gmail history: ${unresolved.join(', ')}. Please provide exact email address(es).`);
     }
@@ -2146,6 +2207,26 @@ async function getEvent({ calendarId = 'primary', eventId }) {
 // 3. Create Event
 async function createEvent({ calendarId = 'primary', summary, description, location, startDateTime, endDateTime, startDate, endDate, attendees, recurrence, timeZone, createMeetLink = false }) {
     if (!calendarClient) throw new Error('Calendar not authenticated');
+    const hasTimedStart = !!startDateTime;
+    const hasTimedEnd = !!endDateTime;
+    const hasAllDayStart = !!startDate;
+    const hasAllDayEnd = !!endDate;
+    const hasTimedRange = hasTimedStart || hasTimedEnd;
+    const hasAllDayRange = hasAllDayStart || hasAllDayEnd;
+
+    if (hasTimedRange && hasAllDayRange) {
+        throw new Error('Use either startDateTime/endDateTime OR startDate/endDate, not both.');
+    }
+    if (hasTimedRange && (!hasTimedStart || !hasTimedEnd)) {
+        throw new Error('Timed events require both startDateTime and endDateTime.');
+    }
+    if (hasAllDayRange && (!hasAllDayStart || !hasAllDayEnd)) {
+        throw new Error('All-day events require both startDate and endDate.');
+    }
+    if (!hasTimedRange && !hasAllDayRange) {
+        throw new Error('Please provide a schedule: startDateTime/endDateTime for timed events or startDate/endDate for all-day events.');
+    }
+
     const event = { summary };
     if (description) event.description = description;
     if (location) event.location = location;
@@ -5774,6 +5855,37 @@ function isSheetsRelatedToolName(toolName) {
     return sheetsToolNames.has(name) || name.startsWith(SHEETS_MCP_TOOL_PREFIX);
 }
 
+function applyUserIntentGuardsToToolArgs({ toolName, args, userMessage }) {
+    if (!calendarToolNames.has(toolName)) {
+        return args;
+    }
+
+    const safeArgs = (args && typeof args === 'object' && !Array.isArray(args))
+        ? { ...args }
+        : {};
+
+    const meetingIntent = hasMeetingIntentInMessage(userMessage);
+    const selfOnlyFromMessage = hasSelfOnlyAttendeeIntentInMessage(userMessage);
+    const selfOnlyFromArgs = Array.isArray(safeArgs.attendees)
+        && safeArgs.attendees.some(item => isSelfOnlyAttendeeDirective(item));
+    const forceSelfOnlyAttendees = selfOnlyFromMessage || selfOnlyFromArgs;
+
+    if ((toolName === 'create_event' || toolName === 'create_meet_event') && forceSelfOnlyAttendees) {
+        safeArgs.attendees = ['me'];
+    }
+
+    if (toolName === 'update_event_attendees' && forceSelfOnlyAttendees) {
+        safeArgs.addAttendees = ['me'];
+        delete safeArgs.attendees;
+    }
+
+    if (toolName === 'create_event' && meetingIntent && safeArgs.createMeetLink !== false) {
+        safeArgs.createMeetLink = true;
+    }
+
+    return safeArgs;
+}
+
 function shouldPreferDocumentEditingRoute(userMessage) {
     const message = String(userMessage || '').toLowerCase();
     if (!message) return false;
@@ -6901,6 +7013,7 @@ Total Tools Available: ${toolCount}
    - If attendees are missing and it's NOT explicitly a personal reminder, ask: "Who should I invite to this meeting?"
    - NEVER create meetings with generic titles like "Meeting" or "Event" without confirming first
    - NEVER create business meetings without attendees unless user explicitly says it's personal/solo
+   - If user asks to create/schedule a meeting, use Calendar meeting tools. Do NOT route this to Google Docs tools.
 
 1. **DISCOVERY FIRST, NEVER GUESS**: When the user refers to emails/docs/files/issues by description, use search/list/discovery tools first. Never invent IDs, email addresses, or repository names.
 
@@ -6939,6 +7052,7 @@ Total Tools Available: ${toolCount}
 - Calendar event creation (CRITICAL - MUST FOLLOW): BEFORE calling create_event or create_meet_event, validate required information. If user says "create a meeting" or "schedule a meeting" without details: 1) Meeting title - if missing or generic ("meeting", "event"), STOP and ask "What should I name this meeting?", 2) Attendees - if missing and NOT a personal reminder, STOP and ask "Who should I invite to this meeting?". DO NOT proceed with tool call until you have this information. Generic titles like "Meeting" or "Event" are NOT acceptable without user confirmation. ONLY skip attendees if user explicitly says "personal", "reminder", "block time", or "just for me".
 - Calendar timezone: ALWAYS pass the timeZone parameter when creating or updating calendar events. CRITICAL: When the user says a time like "12pm", use that time DIRECTLY in the ISO string (e.g. "2026-02-11T12:00:00") — do NOT convert it to UTC. The timeZone parameter tells the API what timezone the datetime is in. Example: if user says "12pm to 1pm" and timezone is Asia/Kolkata, use startDateTime="2026-02-11T12:00:00" endDateTime="2026-02-11T13:00:00" timeZone="Asia/Kolkata". NEVER subtract or add UTC offsets to the time the user specified.
 - Calendar attendees: If the user gives a person name (not exact email), pass the name directly to the tool. The system will resolve it from Gmail history. NEVER construct an email address yourself by combining a name with a domain you see from other contacts.
+- Calendar attendees (self-only intent): If the user says "just me", "only me", or "just myself", keep the attendee list self-only and NEVER resolve "me" to another contact.
 - Email recipients (CRITICAL - READ CAREFULLY): When the user provides a person's name (not a full email), pass JUST THE NAME to send_email/create_draft — the system will automatically resolve it from Gmail history. RULES:
   1. NEVER construct/fabricate an email address yourself. For example, if user says "send to shubham" and you know others use @terralogic.com, do NOT guess "shubham@terralogic.com" — that is WRONG. The real email might be "shubham.barhate@terralogic.com" or completely different.
   2. Pass the raw name (e.g., to: ["shubham"]) and let the system resolve it.
@@ -7243,6 +7357,12 @@ ${attachedFilesBlock}
             if (EMAIL_SEND_CONFIRMATION_TOOLS.has(toolName)) {
                 args = { ...(args || {}), confirmSend: true };
             }
+
+            args = applyUserIntentGuardsToToolArgs({
+                toolName,
+                args,
+                userMessage: message
+            });
 
             if (onToolStart) onToolStart(toolName, args, turnCount);
             const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
@@ -7611,6 +7731,12 @@ ${attachedFilesBlock}
                 args = { ...(args || {}), confirmSend: true };
             }
 
+            args = applyUserIntentGuardsToToolArgs({
+                toolName,
+                args,
+                userMessage: message
+            });
+
             const step = { tool: toolName, args, turn: turnCount, timestamp: Date.now() };
             try {
                 const result = await executeTool(toolName, args);
@@ -7936,14 +8062,15 @@ app.get('/api/meet/metadata', async (req, res) => {
             timeMax
         });
 
-        if (!eventsResult.success || !eventsResult.events) {
+        if (!eventsResult || !Array.isArray(eventsResult.events)) {
             return res.json({ error: 'No events found', meeting: null });
         }
 
         // Find event with matching Meet link
         const meeting = eventsResult.events.find(event => {
-            if (event.hangoutLink) {
-                return event.hangoutLink.includes(code);
+            const link = event.meetLink || event.hangoutLink || '';
+            if (link) {
+                return link.includes(code);
             }
             return false;
         });
@@ -7968,7 +8095,7 @@ app.get('/api/meet/metadata', async (req, res) => {
                 endTime: meeting.end?.dateTime || meeting.end?.date,
                 attendees,
                 eventId: meeting.id,
-                hangoutLink: meeting.hangoutLink
+                hangoutLink: meeting.meetLink || meeting.hangoutLink || null
             }
         });
 
@@ -8231,26 +8358,13 @@ ${transcriptSpeakerWise}
 
         console.log('[Meet] Google Doc created:', docUrl);
 
-        // Share with attendees if available
-        if (session.metadata.attendees && session.metadata.attendees.length > 0) {
-            console.log('[Meet] Sharing doc with attendees...');
-
-            for (const email of session.metadata.attendees) {
-                try {
-                    await shareDriveFile({
-                        fileId: documentId,
-                        emailAddress: email,
-                        role: 'writer',
-                        sendNotificationEmail: true
-                    });
-                    console.log(`[Meet] Shared with ${email}`);
-                } catch (shareError) {
-                    console.error(`[Meet] Failed to share with ${email}:`, shareError.message);
-                }
-            }
-        }
-
         // Clean up session
+        const attendeeEmails = Array.isArray(session.metadata.attendees)
+            ? session.metadata.attendees
+                .map(email => String(email || '').trim())
+                .filter(Boolean)
+            : [];
+
         meetSessions.delete(sessionId);
 
         res.json({
@@ -8258,7 +8372,9 @@ ${transcriptSpeakerWise}
             documentId,
             docUrl,
             summary,
-            captionCount: cleanedCaptions.length
+            captionCount: cleanedCaptions.length,
+            attendees: attendeeEmails,
+            autoShared: false
         });
 
     } catch (error) {

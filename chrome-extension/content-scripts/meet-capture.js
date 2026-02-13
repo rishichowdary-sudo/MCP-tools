@@ -457,6 +457,34 @@ function getMeetingCode() {
   return match ? match[1] : null;
 }
 
+function normalizeMeetingTitle(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function isLikelyInvalidMeetingTitle(title) {
+  const normalized = normalizeMeetingTitle(title);
+  if (!normalized) return true;
+
+  if (
+    normalized.toLowerCase().includes('google meet') ||
+    normalized.toLowerCase().includes('meet.google.com') ||
+    normalized.toLowerCase().includes('calling')
+  ) {
+    return true;
+  }
+
+  // Ignore date/time values accidentally selected from page headings.
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4},?\s+\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?$/i.test(normalized)) {
+    return true;
+  }
+  if (/^\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)$/i.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Try to detect meeting title from Google Meet page
  */
@@ -473,13 +501,8 @@ function getMeetingTitle() {
   for (const selector of selectors) {
     const el = document.querySelector(selector);
     if (el) {
-      const title = el.getAttribute('data-meeting-title') || el.textContent.trim();
-      // Filter out generic titles
-      if (title &&
-          title.length > 3 &&
-          !title.includes('Google Meet') &&
-          !title.includes('meet.google.com') &&
-          !title.includes('Calling')) {
+      const title = normalizeMeetingTitle(el.getAttribute('data-meeting-title') || el.textContent);
+      if (title && title.length > 3 && !isLikelyInvalidMeetingTitle(title)) {
         console.log('[Meet Capture] Detected meeting title:', title);
         return title;
       }
@@ -490,8 +513,11 @@ function getMeetingTitle() {
   const docTitle = document.title;
   if (docTitle && docTitle.includes(' - ')) {
     const parts = docTitle.split(' - ');
-    if (parts.length > 1 && !parts[0].includes('Google Meet')) {
-      return parts[0].trim();
+    if (parts.length > 1) {
+      const candidate = normalizeMeetingTitle(parts[0]);
+      if (!isLikelyInvalidMeetingTitle(candidate)) {
+        return candidate;
+      }
     }
   }
 
