@@ -171,8 +171,28 @@ function cleanCaptionText(text, speaker) {
     text = text.replace(/^[:,-]\s*/, ''); // Remove leading : or , -
   }
 
-  // Remove extra whitespace
+  // Remove Google Meet UI elements that shouldn't be captured
+  const uiPatterns = [
+    /arrow_downward/gi,
+    /arrow_upward/gi,
+    /Jump to bottom/gi,
+    /Jump to top/gi,
+    /Turn on captions/gi,
+    /Turn off captions/gi,
+    /Captions/gi,
+    /CC/gi,
+    /More options/gi,
+    /Settings/gi
+  ];
+
+  for (const pattern of uiPatterns) {
+    text = text.replace(pattern, '');
+  }
+
+  // Remove extra whitespace and punctuation artifacts
   text = text.trim().replace(/\s+/g, ' ');
+  text = text.replace(/^\.\s*/, ''); // Remove leading period
+  text = text.replace(/\s*\.\s*$/, '.'); // Clean up trailing period
 
   return text;
 }
@@ -261,6 +281,18 @@ function finalizeCaption(element, speaker, text) {
   // Ignore if too short (likely a fragment that slipped through)
   if (text.length < 5) {
     console.log('[Meet Capture] Discarding short caption:', text);
+    return;
+  }
+
+  // Ignore if text contains only punctuation or UI elements
+  if (/^[.\s,!?-]+$/.test(text)) {
+    console.log('[Meet Capture] Discarding punctuation-only text:', text);
+    return;
+  }
+
+  // Ignore if text looks like a UI element (all lowercase/uppercase single word)
+  if (text.length < 15 && !/[a-z].*[A-Z]|[A-Z].*[a-z]/.test(text) && !text.includes(' ')) {
+    console.log('[Meet Capture] Discarding likely UI element:', text);
     return;
   }
 
@@ -426,15 +458,58 @@ function getMeetingCode() {
 }
 
 /**
+ * Try to detect meeting title from Google Meet page
+ */
+function getMeetingTitle() {
+  // Try multiple selectors for meeting title
+  const selectors = [
+    '[data-meeting-title]',
+    '[aria-label*="meeting" i]',
+    '.u6vdEc', // Meeting title class (may change)
+    'h1',
+    '[role="heading"]'
+  ];
+
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (el) {
+      const title = el.getAttribute('data-meeting-title') || el.textContent.trim();
+      // Filter out generic titles
+      if (title &&
+          title.length > 3 &&
+          !title.includes('Google Meet') &&
+          !title.includes('meet.google.com') &&
+          !title.includes('Calling')) {
+        console.log('[Meet Capture] Detected meeting title:', title);
+        return title;
+      }
+    }
+  }
+
+  // Try from document title
+  const docTitle = document.title;
+  if (docTitle && docTitle.includes(' - ')) {
+    const parts = docTitle.split(' - ');
+    if (parts.length > 1 && !parts[0].includes('Google Meet')) {
+      return parts[0].trim();
+    }
+  }
+
+  return null;
+}
+
+/**
  * Send meeting info to background on load
  */
 function sendMeetingInfo() {
   const meetingCode = getMeetingCode();
+  const meetingTitle = getMeetingTitle();
 
   if (meetingCode) {
     chrome.runtime.sendMessage({
       type: 'MEETING_DETECTED',
       meetingCode: meetingCode,
+      meetingTitle: meetingTitle,
       url: window.location.href
     });
   }

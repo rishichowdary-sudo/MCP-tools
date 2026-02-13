@@ -10,7 +10,7 @@ const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const statusIndicator = document.getElementById('statusIndicator');
 const meetingInfo = document.getElementById('meetingInfo');
-const meetingTitle = document.getElementById('meetingTitle');
+const meetingTitleInput = document.getElementById('meetingTitleInput');
 const meetingTime = document.getElementById('meetingTime');
 const meetingAttendees = document.getElementById('meetingAttendees');
 const transcriptContainer = document.getElementById('transcriptContainer');
@@ -26,11 +26,15 @@ const successText = document.getElementById('successText');
 const docLink = document.getElementById('docLink');
 const connectionStatus = document.getElementById('connectionStatus');
 const wsStatus = document.getElementById('wsStatus');
+const shareBtn = document.getElementById('shareBtn');
+const attendeeEmails = document.getElementById('attendeeEmails');
+const shareStatus = document.getElementById('shareStatus');
 
 // State
 let currentSession = null;
 let captions = [];
 let meetingMetadata = null;
+let currentDocumentId = null;
 
 /**
  * Initialize popup
@@ -80,6 +84,10 @@ async function fetchMeetingInfo() {
     const meetingCode = match[1];
     console.log('[Popup] Meeting code:', meetingCode);
 
+    // Get detected title from storage (set by content script)
+    const storage = await chrome.storage.local.get(['lastMeetingTitle']);
+    const detectedTitle = storage.lastMeetingTitle;
+
     // Fetch metadata from backend
     showLoading('Fetching meeting info...');
     const response = await sendMessageToBackground({
@@ -94,8 +102,9 @@ async function fetchMeetingInfo() {
       displayMeetingInfo(response.metadata);
     } else {
       // No metadata found (meeting not in calendar)
+      // Use detected title or fallback to 'Google Meet'
       meetingMetadata = {
-        title: 'Google Meet',
+        title: detectedTitle || 'Google Meet',
         meetingCode,
         startTime: new Date().toISOString(),
         attendees: []
@@ -111,12 +120,43 @@ async function fetchMeetingInfo() {
 }
 
 /**
+ * Try to detect meeting title from Google Meet page
+ */
+async function detectMeetingTitle() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tabs[0]) return null;
+
+    // Try to get title from tab title (Google Meet shows it there)
+    const tabTitle = tabs[0].title;
+    if (tabTitle && !tabTitle.includes('Google Meet') && tabTitle.length > 3) {
+      // Tab title format is usually: "Meeting Name - Google Meet"
+      const titleParts = tabTitle.split(' - ');
+      if (titleParts.length > 1) {
+        return titleParts[0].trim();
+      }
+    }
+
+    // Could also inject content script to read from page DOM
+    // For now, return null if can't detect
+    return null;
+  } catch (e) {
+    console.error('Error detecting meeting title:', e);
+    return null;
+  }
+}
+
+/**
  * Display meeting information
  */
-function displayMeetingInfo(metadata) {
+async function displayMeetingInfo(metadata) {
   meetingInfo.style.display = 'block';
 
-  meetingTitle.textContent = metadata.title || 'Google Meet';
+  // Try to detect meeting title from page
+  const detectedTitle = await detectMeetingTitle();
+  const title = metadata.title || detectedTitle || 'Google Meet';
+
+  meetingTitleInput.value = title;
 
   if (metadata.startTime) {
     const date = new Date(metadata.startTime);
@@ -140,6 +180,7 @@ function setupEventListeners() {
   startBtn.addEventListener('click', handleStartCapture);
   stopBtn.addEventListener('click', handleStopCapture);
   dismissError.addEventListener('click', hideError);
+  shareBtn.addEventListener('click', handleShareDocument);
 
   // Listen for messages from background
   chrome.runtime.onMessage.addListener((message) => {
@@ -170,9 +211,16 @@ async function handleStartCapture() {
     startBtn.disabled = true;
     showLoading('Starting capture...');
 
+    // Use the edited meeting title from input
+    const editedTitle = meetingTitleInput.value.trim() || 'Google Meet';
+    const updatedMetadata = {
+      ...meetingMetadata,
+      title: editedTitle
+    };
+
     const response = await sendMessageToBackground({
       type: 'START_SESSION',
-      metadata: meetingMetadata
+      metadata: updatedMetadata
     });
 
     hideLoading();
@@ -228,6 +276,9 @@ async function handleStopCapture() {
 
     if (finalizeResponse.success) {
       const result = finalizeResponse.result;
+
+      // Store document ID for sharing
+      currentDocumentId = result.documentId;
 
       // Show success message with doc link
       successText.textContent = `Meeting notes created with ${captions.length} captions`;
@@ -397,6 +448,83 @@ function showError(text) {
  */
 function hideError() {
   errorMessage.style.display = 'none';
+}
+
+/**
+ * Handle share document with attendees
+ */
+async function handleShareDocument() {
+  const emailsInput = attendeeEmails.value.trim();
+
+  if (!emailsInput) {
+    showShareStatus('Please enter at least one email address', 'error');
+    return;
+  }
+
+  if (!currentDocumentId) {
+    showShareStatus('No document to share', 'error');
+    return;
+  }
+
+  // Parse emails (comma-separated)
+  const emails = emailsInput
+    .split(',')
+    .map(e => e.trim())
+    .filter(e => e.length > 0);
+
+  if (emails.length === 0) {
+    showShareStatus('Please enter valid email addresses', 'error');
+    return;
+  }
+
+  try {
+    shareBtn.disabled = true;
+    shareBtn.textContent = 'Sharing...';
+
+    const response = await fetch('http://localhost:3000/api/meet/share', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        documentId: currentDocumentId,
+        emails: emails
+      })
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      const message = `✓ Shared with ${data.shared} attendee(s)${data.failed > 0 ? `, ${data.failed} failed` : ''}`;
+      showShareStatus(message, 'success');
+
+      // Clear input on success
+      attendeeEmails.value = '';
+    } else {
+      throw new Error(data.error || 'Failed to share document');
+    }
+
+  } catch (error) {
+    console.error('Error sharing document:', error);
+    showShareStatus('Failed to share: ' + error.message, 'error');
+  } finally {
+    shareBtn.disabled = false;
+    shareBtn.innerHTML = '<span class="btn-icon">📧</span> Share Document';
+  }
+}
+
+/**
+ * Show share status message
+ */
+function showShareStatus(message, type) {
+  shareStatus.textContent = message;
+  shareStatus.className = `share-status ${type}`;
+  shareStatus.style.display = 'block';
+
+  // Auto-hide after 5 seconds
+  setTimeout(() => {
+    shareStatus.style.display = 'none';
+  }, 5000);
 }
 
 /**

@@ -19,7 +19,13 @@
 
     <!-- Meeting Info -->
     <div class="meeting-info" id="meetingInfo" style="display: none;">
-      <div class="meeting-title" id="meetingTitle">Loading...</div>
+      <input
+        type="text"
+        class="meeting-title-input"
+        id="meetingTitleInput"
+        placeholder="Enter meeting title..."
+        value="Google Meet"
+      />
       <div class="meeting-time" id="meetingTime"></div>
       <div class="meeting-attendees" id="meetingAttendees"></div>
     </div>
@@ -55,6 +61,23 @@
       <a id="docLink" href="#" target="_blank" class="btn btn-link">
         Open Google Doc
       </a>
+
+      <!-- Share Section -->
+      <div class="share-section" id="shareSection">
+        <hr style="margin: 20px 0; border: none; border-top: 1px solid #e0e0e0;">
+        <h4 style="font-size: 14px; margin-bottom: 10px;">Share with Attendees</h4>
+        <input
+          type="text"
+          id="attendeeEmails"
+          placeholder="email1@example.com, email2@example.com"
+          class="email-input"
+        />
+        <button id="shareBtn" class="btn btn-secondary">
+          <span class="btn-icon">📧</span>
+          Share Document
+        </button>
+        <div id="shareStatus" class="share-status"></div>
+      </div>
     </div>
 
     <!-- Error Message -->
