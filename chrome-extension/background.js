@@ -404,9 +404,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Handle meeting detected from content script
   else if (message.type === 'MEETING_DETECTED') {
-    console.log('[Background] Meeting detected:', message.meetingCode);
+    console.log('[Background] Meeting detected:', message.meetingCode, message.meetingTitle);
     // Store for later use
-    chrome.storage.local.set({ lastMeetingCode: message.meetingCode });
+    chrome.storage.local.set({
+      lastMeetingCode: message.meetingCode,
+      lastMeetingTitle: message.meetingTitle
+    });
     return false;
   }
 

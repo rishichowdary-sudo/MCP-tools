@@ -8162,6 +8162,67 @@ ${transcript}
     }
 });
 
+// Share Google Doc with attendees
+app.post('/api/meet/share', async (req, res) => {
+    try {
+        const { documentId, emails } = req.body;
+
+        if (!documentId) {
+            return res.status(400).json({ error: 'Document ID is required' });
+        }
+
+        if (!emails || !Array.isArray(emails) || emails.length === 0) {
+            return res.status(400).json({ error: 'At least one email address is required' });
+        }
+
+        if (!driveClient || !hasDriveScope()) {
+            return res.status(503).json({
+                error: 'Google Drive service not available',
+                setupRequired: true
+            });
+        }
+
+        console.log(`[Meet] Sharing doc ${documentId} with ${emails.length} attendee(s)`);
+
+        const results = [];
+        const errors = [];
+
+        for (const email of emails) {
+            const trimmedEmail = email.trim();
+            if (!trimmedEmail || !trimmedEmail.includes('@')) {
+                errors.push({ email: trimmedEmail, error: 'Invalid email format' });
+                continue;
+            }
+
+            try {
+                await shareDriveFile({
+                    fileId: documentId,
+                    emailAddress: trimmedEmail,
+                    role: 'writer',
+                    sendNotificationEmail: true
+                });
+                results.push({ email: trimmedEmail, success: true });
+                console.log(`[Meet] Successfully shared with ${trimmedEmail}`);
+            } catch (shareError) {
+                errors.push({ email: trimmedEmail, error: shareError.message });
+                console.error(`[Meet] Failed to share with ${trimmedEmail}:`, shareError.message);
+            }
+        }
+
+        res.json({
+            success: true,
+            shared: results.length,
+            failed: errors.length,
+            results,
+            errors
+        });
+
+    } catch (error) {
+        console.error('Error sharing document:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Non-streaming chat endpoint (legacy, for backward compatibility)
 app.post('/api/chat', async (req, res) => {
     const { message, history = [], attachedFiles = [] } = req.body;

@@ -81,6 +81,31 @@ body {
   margin-bottom: 8px;
 }
 
+.meeting-title-input {
+  width: 100%;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: #f9f9f9;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.meeting-title-input:hover {
+  background: #f0f0f0;
+  border-color: #e0e0e0;
+}
+
+.meeting-title-input:focus {
+  outline: none;
+  background: white;
+  border-color: #4285F4;
+}
+
 .meeting-time {
   font-size: 13px;
   color: #666;
@@ -362,6 +387,58 @@ body {
 
 .connection-status.disconnected .connection-dot {
   background: #FF6B6B;
+}
+
+/* Share Section */
+.share-section {
+  margin-top: 20px;
+}
+
+.share-section h4 {
+  color: #333;
+  font-weight: 600;
+  text-align: left;
+}
+
+.email-input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  font-family: inherit;
+}
+
+.email-input:focus {
+  outline: none;
+  border-color: #4285F4;
+}
+
+.email-input::placeholder {
+  color: #999;
+}
+
+.share-status {
+  margin-top: 10px;
+  font-size: 12px;
+  padding: 8px;
+  border-radius: 4px;
+  display: none;
+}
+
+.share-status.success {
+  background: #E8F5E9;
+  color: #2E7D32;
+  border: 1px solid #C8E6C9;
+  display: block;
+}
+
+.share-status.error {
+  background: #FFEBEE;
+  color: #C62828;
+  border: 1px solid #FFCDD2;
+  display: block;
 }
 
 /* Scrollbar Styling */
