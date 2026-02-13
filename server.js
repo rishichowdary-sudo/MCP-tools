@@ -8001,50 +8001,132 @@ app.post('/api/meet/finalize', async (req, res) => {
             });
         }
 
-        // Build formatted transcript with speaker grouping and better readability
-        function formatTranscript(captions) {
-            if (!captions || captions.length === 0) return '';
+        // Normalize and deduplicate caption stream so transcript reads cleanly.
+        function normalizeCaptions(captions) {
+            if (!Array.isArray(captions)) return [];
 
-            const formatted = [];
-            let currentSpeaker = null;
-            let currentGroup = [];
-            let groupStartTime = null;
-
-            for (const caption of captions) {
-                if (caption.speaker === currentSpeaker) {
-                    // Same speaker - add to current group
-                    currentGroup.push(caption.text);
-                } else {
-                    // New speaker - finalize previous group
-                    if (currentSpeaker && currentGroup.length > 0) {
-                        const time = groupStartTime ? new Date(groupStartTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-                        const groupText = currentGroup.join(' ');
-                        formatted.push(`**${currentSpeaker}** ${time ? `_(${time})_` : ''}\n${groupText}\n`);
+            return captions
+                .map((caption) => {
+                    if (!caption || typeof caption !== 'object') {
+                        return null;
                     }
 
-                    // Start new group
-                    currentSpeaker = caption.speaker;
-                    currentGroup = [caption.text];
-                    groupStartTime = caption.timestamp;
-                }
-            }
+                    const speaker = typeof caption.speaker === 'string' && caption.speaker.trim()
+                        ? caption.speaker.trim()
+                        : 'Unknown Speaker';
 
-            // Add final group
-            if (currentSpeaker && currentGroup.length > 0) {
-                const time = groupStartTime ? new Date(groupStartTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-                const groupText = currentGroup.join(' ');
-                formatted.push(`**${currentSpeaker}** ${time ? `_(${time})_` : ''}\n${groupText}\n`);
-            }
+                    const text = typeof caption.text === 'string'
+                        ? caption.text.replace(/\s+/g, ' ').trim()
+                        : '';
 
-            return formatted.join('\n');
+                    if (!text) {
+                        return null;
+                    }
+
+                    const parsedTimestamp = caption.timestamp ? new Date(caption.timestamp) : null;
+                    const timestamp = parsedTimestamp && !Number.isNaN(parsedTimestamp.getTime())
+                        ? parsedTimestamp
+                        : null;
+
+                    return { speaker, text, timestamp };
+                })
+                .filter(Boolean);
         }
 
-        const transcript = formatTranscript(session.captions);
-        const simpleTranscript = session.captions
-            .map(c => `${c.speaker}: ${c.text}`)
-            .join('\n'); // For OpenAI prompt
+        function deduplicateCaptions(captions) {
+            const deduped = [];
 
-        if (!transcript || transcript.trim().length === 0) {
+            for (const caption of captions) {
+                const previous = deduped[deduped.length - 1];
+                if (!previous) {
+                    deduped.push(caption);
+                    continue;
+                }
+
+                const sameSpeaker = previous.speaker.toLowerCase() === caption.speaker.toLowerCase();
+                const previousText = previous.text.toLowerCase();
+                const currentText = caption.text.toLowerCase();
+
+                // Exact repeat of prior caption update.
+                if (sameSpeaker && previousText === currentText) {
+                    continue;
+                }
+
+                // Streaming captions often send growing text updates; keep only final form.
+                if (sameSpeaker && currentText.startsWith(previousText) && currentText.length > previousText.length) {
+                    deduped[deduped.length - 1] = caption;
+                    continue;
+                }
+
+                // Drop shorter fragment if full text is already kept.
+                if (sameSpeaker && previousText.startsWith(currentText) && previousText.length > currentText.length) {
+                    continue;
+                }
+
+                deduped.push(caption);
+            }
+
+            return deduped;
+        }
+
+        function formatCaptionTime(timestamp) {
+            if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+                return '';
+            }
+
+            return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+
+        function formatStepByStepTranscript(captions) {
+            if (!captions || captions.length === 0) {
+                return '';
+            }
+
+            return captions
+                .map((caption, index) => {
+                    const time = formatCaptionTime(caption.timestamp);
+                    const speakerLine = `${index + 1}. ${time ? `[${time}] ` : ''}${caption.speaker}`;
+                    return `${speakerLine}\n${caption.text}`;
+                })
+                .join('\n\n');
+        }
+
+        function formatSpeakerWiseTranscript(captions) {
+            if (!captions || captions.length === 0) {
+                return '';
+            }
+
+            const bySpeaker = new Map();
+
+            for (const caption of captions) {
+                if (!bySpeaker.has(caption.speaker)) {
+                    bySpeaker.set(caption.speaker, []);
+                }
+                bySpeaker.get(caption.speaker).push(caption);
+            }
+
+            const sections = [];
+            for (const [speaker, turns] of bySpeaker.entries()) {
+                sections.push(`${speaker} (${turns.length} turn${turns.length === 1 ? '' : 's'})`);
+
+                for (const turn of turns) {
+                    const time = formatCaptionTime(turn.timestamp);
+                    const prefix = time ? `[${time}] ` : '';
+                    sections.push(`${prefix}${turn.text}`);
+                }
+
+                sections.push('');
+            }
+
+            return sections.join('\n').trim();
+        }
+
+        const normalizedCaptions = normalizeCaptions(session.captions);
+        const cleanedCaptions = deduplicateCaptions(normalizedCaptions);
+        const transcriptStepByStep = formatStepByStepTranscript(cleanedCaptions);
+        const transcriptSpeakerWise = formatSpeakerWiseTranscript(cleanedCaptions);
+
+        if (!transcriptStepByStep || transcriptStepByStep.trim().length === 0) {
             return res.status(400).json({ error: 'No captions captured' });
         }
 
@@ -8052,16 +8134,33 @@ app.post('/api/meet/finalize', async (req, res) => {
         const summaryPrompt = `Meeting Title: ${session.metadata.title || 'Google Meet'}
 Date: ${new Date(session.startTime).toLocaleString()}
 
-Transcript:
-${simpleTranscript}
+Transcript (step-by-step):
+${transcriptStepByStep}
 
-Generate a comprehensive meeting summary with:
-1. Key Discussion Points (bullet points)
-2. Decisions Made
-3. Action Items (with responsible person if mentioned)
-4. Next Steps
+Create meeting notes using EXACTLY this markdown structure (same headings, same order):
 
-Format the output in clear markdown.`;
+## Key Discussion Points
+- ...
+
+## Decisions Made
+- Decision: ...
+- Owner: ...
+- Rationale: ...
+
+## Action Items
+- Owner: ... | Action: ... | Due: ...
+
+## Next Steps
+1. ...
+
+## Open Questions
+- ...
+
+Rules:
+- Use concise, factual points based only on the transcript.
+- If a section has no clear information, write exactly: "- None identified."
+- Keep speaker names and responsibilities exactly as mentioned.
+- Do not add extra headings, intro text, or closing text.`;
 
         console.log('[Meet] Generating summary with OpenAI...');
 
@@ -8070,14 +8169,14 @@ Format the output in clear markdown.`;
             messages: [
                 {
                     role: 'system',
-                    content: 'You are a meeting notes assistant. Create clear, well-structured meeting summaries.'
+                    content: 'You are a strict meeting-notes formatter. Follow requested output structure exactly.'
                 },
                 {
                     role: 'user',
                     content: summaryPrompt
                 }
             ],
-            temperature: 0.3,
+            temperature: 0.2,
             max_tokens: 2000
         });
 
@@ -8101,9 +8200,15 @@ ${summary}
 
 ---
 
-## Full Transcript
+## Full Transcript (Step-by-Step)
 
-${transcript}
+${transcriptStepByStep}
+
+---
+
+## Full Transcript (Speaker-Wise)
+
+${transcriptSpeakerWise}
 
 ---
 
@@ -8153,7 +8258,7 @@ ${transcript}
             documentId,
             docUrl,
             summary,
-            captionCount: session.captions.length
+            captionCount: cleanedCaptions.length
         });
 
     } catch (error) {
