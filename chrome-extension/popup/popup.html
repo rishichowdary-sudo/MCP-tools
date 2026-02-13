@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Meet Note-Taker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>Meet Note-Taker</h1>
+      <div class="status-indicator" id="statusIndicator">
+        <span class="status-dot"></span>
+        <span class="status-text">Ready</span>
+      </div>
+    </div>
+
+    <!-- Meeting Info -->
+    <div class="meeting-info" id="meetingInfo" style="display: none;">
+      <div class="meeting-title" id="meetingTitle">Loading...</div>
+      <div class="meeting-time" id="meetingTime"></div>
+      <div class="meeting-attendees" id="meetingAttendees"></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button id="startBtn" class="btn btn-primary">
+        <span class="btn-icon">▶</span>
+        Start Capture
+      </button>
+      <button id="stopBtn" class="btn btn-danger" style="display: none;">
+        <span class="btn-icon">⏹</span>
+        Stop & Save
+      </button>
+    </div>
+
+    <!-- Transcript Container -->
+    <div class="transcript-container" id="transcriptContainer" style="display: none;">
+      <div class="transcript-header">
+        <h3>Live Transcript</h3>
+        <span class="caption-count" id="captionCount">0 captions</span>
+      </div>
+      <div class="transcript-content" id="transcriptContent">
+        <div class="no-captions">Waiting for captions...</div>
+      </div>
+    </div>
+
+    <!-- Success Message -->
+    <div class="success-message" id="successMessage" style="display: none;">
+      <div class="success-icon">✓</div>
+      <h3>Meeting Notes Created!</h3>
+      <p id="successText">Your meeting notes have been saved.</p>
+      <a id="docLink" href="#" target="_blank" class="btn btn-link">
+        Open Google Doc
+      </a>
+    </div>
+
+    <!-- Error Message -->
+    <div class="error-message" id="errorMessage" style="display: none;">
+      <div class="error-icon">⚠</div>
+      <p id="errorText"></p>
+      <button id="dismissError" class="btn btn-secondary btn-small">Dismiss</button>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div class="loading" id="loading" style="display: none;">
+      <div class="spinner"></div>
+      <p id="loadingText">Processing...</p>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <div class="connection-status" id="connectionStatus">
+        <span class="connection-dot"></span>
+        <span>Backend: <span id="wsStatus">Connecting...</span></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

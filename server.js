@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
+const WebSocket = require('ws');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7905,6 +7906,224 @@ app.post('/api/chat/stream', async (req, res) => {
     }
 });
 
+// Google Meet endpoints
+
+// Get meeting metadata from Calendar by meeting code
+app.get('/api/meet/metadata', async (req, res) => {
+    try {
+        const { code } = req.query;
+
+        if (!code) {
+            return res.status(400).json({ error: 'Meeting code is required' });
+        }
+
+        if (!calendarClient || !hasCalendarScope()) {
+            return res.status(503).json({
+                error: 'Calendar service not available',
+                setupRequired: true
+            });
+        }
+
+        // Get today's events
+        const today = new Date();
+        const timeMin = new Date(today.setHours(0, 0, 0, 0)).toISOString();
+        const timeMax = new Date(today.setHours(23, 59, 59, 999)).toISOString();
+
+        const eventsResult = await listEvents({
+            calendarId: 'primary',
+            maxResults: 50,
+            timeMin,
+            timeMax
+        });
+
+        if (!eventsResult.success || !eventsResult.events) {
+            return res.json({ error: 'No events found', meeting: null });
+        }
+
+        // Find event with matching Meet link
+        const meeting = eventsResult.events.find(event => {
+            if (event.hangoutLink) {
+                return event.hangoutLink.includes(code);
+            }
+            return false;
+        });
+
+        if (!meeting) {
+            return res.json({
+                error: 'Meeting not found in calendar',
+                meeting: null
+            });
+        }
+
+        // Extract attendee emails
+        const attendees = (meeting.attendees || [])
+            .filter(a => a.email)
+            .map(a => a.email);
+
+        res.json({
+            meeting: {
+                title: meeting.summary || 'Google Meet',
+                meetingCode: code,
+                startTime: meeting.start?.dateTime || meeting.start?.date,
+                endTime: meeting.end?.dateTime || meeting.end?.date,
+                attendees,
+                eventId: meeting.id,
+                hangoutLink: meeting.hangoutLink
+            }
+        });
+
+    } catch (error) {
+        console.error('Error fetching meeting metadata:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Finalize meeting (generate summary and create Google Doc)
+app.post('/api/meet/finalize', async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+
+        if (!sessionId) {
+            return res.status(400).json({ error: 'Session ID is required' });
+        }
+
+        // Get session from meetSessions Map
+        const session = meetSessions.get(sessionId);
+
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+
+        if (!docsClient || !hasDocsScope()) {
+            return res.status(503).json({
+                error: 'Google Docs service not available',
+                setupRequired: true
+            });
+        }
+
+        // Build full transcript
+        const transcript = session.captions
+            .map(c => `${c.speaker}: ${c.text}`)
+            .join('\n');
+
+        if (!transcript || transcript.trim().length === 0) {
+            return res.status(400).json({ error: 'No captions captured' });
+        }
+
+        // Generate AI summary using OpenAI
+        const summaryPrompt = `Meeting Title: ${session.metadata.title || 'Google Meet'}
+Date: ${new Date(session.startTime).toLocaleString()}
+
+Transcript:
+${transcript}
+
+Generate a comprehensive meeting summary with:
+1. Key Discussion Points (bullet points)
+2. Decisions Made
+3. Action Items (with responsible person if mentioned)
+4. Next Steps
+
+Format the output in clear markdown.`;
+
+        console.log('[Meet] Generating summary with OpenAI...');
+
+        const completion = await openai.chat.completions.create({
+            model: OPENAI_MODEL,
+            messages: [
+                {
+                    role: 'system',
+                    content: 'You are a meeting notes assistant. Create clear, well-structured meeting summaries.'
+                },
+                {
+                    role: 'user',
+                    content: summaryPrompt
+                }
+            ],
+            temperature: 0.3,
+            max_tokens: 2000
+        });
+
+        const summary = completion.choices[0].message.content;
+
+        // Create Google Doc with summary + transcript
+        const docTitle = `${session.metadata.title || 'Meeting'} - Notes (${new Date().toLocaleDateString()})`;
+
+        const docContent = `# ${session.metadata.title || 'Meeting Notes'}
+
+**Date:** ${new Date(session.startTime).toLocaleString()}
+**Meeting Code:** ${session.metadata.meetingCode || 'N/A'}
+**Duration:** ${Math.round((new Date() - new Date(session.startTime)) / 60000)} minutes
+**Attendees:** ${session.metadata.attendees?.join(', ') || 'N/A'}
+
+---
+
+## AI Summary
+
+${summary}
+
+---
+
+## Full Transcript
+
+${transcript}
+
+---
+
+*Generated by Google Meet Note-Taker*
+`;
+
+        console.log('[Meet] Creating Google Doc...');
+
+        const createResult = await createDocument({
+            title: docTitle,
+            content: docContent
+        });
+
+        if (!createResult || !createResult.documentId) {
+            throw new Error('Failed to create Google Doc: No document ID returned');
+        }
+
+        const documentId = createResult.documentId;
+        const docUrl = `https://docs.google.com/document/d/${documentId}/edit`;
+
+        console.log('[Meet] Google Doc created:', docUrl);
+
+        // Share with attendees if available
+        if (session.metadata.attendees && session.metadata.attendees.length > 0) {
+            console.log('[Meet] Sharing doc with attendees...');
+
+            for (const email of session.metadata.attendees) {
+                try {
+                    await shareDriveFile({
+                        fileId: documentId,
+                        emailAddress: email,
+                        role: 'writer',
+                        sendNotificationEmail: true
+                    });
+                    console.log(`[Meet] Shared with ${email}`);
+                } catch (shareError) {
+                    console.error(`[Meet] Failed to share with ${email}:`, shareError.message);
+                }
+            }
+        }
+
+        // Clean up session
+        meetSessions.delete(sessionId);
+
+        res.json({
+            success: true,
+            documentId,
+            docUrl,
+            summary,
+            captionCount: session.captions.length
+        });
+
+    } catch (error) {
+        console.error('Error finalizing meeting:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Non-streaming chat endpoint (legacy, for backward compatibility)
 app.post('/api/chat', async (req, res) => {
     const { message, history = [], attachedFiles = [] } = req.body;
@@ -7972,6 +8191,90 @@ const httpServer = app.listen(PORT, () => {
     console.log(`GCS: ${gcsAuthenticated ? `Connected (project: ${gcsProjectId})` : 'Not connected'}`);
     console.log(`Timer Tasks: ${scheduledTasks.length} configured (${scheduledTasks.filter(task => task.enabled).length} enabled)`);
 });
+
+// WebSocket Server for Google Meet Note-Taker
+const wss = new WebSocket.Server({ server: httpServer, path: '/meet-notes' });
+const meetSessions = new Map(); // sessionId -> { metadata, captions[], startTime, ws }
+
+wss.on('connection', (ws) => {
+    console.log('[WebSocket] Client connected');
+
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message.toString());
+            console.log('[WebSocket] Message received:', data.type);
+
+            if (data.type === 'session_start') {
+                // Create new session
+                meetSessions.set(data.sessionId, {
+                    metadata: data.metadata,
+                    captions: [],
+                    startTime: new Date(),
+                    ws: ws
+                });
+
+                console.log(`[WebSocket] Session started: ${data.sessionId}`);
+
+                // Acknowledge
+                ws.send(JSON.stringify({
+                    type: 'session_created',
+                    sessionId: data.sessionId
+                }));
+            }
+            else if (data.type === 'caption') {
+                // Add caption to session
+                const session = meetSessions.get(data.sessionId);
+
+                if (session) {
+                    session.captions.push(data.caption);
+
+                    // Broadcast to all connected clients (for live view)
+                    wss.clients.forEach(client => {
+                        if (client.readyState === WebSocket.OPEN) {
+                            client.send(JSON.stringify({
+                                type: 'caption_added',
+                                caption: data.caption,
+                                sessionId: data.sessionId
+                            }));
+                        }
+                    });
+                } else {
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: 'Session not found'
+                    }));
+                }
+            }
+            else if (data.type === 'session_end') {
+                console.log(`[WebSocket] Session ending: ${data.sessionId}`);
+
+                // Keep session in memory for finalization
+                // It will be cleaned up by the /api/meet/finalize endpoint
+                ws.send(JSON.stringify({
+                    type: 'session_ended',
+                    sessionId: data.sessionId
+                }));
+            }
+
+        } catch (error) {
+            console.error('[WebSocket] Error processing message:', error);
+            ws.send(JSON.stringify({
+                type: 'error',
+                message: error.message
+            }));
+        }
+    });
+
+    ws.on('close', () => {
+        console.log('[WebSocket] Client disconnected');
+    });
+
+    ws.on('error', (error) => {
+        console.error('[WebSocket] Error:', error);
+    });
+});
+
+console.log('WebSocket server initialized on path: /meet-notes');
 
 httpServer.on('error', (error) => {
     if (error && error.code === 'EADDRINUSE') {
