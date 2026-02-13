@@ -8001,10 +8001,48 @@ app.post('/api/meet/finalize', async (req, res) => {
             });
         }
 
-        // Build full transcript
-        const transcript = session.captions
+        // Build formatted transcript with speaker grouping and better readability
+        function formatTranscript(captions) {
+            if (!captions || captions.length === 0) return '';
+
+            const formatted = [];
+            let currentSpeaker = null;
+            let currentGroup = [];
+            let groupStartTime = null;
+
+            for (const caption of captions) {
+                if (caption.speaker === currentSpeaker) {
+                    // Same speaker - add to current group
+                    currentGroup.push(caption.text);
+                } else {
+                    // New speaker - finalize previous group
+                    if (currentSpeaker && currentGroup.length > 0) {
+                        const time = groupStartTime ? new Date(groupStartTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                        const groupText = currentGroup.join(' ');
+                        formatted.push(`**${currentSpeaker}** ${time ? `_(${time})_` : ''}\n${groupText}\n`);
+                    }
+
+                    // Start new group
+                    currentSpeaker = caption.speaker;
+                    currentGroup = [caption.text];
+                    groupStartTime = caption.timestamp;
+                }
+            }
+
+            // Add final group
+            if (currentSpeaker && currentGroup.length > 0) {
+                const time = groupStartTime ? new Date(groupStartTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                const groupText = currentGroup.join(' ');
+                formatted.push(`**${currentSpeaker}** ${time ? `_(${time})_` : ''}\n${groupText}\n`);
+            }
+
+            return formatted.join('\n');
+        }
+
+        const transcript = formatTranscript(session.captions);
+        const simpleTranscript = session.captions
             .map(c => `${c.speaker}: ${c.text}`)
-            .join('\n');
+            .join('\n'); // For OpenAI prompt
 
         if (!transcript || transcript.trim().length === 0) {
             return res.status(400).json({ error: 'No captions captured' });
@@ -8015,7 +8053,7 @@ app.post('/api/meet/finalize', async (req, res) => {
 Date: ${new Date(session.startTime).toLocaleString()}
 
 Transcript:
-${transcript}
+${simpleTranscript}
 
 Generate a comprehensive meeting summary with:
 1. Key Discussion Points (bullet points)
