@@ -12,16 +12,53 @@ const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
 const WebSocket = require('ws');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
+// Security: restrict CORS to same-origin and localhost
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        const allowed = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`];
+        if (allowed.includes(origin)) return callback(null, true);
+        callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true
+}));
+
+// Security headers
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    next();
+});
+
+// Rate limiting
+const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: { error: 'Too many requests, please try again later.' } });
+const chatLimiter = rateLimit({ windowMs: 60 * 1000, max: 15, message: { error: 'Too many requests, please try again later.' } });
+const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { error: 'Too many uploads, please try again later.' } });
+app.use('/api/', apiLimiter);
+app.use('/api/chat', chatLimiter);
+app.use('/api/upload', uploadLimiter);
+
+app.use(express.json({ limit: '5gb' }));
 app.use(express.static('public'));
 
 // File upload configuration
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
+
+// Security: validate file paths are within UPLOADS_DIR to prevent path traversal
+function validateLocalPath(filePath) {
+    if (!filePath) return false;
+    const resolved = path.resolve(filePath);
+    const uploadsResolved = path.resolve(UPLOADS_DIR);
+    return resolved.startsWith(uploadsResolved + path.sep) || resolved === uploadsResolved;
+}
 if (!fs.existsSync(UPLOADS_DIR)) {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
@@ -1338,8 +1375,11 @@ async function sendEmail({ to, subject, body, cc, bcc, attachments }) {
     if (attachments && Array.isArray(attachments)) {
         for (const att of attachments) {
             if (att.localPath) {
+                if (!validateLocalPath(att.localPath)) {
+                    throw new Error('Attachment path is not allowed. Only files in the uploads directory can be attached.');
+                }
                 if (!fs.existsSync(att.localPath)) {
-                    throw new Error(`Attachment file not found at path: "${att.localPath}". Make sure to use the exact localPath returned by download_drive_file_to_local.`);
+                    throw new Error('Attachment file not found. Use the localPath from download_drive_file_to_local.');
                 }
                 // Read file from disk and encode as base64
                 const fileContent = fs.readFileSync(att.localPath);
@@ -2893,7 +2933,10 @@ async function createDriveFile({ name, content = '', mimeType = 'text/plain', pa
     let fileBody = content;
     let resolvedMimeType = mimeType;
 
-    // If localPath is provided, read the file from disk
+    // If localPath is provided, read the file from disk (validated to uploads dir)
+    if (localPath) {
+        if (!validateLocalPath(localPath)) throw new Error('File path not allowed. Only files in uploads directory can be used.');
+    }
     if (localPath && fs.existsSync(localPath)) {
         fileBody = fs.createReadStream(localPath);
         // If mimeType is default and we have a file, try to infer from extension
@@ -5129,7 +5172,10 @@ async function gcsUploadObject({ bucket, name, content, contentType, localPath }
     let mediaBody;
     let resolvedContentType = contentType || 'application/octet-stream';
 
-    // If localPath is provided, read file from disk
+    // If localPath is provided, read file from disk (validated to uploads dir)
+    if (localPath) {
+        if (!validateLocalPath(localPath)) throw new Error('File path not allowed. Only files in uploads directory can be used.');
+    }
     if (localPath && fs.existsSync(localPath)) {
         mediaBody = fs.createReadStream(localPath);
         // Auto-detect MIME type from extension if not provided
@@ -6256,10 +6302,8 @@ app.get('/api/download/:filename', (req, res) => {
         const filename = req.params.filename;
         const filepath = path.join(UPLOADS_DIR, filename);
 
-        // Security check: ensure file is in uploads directory
-        const normalizedPath = path.normalize(filepath);
-        const normalizedUploadDir = path.normalize(UPLOADS_DIR);
-        if (!normalizedPath.startsWith(normalizedUploadDir)) {
+        // Security: use resolve + validateLocalPath to prevent path traversal
+        if (!validateLocalPath(filepath)) {
             return res.status(403).json({ error: 'Access denied' });
         }
 
@@ -6282,7 +6326,7 @@ app.get('/api/download/:filename', (req, res) => {
         });
     } catch (error) {
         console.error('Download error:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -6347,7 +6391,7 @@ app.post('/api/timer-tasks', (req, res) => {
         saveScheduledTasksToDisk();
         res.status(201).json({ success: true, task });
     } catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: 'Invalid request' });
     }
 });
 
@@ -6367,7 +6411,7 @@ app.patch('/api/timer-tasks/:id', (req, res) => {
         saveScheduledTasksToDisk();
         res.json({ success: true, task: merged });
     } catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: 'Invalid request' });
     }
 });
 
@@ -6391,7 +6435,7 @@ app.post('/api/timer-tasks/:id/run', async (req, res) => {
         }
         return res.json(result);
     } catch (error) {
-        return res.status(500).json({ error: error.message || 'Failed to run timer task' });
+        return res.status(500).json({ error: 'Failed to run timer task' });
     }
 });
 
@@ -6493,6 +6537,7 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
         }
 
         const asciiFileName = downloadName
+            .replace(/[\r\n]/g, '')
             .replace(/[^\x20-\x7E]/g, '_')
             .replace(/["\\]/g, '_');
         res.setHeader('Content-Type', contentType || 'application/octet-stream');
@@ -6507,7 +6552,7 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
             driveClient = null;
             return res.status(401).json({ error: permissionError });
         }
-        return res.status(500).json({ error: error.message || 'Failed to download Drive file' });
+        return res.status(500).json({ error: 'Failed to download Drive file' });
     }
 });
 
@@ -6539,6 +6584,7 @@ app.get('/api/gcs/download/:bucket/:objectName(*)', async (req, res) => {
 
         // Sanitize filename for Content-Disposition
         const asciiFileName = downloadName
+            .replace(/[\r\n]/g, '')
             .replace(/[^\x20-\x7E]/g, '_')
             .replace(/["\\]/g, '_');
 
@@ -6549,7 +6595,7 @@ app.get('/api/gcs/download/:bucket/:objectName(*)', async (req, res) => {
         return res.status(200).send(payload);
     } catch (error) {
         console.error('GCS download error:', error?.message || error);
-        return res.status(500).json({ error: error.message || 'Failed to download GCS object' });
+        return res.status(500).json({ error: 'Failed to download GCS object' });
     }
 });
 
@@ -6572,10 +6618,7 @@ app.get('/api/sheets-mcp/status', (req, res) => {
         enabled: SHEETS_MCP_ENABLED,
         connected: !!sheetsMcpClient,
         toolCount: sheetsMcpTools.length,
-        command: SHEETS_MCP_COMMAND,
-        args: SHEETS_MCP_ARGS,
-        credentialsDirectory: SHEETS_MCP_CREDS_DIR,
-        error: sheetsMcpError
+        error: sheetsMcpError ? 'Connection error' : null
     });
 });
 
@@ -6761,7 +6804,7 @@ app.post('/api/github/connect', async (req, res) => {
 
         res.json({ success: true, username: user.data.login, message: `Connected as ${user.data.login}` });
     } catch (error) {
-        res.status(401).json({ error: `Invalid token: ${error.message}` });
+        res.status(401).json({ error: 'Invalid or expired token' });
     }
 });
 
@@ -6819,7 +6862,8 @@ app.get('/github/callback', async (req, res) => {
         const tokenData = await tokenResponse.json();
         if (!tokenResponse.ok || tokenData.error || !tokenData.access_token) {
             const details = tokenData.error_description || tokenData.error || tokenResponse.statusText;
-            return res.status(401).send(`GitHub token exchange failed: ${details}`);
+            console.error('GitHub token exchange failed:', details);
+            return res.status(401).send('GitHub authentication failed. Please try again.');
         }
 
         const token = tokenData.access_token;
@@ -6975,7 +7019,8 @@ app.get('/outlook/callback', async (req, res) => {
 
         if (!tokenResponse.ok || tokenData.error || !tokenData.access_token) {
             const details = tokenData.error_description || tokenData.error || tokenResponse.statusText;
-            return res.status(401).send(`Outlook token exchange failed: ${details}`);
+            console.error('Outlook token exchange failed:', details);
+            return res.status(401).send('Outlook authentication failed. Please try again.');
         }
 
         outlookAccessToken = tokenData.access_token;
@@ -8016,7 +8061,7 @@ app.get('/api/gmail/message/:id', async (req, res) => {
         res.json(email);
     } catch (error) {
         console.error('Error fetching email:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -8144,7 +8189,7 @@ app.post('/api/chat/stream', async (req, res) => {
         res.end();
     } catch (error) {
         console.error('Stream chat error:', error);
-        res.write(`event: error\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
+        res.write(`event: error\ndata: ${JSON.stringify({ error: 'Something went wrong. Please try again.' })}\n\n`);
         res.end();
     }
 });
@@ -8218,7 +8263,7 @@ app.get('/api/meet/metadata', async (req, res) => {
 
     } catch (error) {
         console.error('Error fetching meeting metadata:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -8633,7 +8678,7 @@ ${transcriptSpeakerWise}
 
     } catch (error) {
         console.error('Error finalizing meeting:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -8694,7 +8739,7 @@ app.post('/api/meet/share', async (req, res) => {
 
     } catch (error) {
         console.error('Error sharing document:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -8728,7 +8773,7 @@ app.post('/api/chat', async (req, res) => {
         res.json(result);
     } catch (error) {
         console.error('Chat error:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

@@ -151,6 +151,9 @@ function triggerBrowserDownload(url, filename) {
     const href = String(url || '').trim();
     if (!href) return;
     try {
+        // Security: only allow http/https/blob URLs
+        const parsed = new URL(href, window.location.origin);
+        if (!['http:', 'https:', 'blob:'].includes(parsed.protocol)) return;
         const anchor = document.createElement('a');
         anchor.href = href;
         if (filename) anchor.setAttribute('download', String(filename));
@@ -316,6 +319,12 @@ document.addEventListener('DOMContentLoaded', () => {
 // Event Listeners
 function setupEventListeners() {
     setupSpeechRecognition();
+
+    // Event delegation for dynamically created email cards (security: no inline onclick)
+    chatMessages.addEventListener('click', (e) => {
+        const emailCard = e.target.closest('.email-clickable[data-message-id]');
+        if (emailCard) openEmail(emailCard.dataset.messageId, emailCard);
+    });
 
     sendBtn.addEventListener('click', sendMessage);
     messageInput.addEventListener('keydown', (e) => {
@@ -2059,7 +2068,7 @@ function formatToolResults(results) {
                     const initials = (displayName[0] || '?').toUpperCase();
 
                     return `
-                    <div class="email-card email-clickable" data-message-id="${escapeHtml(email.id || '')}" onclick="openEmail('${escapeHtml(email.id || '')}', this)">
+                    <div class="email-card email-clickable" data-message-id="${escapeHtml(email.id || '')}">
                         <div class="email-card-content-wrapper">
                             <div class="email-avatar">${escapeHtml(initials)}</div>
                             <div class="email-main-info">
@@ -2401,6 +2410,8 @@ function formatToolResults(results) {
 // Open email when card is clicked
 async function openEmail(messageId, cardElement) {
     if (!messageId || !cardElement) return;
+    // Security: validate messageId format
+    if (!/^[a-zA-Z0-9_-]+$/.test(messageId)) return;
 
     // Check if already expanded
     const existingDetails = cardElement.querySelector('.email-details');
@@ -2463,18 +2474,24 @@ async function openEmail(messageId, cardElement) {
                 
                 <hr style="margin: 1rem 0; border: 0; border-top: 1px solid var(--border-color); opacity:0.5">
                 
-                <div class="email-details-body">${data.bodyHtml || escapeHtml(data.body || '(No content)')}</div>
+                <div class="email-details-body">${data.bodyHtml ? sanitizeHtml(data.bodyHtml) : escapeHtml(data.body || '(No content)')}</div>
                 
                 ${attachmentsHtml}
 
                 <div class="email-actions" style="margin-top: 1.5rem; display: flex; gap: 0.5rem;">
-                    <button class="action-btn" style="padding:0.5rem 1rem; background:var(--accent-primary); color:white; border:none; border-radius:6px; cursor:pointer" onclick="event.stopPropagation(); messageInput.value='Reply to email ${messageId} saying...'; messageInput.focus();">Reply</button>
-                    <button class="action-btn" style="padding:0.5rem 1rem; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; cursor:pointer" onclick="event.stopPropagation(); messageInput.value='Forward email ${messageId} to...'; messageInput.focus();">Forward</button>
+                    <button class="action-btn email-reply-btn" data-msg-id="${escapeHtml(messageId)}" style="padding:0.5rem 1rem; background:var(--accent-primary); color:white; border:none; border-radius:6px; cursor:pointer">Reply</button>
+                    <button class="action-btn email-forward-btn" data-msg-id="${escapeHtml(messageId)}" style="padding:0.5rem 1rem; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; cursor:pointer">Forward</button>
                 </div>
             </div>
         `;
+
+        // Attach event listeners safely (no inline onclick)
+        const replyBtn = detailsDiv.querySelector('.email-reply-btn');
+        const forwardBtn = detailsDiv.querySelector('.email-forward-btn');
+        if (replyBtn) replyBtn.addEventListener('click', (e) => { e.stopPropagation(); messageInput.value = `Reply to email ${replyBtn.dataset.msgId} saying...`; messageInput.focus(); });
+        if (forwardBtn) forwardBtn.addEventListener('click', (e) => { e.stopPropagation(); messageInput.value = `Forward email ${forwardBtn.dataset.msgId} to...`; messageInput.focus(); });
     } catch (error) {
-        detailsDiv.innerHTML = `<div style="color:var(--error); padding:1rem">Error loading email: ${escapeHtml(error.message)}</div>`;
+        detailsDiv.innerHTML = `<div style="color:var(--error); padding:1rem">Error loading email</div>`;
     }
 }
 
@@ -2548,6 +2565,23 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Security: sanitize HTML from email bodies - strip scripts, event handlers, iframes
+function sanitizeHtml(html) {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Remove dangerous elements
+    doc.querySelectorAll('script, iframe, object, embed, form, base, meta, link').forEach(el => el.remove());
+    // Remove all event handler attributes (onclick, onerror, onload, etc.)
+    doc.querySelectorAll('*').forEach(el => {
+        for (const attr of [...el.attributes]) {
+            if (attr.name.startsWith('on') || attr.name === 'srcdoc') el.removeAttribute(attr.name);
+            if (attr.name === 'href' && attr.value.trim().toLowerCase().startsWith('javascript:')) el.removeAttribute(attr.name);
+            if (attr.name === 'src' && attr.value.trim().toLowerCase().startsWith('javascript:')) el.removeAttribute(attr.name);
+        }
+    });
+    return doc.body.innerHTML;
 }
 
 // Format date
