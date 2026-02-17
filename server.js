@@ -7095,18 +7095,13 @@ function getConnectedToolContext() {
     return { availableTools, statusText, docsConnected, docsListOnlyConnected };
 }
 
-function buildAgentSystemPrompt({ statusText, toolCount, dateContext, connectedServices, userFirstName, userEmail }) {
+function buildAgentSystemPrompt({ statusText, toolCount, dateContext, connectedServices }) {
     // Build list of available service names for clarity
     const availableServicesList = connectedServices && connectedServices.length > 0
         ? connectedServices.join(', ')
         : 'No services';
 
-    // Add user context for email signatures
-    const userContext = userFirstName && userEmail
-        ? `\n\n**EMAIL SIGNATURE** — Current user: ${userFirstName} (${userEmail})\nEnd every email body with EXACTLY: "Best regards,\\n${userFirstName}" — nothing after. No placeholders ([Your Position], [Your Title], etc.). Never ask for the user's name.`
-        : '';
-
-    const basePrompt = `You are a powerful AI assistant integrated with Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You execute complex, multi-step operations across connected services.${userContext}
+    const basePrompt = `You are a powerful AI assistant integrated with Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You execute complex, multi-step operations across connected services.
 
 Connected Services: ${statusText}
 Total Tools Available: ${toolCount}
@@ -7355,13 +7350,11 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
     });
     const dateContext = getCurrentDateContext();
 
-    // Get user's first name for email signatures
+    // Get user's first name for email signatures (injected into email tool descriptions only)
     let userFirstName = null;
-    let userEmail = null;
     try {
-        userEmail = await getPrimaryEmailAddress();
+        const userEmail = await getPrimaryEmailAddress();
         if (userEmail) {
-            // Extract first name from email: rishi.chowdary@x.com → Rishi, karthikeya_a@x.com → Karthikeya
             const localPart = userEmail.split('@')[0];
             const namePart = localPart.split(/[._\-+0-9]/)[0];
             if (namePart && namePart.length >= 2) {
@@ -7371,14 +7364,21 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
     } catch (err) {
         console.log('Could not get user name for signature:', err.message);
     }
+    if (userFirstName) {
+        const sigNote = ` Always end email body with "Best regards,\\n${userFirstName}". No other signature or placeholders.`;
+        const emailSendTools = new Set(['send_email', 'reply_to_email', 'forward_email', 'create_draft', 'outlook_send_email', 'outlook_reply_to_email', 'outlook_forward_email', 'outlook_create_draft']);
+        for (const tool of availableTools) {
+            if (emailSendTools.has(tool.function.name) && tool.function.parameters?.properties?.body) {
+                tool.function.parameters.properties.body.description += sigNote;
+            }
+        }
+    }
 
     const systemPrompt = buildAgentSystemPrompt({
         statusText: toolContext.statusText,
         toolCount: availableTools.length,
         dateContext,
-        connectedServices: toolContext.connectedServices,
-        userFirstName: userFirstName,
-        userEmail: userEmail
+        connectedServices: toolContext.connectedServices
     });
     const routingHintBlock = routingHints.length > 0
         ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
@@ -7798,13 +7798,11 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
     });
     const dateContext = getCurrentDateContext();
 
-    // Get user's first name for email signatures
+    // Get user's first name for email signatures (injected into email tool descriptions only)
     let userFirstName = null;
-    let userEmail = null;
     try {
-        userEmail = await getPrimaryEmailAddress();
+        const userEmail = await getPrimaryEmailAddress();
         if (userEmail) {
-            // Extract first name from email: rishi.chowdary@x.com → Rishi, karthikeya_a@x.com → Karthikeya
             const localPart = userEmail.split('@')[0];
             const namePart = localPart.split(/[._\-+0-9]/)[0];
             if (namePart && namePart.length >= 2) {
@@ -7814,14 +7812,21 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
     } catch (err) {
         console.log('Could not get user name for signature:', err.message);
     }
+    if (userFirstName) {
+        const sigNote = ` Always end email body with "Best regards,\\n${userFirstName}". No other signature or placeholders.`;
+        const emailSendTools = new Set(['send_email', 'reply_to_email', 'forward_email', 'create_draft', 'outlook_send_email', 'outlook_reply_to_email', 'outlook_forward_email', 'outlook_create_draft']);
+        for (const tool of availableTools) {
+            if (emailSendTools.has(tool.function.name) && tool.function.parameters?.properties?.body) {
+                tool.function.parameters.properties.body.description += sigNote;
+            }
+        }
+    }
 
     const systemPrompt = buildAgentSystemPrompt({
         statusText: toolContext.statusText,
         toolCount: availableTools.length,
         dateContext,
-        connectedServices: toolContext.connectedServices,
-        userFirstName: userFirstName,
-        userEmail: userEmail
+        connectedServices: toolContext.connectedServices
     });
     const routingHintBlock = routingHints.length > 0
         ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
