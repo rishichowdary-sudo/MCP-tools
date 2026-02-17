@@ -1064,6 +1064,24 @@ function initOAuthClient() {
             `http://localhost:${PORT}/oauth2callback`
         );
 
+        // Auto-save refreshed tokens to disk so they survive server restarts
+        oauth2Client.on('tokens', (tokens) => {
+            try {
+                const existing = fs.existsSync(TOKEN_PATH)
+                    ? JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'))
+                    : {};
+                // Merge: keep existing refresh_token if new one isn't provided
+                const updated = { ...existing, ...tokens };
+                if (!updated.refresh_token && existing.refresh_token) {
+                    updated.refresh_token = existing.refresh_token;
+                }
+                fs.writeFileSync(TOKEN_PATH, JSON.stringify(updated, null, 2));
+                console.log('Google token refreshed and saved to disk');
+            } catch (err) {
+                console.error('Failed to save refreshed token:', err.message);
+            }
+        });
+
         if (fs.existsSync(TOKEN_PATH)) {
             const token = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
             oauth2Client.setCredentials(token);
