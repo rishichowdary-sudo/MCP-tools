@@ -1665,6 +1665,17 @@ body {
     /* Enable flex shrinking */
 }
 
+.email-card.drive-file-clickable,
+.email-card.docs-file-clickable {
+    cursor: pointer;
+}
+
+.email-card.drive-file-clickable:hover,
+.email-card.docs-file-clickable:hover {
+    border-color: var(--accent-primary);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
+}
+
 .email-avatar {
     width: 36px;
     height: 36px;

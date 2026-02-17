@@ -167,6 +167,53 @@ function triggerBrowserDownload(url, filename) {
     }
 }
 
+function setComposerPrompt(prompt, { focus = true } = {}) {
+    messageInput.value = String(prompt || '').trim();
+    autoResizeTextarea();
+    sendBtn.disabled = !messageInput.value.trim();
+    if (focus) messageInput.focus();
+}
+
+function openExternalWebLink(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return;
+    try {
+        const parsed = new URL(raw);
+        if (!['https:', 'http:'].includes(parsed.protocol)) return;
+        window.open(parsed.href, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+        console.warn('Invalid external URL:', error);
+    }
+}
+
+function buildReplyPromptFromEmail({ messageId, from, subject, body }) {
+    const bodyText = String(body || '').replace(/\s+/g, ' ').trim();
+    const preview = bodyText.length > 700 ? `${bodyText.slice(0, 700)}...` : bodyText;
+    return `Draft a professional reply to this Gmail message. Do not send yet.
+
+Message ID: ${messageId}
+From: ${from || 'Unknown sender'}
+Subject: ${subject || '(no subject)'}
+Original message excerpt:
+${preview || '(No body text available)'}
+
+Please generate a concise, helpful reply I can review first.`;
+}
+
+function buildForwardPromptFromEmail({ messageId, from, subject, body }) {
+    const bodyText = String(body || '').replace(/\s+/g, ' ').trim();
+    const preview = bodyText.length > 700 ? `${bodyText.slice(0, 700)}...` : bodyText;
+    return `Forward this Gmail message and draft a short context note for the recipient. Do not send yet.
+
+Message ID: ${messageId}
+Original From: ${from || 'Unknown sender'}
+Subject: ${subject || '(no subject)'}
+Original message excerpt:
+${preview || '(No body text available)'}
+
+Ask me who to forward it to if recipient is missing.`;
+}
+
 // Tool icon mapping
 const TOOL_ICONS = {
     // Gmail (25)
@@ -322,8 +369,20 @@ function setupEventListeners() {
 
     // Event delegation for dynamically created email cards (security: no inline onclick)
     chatMessages.addEventListener('click', (e) => {
+        if (e.target.closest('a, button, input, textarea, select')) {
+            return;
+        }
+
         const emailCard = e.target.closest('.email-clickable[data-message-id]');
-        if (emailCard) openEmail(emailCard.dataset.messageId, emailCard);
+        if (emailCard) {
+            openEmail(emailCard.dataset.messageId, emailCard);
+            return;
+        }
+
+        const driveCard = e.target.closest('.drive-file-clickable[data-web-link], .docs-file-clickable[data-web-link]');
+        if (driveCard) {
+            openExternalWebLink(driveCard.dataset.webLink);
+        }
     });
 
     sendBtn.addEventListener('click', sendMessage);
@@ -1786,6 +1845,11 @@ async function sendMessage() {
                         finalHtml += formatResponse(finalResponseText);
                     }
 
+                    const renderedToolResults = Array.isArray(data.toolResults) ? data.toolResults : [];
+                    if (renderedToolResults.length > 0) {
+                        finalHtml += `<div class="tool-results-stack">${formatToolResults(renderedToolResults)}</div>`;
+                    }
+
                     // Never leave an empty assistant bubble after streaming.
                     if (!finalHtml.trim()) {
                         finalHtml = formatResponse('I completed your request, but no response text was returned. Please try again.');
@@ -2175,18 +2239,40 @@ function formatToolResults(results) {
                         ${c.description ? `<div class="email-card-snippet">${escapeHtml(c.description)}</div>` : ''}
                     </div>
                 `).join('');
+                // Google Docs list
+            } else if (result.result.documents && Array.isArray(result.result.documents)) {
+                content = result.result.documents.map(d => {
+                    const hasLink = !!d.webViewLink;
+                    const classes = `email-card vertical${hasLink ? ' docs-file-clickable' : ''}`;
+                    const attrs = hasLink ? ` data-web-link="${escapeHtml(d.webViewLink)}"` : '';
+                    return `
+                    <div class="${classes}"${attrs}>
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(d.name || d.id || 'Untitled Document')}</span>
+                            <span class="email-card-date">${formatDate(d.modifiedTime)}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(d.id || '')}</code></div>
+                        ${hasLink ? '<div class="email-card-snippet result-note">Click card to open document</div>' : ''}
+                    </div>
+                `;
+                }).join('');
                 // Drive files
             } else if (result.result.files && Array.isArray(result.result.files)) {
-                content = result.result.files.map(f => `
-                    <div class="email-card vertical">
+                content = result.result.files.map(f => {
+                    const hasLink = !!f.webViewLink;
+                    const classes = `email-card vertical${hasLink ? ' drive-file-clickable' : ''}`;
+                    const attrs = hasLink ? ` data-web-link="${escapeHtml(f.webViewLink)}"` : '';
+                    return `
+                    <div class="${classes}"${attrs}>
                         <div class="email-card-header">
                             <span class="email-card-subject">${escapeHtml(f.name || f.id)}</span>
                             <span class="email-card-date">${escapeHtml((f.mimeType || '').replace('application/vnd.google-apps.', ''))}</span>
                         </div>
                         <div class="email-card-from"><code>${escapeHtml(f.id || '')}</code></div>
-                        ${f.webViewLink ? `<div class="email-card-snippet"><a href="${escapeHtml(f.webViewLink)}" target="_blank" rel="noopener noreferrer">Open in Drive</a></div>` : ''}
+                        ${f.webViewLink ? '<div class="email-card-snippet result-note">Click card to open in Drive</div>' : ''}
                     </div>
-                `).join('');
+                `;
+                }).join('');
                 // Drive download payload
             } else if ((result.tool === 'download_drive_file' || result.tool === 'download_drive_file_to_local') && result.result.downloadUrl) {
                 const downloadHref = result.result.downloadUrl;
@@ -2488,8 +2574,28 @@ async function openEmail(messageId, cardElement) {
         // Attach event listeners safely (no inline onclick)
         const replyBtn = detailsDiv.querySelector('.email-reply-btn');
         const forwardBtn = detailsDiv.querySelector('.email-forward-btn');
-        if (replyBtn) replyBtn.addEventListener('click', (e) => { e.stopPropagation(); messageInput.value = `Reply to email ${replyBtn.dataset.msgId} saying...`; messageInput.focus(); });
-        if (forwardBtn) forwardBtn.addEventListener('click', (e) => { e.stopPropagation(); messageInput.value = `Forward email ${forwardBtn.dataset.msgId} to...`; messageInput.focus(); });
+        if (replyBtn) {
+            replyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                setComposerPrompt(buildReplyPromptFromEmail({
+                    messageId: replyBtn.dataset.msgId || messageId,
+                    from: data.from,
+                    subject: data.subject,
+                    body: data.body
+                }));
+            });
+        }
+        if (forwardBtn) {
+            forwardBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                setComposerPrompt(buildForwardPromptFromEmail({
+                    messageId: forwardBtn.dataset.msgId || messageId,
+                    from: data.from,
+                    subject: data.subject,
+                    body: data.body
+                }));
+            });
+        }
     } catch (error) {
         detailsDiv.innerHTML = `<div style="color:var(--error); padding:1rem">Error loading email</div>`;
     }

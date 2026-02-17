@@ -17,6 +17,7 @@ let reconnectTimeout = null;
 let currentSession = null;
 let captionBuffer = []; // Buffer captions when disconnected
 let isConnecting = false;
+let pendingSessionStart = false;
 
 /**
  * Generate unique session ID
@@ -50,8 +51,20 @@ function connectWebSocket() {
       isConnecting = false;
       reconnectAttempts = 0;
 
+      // Ensure server receives session_start before any buffered captions.
+      if (currentSession && pendingSessionStart) {
+        const started = sendMessage({
+          type: 'session_start',
+          sessionId: currentSession.sessionId,
+          metadata: currentSession.metadata
+        });
+        if (started) {
+          pendingSessionStart = false;
+        }
+      }
+
       // Flush buffered captions
-      if (captionBuffer.length > 0 && currentSession) {
+      if (captionBuffer.length > 0 && currentSession && !pendingSessionStart) {
         console.log(`[Background] Flushing ${captionBuffer.length} buffered captions`);
         captionBuffer.forEach(caption => {
           sendMessage({
@@ -165,6 +178,7 @@ async function startSession(meetingMetadata) {
     startTime: new Date().toISOString(),
     captions: []
   };
+  pendingSessionStart = true;
 
   // Save to storage
   await chrome.storage.local.set({ currentSession });
@@ -190,11 +204,14 @@ async function startSession(meetingMetadata) {
   }
 
   // Send session start message
-  sendMessage({
+  const started = sendMessage({
     type: 'session_start',
     sessionId,
     metadata: meetingMetadata
   });
+  if (started) {
+    pendingSessionStart = false;
+  }
 
   return sessionId;
 }
@@ -247,6 +264,7 @@ async function endSession() {
 
   // Clear session
   currentSession = null;
+  pendingSessionStart = false;
   captionBuffer = [];
   await chrome.storage.local.remove('currentSession');
 

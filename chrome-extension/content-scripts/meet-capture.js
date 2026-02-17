@@ -26,9 +26,10 @@ const blockState = new WeakMap();
 // Track sent captions to avoid exact duplicates across elements
 const recentlySent = [];
 const MAX_RECENT = 50;
+const DEDUPE_WINDOW_MS = 20000;
 
 const DEBOUNCE_MS = 1800; // ms of silence before a caption is "done"
-const MIN_LENGTH  = 8;    // ignore fragments shorter than this
+const MIN_LENGTH  = 3;    // ignore ultra-short fragments only
 
 // ── Caption block detection ────────────────────────────────────────────────
 
@@ -160,11 +161,17 @@ function cleanText(raw) {
 // ── Duplicate detection ────────────────────────────────────────────────────
 
 function alreadySent(speaker, text) {
+  const now = Date.now();
+  for (let i = recentlySent.length - 1; i >= 0; i--) {
+    if (now - recentlySent[i].ts > DEDUPE_WINDOW_MS) {
+      recentlySent.splice(i, 1);
+    }
+  }
   return recentlySent.some(r => r.speaker === speaker && r.text === text);
 }
 
 function markSent(speaker, text) {
-  recentlySent.push({ speaker, text });
+  recentlySent.push({ speaker, text, ts: Date.now() });
   if (recentlySent.length > MAX_RECENT) recentlySent.shift();
 }
 
