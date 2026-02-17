@@ -1706,11 +1706,14 @@ async function sendMessage() {
 
             for (const line of lines) {
                 if (!line.trim()) continue;
-                const eventMatch = line.match(/^event: (\w+)\ndata: (.+)$/s);
-                if (!eventMatch) continue;
-
-                const [, event, dataStr] = eventMatch;
-                const data = JSON.parse(dataStr);
+                const nlIdx = line.indexOf('\n');
+                if (nlIdx === -1) continue;
+                const eventLine = line.substring(0, nlIdx);
+                const dataLine = line.substring(nlIdx + 1);
+                if (!eventLine.startsWith('event: ') || !dataLine.startsWith('data: ')) continue;
+                const event = eventLine.substring(7);
+                let data;
+                try { data = JSON.parse(dataLine.substring(6)); } catch { continue; }
 
                 if (event === 'text') {
                     // Append text chunk in real-time
@@ -1718,9 +1721,27 @@ async function sendMessage() {
                     streamingText.innerHTML = formatResponse(accumulatedText);
                     chatMessages.scrollTop = chatMessages.scrollHeight;
                 } else if (event === 'tool_start') {
-                    // Tool steps hidden - only show AI response text
+                    const icon = TOOL_ICONS[data.tool] || '&#128295;';
+                    const toolName = data.tool.replace(/_/g, ' ');
+                    const indicator = document.createElement('div');
+                    indicator.className = 'tool-indicator executing';
+                    indicator.id = `tool-${data.tool}-${Date.now()}`;
+                    indicator.innerHTML = `<span class="tool-spinner">&#9881;</span> ${icon} ${toolName}`;
+                    streamingTools.appendChild(indicator);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
                 } else if (event === 'tool_end') {
-                    // Tool steps hidden - only show AI response text
+                    // Update the last matching indicator to show success/error
+                    const indicators = streamingTools.querySelectorAll('.tool-indicator.executing');
+                    for (const ind of indicators) {
+                        if (ind.innerHTML.includes(data.tool.replace(/_/g, ' '))) {
+                            ind.className = `tool-indicator ${data.success ? 'success' : 'error'}`;
+                            const statusIcon = data.success ? '&#10003;' : '&#10007;';
+                            const icon = TOOL_ICONS[data.tool] || '&#128295;';
+                            const toolName = data.tool.replace(/_/g, ' ');
+                            ind.innerHTML = `${statusIcon} ${icon} ${toolName}`;
+                            break;
+                        }
+                    }
                 } else if (event === 'done') {
                     // Final result received
                     if (data.turnsUsed > 0) {

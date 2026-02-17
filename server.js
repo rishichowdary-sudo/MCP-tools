@@ -7315,17 +7315,16 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
     let userEmail = null;
     try {
         userEmail = await getPrimaryEmailAddress();
-        if (oauth2Client) {
-            const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
-            const { data } = await oauth2.userinfo.get();
-            if (data.given_name) {
-                userFirstName = data.given_name;
-            } else if (data.name) {
-                userFirstName = data.name.split(' ')[0];
+        if (userEmail) {
+            // Extract first name from email: rishi.chowdary@x.com → Rishi, karthikeya_a@x.com → Karthikeya
+            const localPart = userEmail.split('@')[0];
+            const namePart = localPart.split(/[._\-+0-9]/)[0];
+            if (namePart && namePart.length >= 2) {
+                userFirstName = namePart.charAt(0).toUpperCase() + namePart.slice(1).toLowerCase();
             }
         }
     } catch (err) {
-        console.log('Could not get user info for signature:', err.message);
+        console.log('Could not get user name for signature:', err.message);
     }
 
     const systemPrompt = buildAgentSystemPrompt({
@@ -7759,17 +7758,16 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
     let userEmail = null;
     try {
         userEmail = await getPrimaryEmailAddress();
-        if (oauth2Client) {
-            const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
-            const { data } = await oauth2.userinfo.get();
-            if (data.given_name) {
-                userFirstName = data.given_name;
-            } else if (data.name) {
-                userFirstName = data.name.split(' ')[0];
+        if (userEmail) {
+            // Extract first name from email: rishi.chowdary@x.com → Rishi, karthikeya_a@x.com → Karthikeya
+            const localPart = userEmail.split('@')[0];
+            const namePart = localPart.split(/[._\-+0-9]/)[0];
+            if (namePart && namePart.length >= 2) {
+                userFirstName = namePart.charAt(0).toUpperCase() + namePart.slice(1).toLowerCase();
             }
         }
     } catch (err) {
-        console.log('Could not get user info for signature:', err.message);
+        console.log('Could not get user name for signature:', err.message);
     }
 
     const systemPrompt = buildAgentSystemPrompt({
