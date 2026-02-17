@@ -7315,18 +7315,17 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
     let userEmail = null;
     try {
         userEmail = await getPrimaryEmailAddress();
-        if (userEmail) {
-            const db = readUsersDb();
-            const user = db.users[userEmail];
-            if (user?.name) {
-                // Remove role labels like "(Admin)" and extract first name
-                const cleanName = user.name.replace(/\s*\([^)]*\)\s*/g, '').trim();
-                userFirstName = cleanName.split(' ')[0];
+        if (oauth2Client) {
+            const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+            const { data } = await oauth2.userinfo.get();
+            if (data.given_name) {
+                userFirstName = data.given_name;
+            } else if (data.name) {
+                userFirstName = data.name.split(' ')[0];
             }
         }
     } catch (err) {
-        // If we can't get user email, continue without signature customization
-        console.log('Could not get user email for signature:', err.message);
+        console.log('Could not get user info for signature:', err.message);
     }
 
     const systemPrompt = buildAgentSystemPrompt({
@@ -7760,18 +7759,17 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
     let userEmail = null;
     try {
         userEmail = await getPrimaryEmailAddress();
-        if (userEmail) {
-            const db = readUsersDb();
-            const user = db.users[userEmail];
-            if (user?.name) {
-                // Remove role labels like "(Admin)" and extract first name
-                const cleanName = user.name.replace(/\s*\([^)]*\)\s*/g, '').trim();
-                userFirstName = cleanName.split(' ')[0];
+        if (oauth2Client) {
+            const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+            const { data } = await oauth2.userinfo.get();
+            if (data.given_name) {
+                userFirstName = data.given_name;
+            } else if (data.name) {
+                userFirstName = data.name.split(' ')[0];
             }
         }
     } catch (err) {
-        // If we can't get user email, continue without signature customization
-        console.log('Could not get user email for signature:', err.message);
+        console.log('Could not get user info for signature:', err.message);
     }
 
     const systemPrompt = buildAgentSystemPrompt({
