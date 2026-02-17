@@ -5320,14 +5320,14 @@ const gmailTools = [
         type: "function",
         function: {
             name: "send_email",
-            description: "Send a new email to recipients. Supports CC/BCC and file attachments. Body supports \\n for line breaks and will be properly formatted.",
+            description: "Send a new email.",
             parameters: {
                 type: "object",
                 properties: {
                     to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
-                    subject: { type: "string", description: "Email subject line" },
-                    body: { type: "string", description: "Email body (use \\n for line breaks, will be converted to proper formatting)" },
-                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients, subject, and body are correct." },
+                    subject: { type: "string", description: "Subject line" },
+                    body: { type: "string", description: "Email body (use \\n for line breaks)" },
+                    confirmSend: { type: "boolean", description: "Set true after user confirms." },
                     cc: { type: "array", items: { type: "string" }, description: "CC addresses" },
                     bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" },
                     attachments: {
@@ -5335,13 +5335,13 @@ const gmailTools = [
                         items: {
                             type: "object",
                             properties: {
-                                localPath: { type: "string", description: "FULL absolute local file path. Get this from download_drive_file_to_local result or from user-uploaded files. Must be a full path like C:\\...\\uploads\\file.txt, NOT just a filename." },
-                                filename: { type: "string", description: "Optional: desired filename for attachment" },
-                                mimeType: { type: "string", description: "Optional: MIME type (auto-detected if not provided)" }
+                                localPath: { type: "string", description: "Absolute file path from download_drive_file_to_local or uploaded files" },
+                                filename: { type: "string", description: "Desired filename" },
+                                mimeType: { type: "string", description: "MIME type (auto-detected)" }
                             },
                             required: ["localPath"]
                         },
-                        description: "File attachments. For Drive files: FIRST call download_drive_file_to_local to get localPath, THEN use that exact localPath here."
+                        description: "File attachments via localPath"
                     }
                 },
                 required: ["to", "subject", "body"]
@@ -5352,7 +5352,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "search_emails",
-            description: "Search emails using Gmail query syntax. Examples: 'from:boss', 'is:unread', 'subject:invoice', 'has:attachment', 'newer_than:2d', 'label:important'",
+            description: "Search emails using Gmail query syntax (from:, subject:, is:unread, has:attachment, etc.).",
             parameters: {
                 type: "object",
                 properties: {
@@ -5367,7 +5367,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "read_email",
-            description: "Read the full content of an email including body, headers, and attachment info. Use after searching to get details.",
+            description: "Read full email content by message ID.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5381,7 +5381,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "list_emails",
-            description: "List recent emails from a specific label/folder. Common labels: INBOX, SENT, DRAFT, TRASH, SPAM, STARRED, IMPORTANT, UNREAD",
+            description: "List recent emails from a label/folder.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5395,7 +5395,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "trash_email",
-            description: "Move an email to the Trash folder",
+            description: "Trash an email.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5409,7 +5409,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "modify_labels",
-            description: "Add or remove labels from an email. Use for custom label management.",
+            description: "Modify email labels.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5425,7 +5425,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "create_draft",
-            description: "Create a new email draft (saved but not sent). Useful for composing emails to review before sending.",
+            description: "Create a new email draft.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5443,13 +5443,13 @@ const gmailTools = [
         type: "function",
         function: {
             name: "reply_to_email",
-            description: "Reply to an existing email. Automatically sets the correct thread, subject, and reply-to headers.",
+            description: "Reply to an existing email.",
             parameters: {
                 type: "object",
                 properties: {
                     messageId: { type: "string", description: "The message ID to reply to" },
                     body: { type: "string", description: "Reply body text" },
-                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and reply content are correct." },
+                    confirmSend: { type: "boolean", description: "Set true after user confirms." },
                     cc: { type: "array", items: { type: "string" }, description: "Additional CC addresses" }
                 },
                 required: ["messageId", "body"]
@@ -5460,13 +5460,13 @@ const gmailTools = [
         type: "function",
         function: {
             name: "forward_email",
-            description: "Forward an existing email to new recipients with an optional additional message.",
+            description: "Forward an email to new recipients.",
             parameters: {
                 type: "object",
                 properties: {
                     messageId: { type: "string", description: "The message ID to forward" },
                     to: { type: "array", items: { type: "string" }, description: "Forward recipients" },
-                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and forward content are correct." },
+                    confirmSend: { type: "boolean", description: "Set true after user confirms." },
                     additionalMessage: { type: "string", description: "Optional message to add above the forwarded content" }
                 },
                 required: ["messageId", "to"]
@@ -5477,7 +5477,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "list_labels",
-            description: "List all Gmail labels/folders including system labels (INBOX, SENT, etc.) and custom labels.",
+            description: "List all Gmail labels.",
             parameters: { type: "object", properties: {} }
         }
     },
@@ -5485,7 +5485,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "create_label",
-            description: "Create a new Gmail label/folder for organizing emails.",
+            description: "Create a new Gmail label.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5501,7 +5501,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "delete_label",
-            description: "Delete a Gmail label. Only works on user-created labels, not system labels.",
+            description: "Delete a Gmail label.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5515,7 +5515,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "mark_as_read",
-            description: "Mark a specific email as read by removing the UNREAD label.",
+            description: "Mark an email as read.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5529,7 +5529,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "mark_as_unread",
-            description: "Mark a specific email as unread by adding the UNREAD label.",
+            description: "Mark an email as unread.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5543,7 +5543,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "star_email",
-            description: "Star/flag an important email for quick access later.",
+            description: "Star an email.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5571,7 +5571,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "archive_email",
-            description: "Archive an email by removing it from the Inbox. The email is still searchable but won't appear in Inbox.",
+            description: "Archive an email (remove from Inbox).",
             parameters: {
                 type: "object",
                 properties: {
@@ -5585,7 +5585,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "untrash_email",
-            description: "Restore an email from Trash back to the Inbox.",
+            description: "Restore email from Trash.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5599,7 +5599,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "get_thread",
-            description: "Get a full email thread/conversation. Returns all messages in the thread in chronological order.",
+            description: "Get a full email thread.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5627,7 +5627,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "delete_draft",
-            description: "Permanently delete a draft email.",
+            description: "Delete a draft.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5641,12 +5641,12 @@ const gmailTools = [
         type: "function",
         function: {
             name: "send_draft",
-            description: "Send an existing draft email immediately.",
+            description: "Send a draft.",
             parameters: {
                 type: "object",
                 properties: {
                     draftId: { type: "string", description: "The draft ID to send" },
-                    confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms the draft should be sent." }
+                    confirmSend: { type: "boolean", description: "Set true after user confirms." }
                 },
                 required: ["draftId"]
             }
@@ -5656,7 +5656,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "get_attachment_info",
-            description: "Get information about attachments in an email (filenames, sizes, types).",
+            description: "Get email attachment info.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5670,7 +5670,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "get_profile",
-            description: "Get the authenticated Gmail user's profile info including email address, total messages, and total threads.",
+            description: "Get Gmail user profile.",
             parameters: { type: "object", properties: {} }
         }
     },
@@ -5678,7 +5678,7 @@ const gmailTools = [
         type: "function",
         function: {
             name: "batch_modify_emails",
-            description: "Apply label changes to multiple emails at once. Useful for bulk operations like 'mark all as read', 'archive all from sender', etc.",
+            description: "Bulk label changes on multiple emails.",
             parameters: {
                 type: "object",
                 properties: {
@@ -5693,151 +5693,151 @@ const gmailTools = [
 ];
 
 const calendarTools = [
-    { type: "function", function: { name: "list_events", description: "List upcoming calendar events. Can filter by time range.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, maxResults: { type: "integer", description: "Max events to return (default 10)" }, timeMin: { type: "string", description: "Start time in ISO 8601 format" }, timeMax: { type: "string", description: "End time in ISO 8601 format" } } } } },
-    { type: "function", function: { name: "get_event", description: "Get full details of a specific calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" } }, required: ["eventId"] } } },
-    { type: "function", function: { name: "create_event", description: "Create a new calendar event with optional attendees, location, recurrence, and optional Google Meet link.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, summary: { type: "string", description: "Event title" }, description: { type: "string", description: "Event description" }, location: { type: "string", description: "Event location" }, startDateTime: { type: "string", description: "Start datetime in ISO 8601 (for timed events)" }, endDateTime: { type: "string", description: "End datetime in ISO 8601 (for timed events)" }, startDate: { type: "string", description: "Start date YYYY-MM-DD (for all-day events)" }, endDate: { type: "string", description: "End date YYYY-MM-DD (for all-day events)" }, attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" }, recurrence: { type: "array", items: { type: "string" }, description: "RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=5']" }, timeZone: { type: "string", description: "Time zone (default: UTC)" }, createMeetLink: { type: "boolean", description: "If true, create a Google Meet link for this event" } }, required: ["summary"] } } },
-    { type: "function", function: { name: "create_meet_event", description: "Create a Google Calendar event with a Google Meet link.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, summary: { type: "string", description: "Meeting title" }, description: { type: "string", description: "Meeting description" }, startDateTime: { type: "string", description: "Start datetime in ISO 8601" }, endDateTime: { type: "string", description: "End datetime in ISO 8601" }, attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" }, timeZone: { type: "string", description: "Time zone (default: UTC)" } }, required: ["summary", "startDateTime", "endDateTime"] } } },
-    { type: "function", function: { name: "add_meet_link_to_event", description: "Add a Google Meet link to an existing calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" } }, required: ["eventId"] } } },
-    { type: "function", function: { name: "update_event", description: "Update an existing calendar event's title, time, location, or description.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to update" }, summary: { type: "string", description: "New event title" }, description: { type: "string", description: "New description" }, location: { type: "string", description: "New location" }, startDateTime: { type: "string", description: "New start datetime" }, endDateTime: { type: "string", description: "New end datetime" }, startDate: { type: "string", description: "New start date (all-day)" }, endDate: { type: "string", description: "New end date (all-day)" }, timeZone: { type: "string", description: "Time zone" } }, required: ["eventId"] } } },
+    { type: "function", function: { name: "list_events", description: "List calendar events.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, maxResults: { type: "integer", description: "Max events to return (default 10)" }, timeMin: { type: "string", description: "Start time in ISO 8601 format" }, timeMax: { type: "string", description: "End time in ISO 8601 format" } } } } },
+    { type: "function", function: { name: "get_event", description: "Get event details.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" } }, required: ["eventId"] } } },
+    { type: "function", function: { name: "create_event", description: "Create a calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, summary: { type: "string", description: "Event title" }, description: { type: "string", description: "Event description" }, location: { type: "string", description: "Event location" }, startDateTime: { type: "string", description: "Start datetime in ISO 8601 (for timed events)" }, endDateTime: { type: "string", description: "End datetime in ISO 8601 (for timed events)" }, startDate: { type: "string", description: "Start date YYYY-MM-DD (for all-day events)" }, endDate: { type: "string", description: "End date YYYY-MM-DD (for all-day events)" }, attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" }, recurrence: { type: "array", items: { type: "string" }, description: "RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=5']" }, timeZone: { type: "string", description: "Time zone (default: UTC)" }, createMeetLink: { type: "boolean", description: "If true, create a Google Meet link for this event" } }, required: ["summary"] } } },
+    { type: "function", function: { name: "create_meet_event", description: "Create event with Meet link.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, summary: { type: "string", description: "Meeting title" }, description: { type: "string", description: "Meeting description" }, startDateTime: { type: "string", description: "Start datetime in ISO 8601" }, endDateTime: { type: "string", description: "End datetime in ISO 8601" }, attendees: { type: "array", items: { type: "string" }, description: "Attendee email addresses" }, timeZone: { type: "string", description: "Time zone (default: UTC)" } }, required: ["summary", "startDateTime", "endDateTime"] } } },
+    { type: "function", function: { name: "add_meet_link_to_event", description: "Add Meet link to an event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" } }, required: ["eventId"] } } },
+    { type: "function", function: { name: "update_event", description: "Update a calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to update" }, summary: { type: "string", description: "New event title" }, description: { type: "string", description: "New description" }, location: { type: "string", description: "New location" }, startDateTime: { type: "string", description: "New start datetime" }, endDateTime: { type: "string", description: "New end datetime" }, startDate: { type: "string", description: "New start date (all-day)" }, endDate: { type: "string", description: "New end date (all-day)" }, timeZone: { type: "string", description: "Time zone" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "delete_event", description: "Delete a calendar event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to delete" } }, required: ["eventId"] } } },
     { type: "function", function: { name: "list_calendars", description: "List all calendars accessible to the user.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "create_calendar", description: "Create a new calendar.", parameters: { type: "object", properties: { summary: { type: "string", description: "Calendar name" }, description: { type: "string", description: "Calendar description" }, timeZone: { type: "string", description: "Time zone" } }, required: ["summary"] } } },
-    { type: "function", function: { name: "quick_add_event", description: "Quickly create an event using natural language (e.g. 'Meeting tomorrow at 3pm').", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, text: { type: "string", description: "Natural language event description" } }, required: ["text"] } } },
-    { type: "function", function: { name: "get_free_busy", description: "Check free/busy status for specified calendar IDs in a time range. If calendarIds is omitted, it checks only your primary calendar.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, calendarIds: { type: "array", items: { type: "string" }, description: "Calendar IDs to check (default: ['primary'])" } }, required: ["timeMin", "timeMax"] } } },
-    { type: "function", function: { name: "check_person_availability", description: "Check one person's calendar availability and return free slots. Requires access to that person's calendar free/busy data.", parameters: { type: "object", properties: { person: { type: "string", description: "Person name or email to resolve from Gmail history" }, email: { type: "string", description: "Exact person email (preferred if known)" }, calendarId: { type: "string", description: "Calendar ID override (if known)" }, timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, durationMinutes: { type: "integer", description: "Minimum free slot length in minutes (default 30)" } }, required: ["timeMin", "timeMax"] } } },
-    { type: "function", function: { name: "find_common_free_slots", description: "Find common free slots across multiple people and/or calendars.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, people: { type: "array", items: { type: "string" }, description: "Names or emails to resolve and include" }, calendarIds: { type: "array", items: { type: "string" }, description: "Optional calendar IDs to include" }, includePrimary: { type: "boolean", description: "Include your primary calendar (default true)" }, durationMinutes: { type: "integer", description: "Minimum free slot length in minutes (default 30)" } }, required: ["timeMin", "timeMax"] } } },
-    { type: "function", function: { name: "list_recurring_instances", description: "List individual occurrences of a recurring event.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The recurring event ID" }, maxResults: { type: "integer", description: "Max instances to return" }, timeMin: { type: "string", description: "Start time filter" }, timeMax: { type: "string", description: "End time filter" } }, required: ["eventId"] } } },
-    { type: "function", function: { name: "move_event", description: "Move an event from one calendar to another.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Source calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to move" }, destinationCalendarId: { type: "string", description: "Destination calendar ID" } }, required: ["eventId", "destinationCalendarId"] } } },
-    { type: "function", function: { name: "update_event_attendees", description: "Add or remove attendees from a calendar event. Use addAttendees to add people (also accepts 'attendees' as alias). Availability check is NOT required before adding attendees.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" }, addAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to add (preferred parameter name)" }, attendees: { type: "array", items: { type: "string" }, description: "Alias for addAttendees - email addresses to add" }, removeAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to remove" } }, required: ["eventId"] } } },
-    { type: "function", function: { name: "get_calendar_colors", description: "Get available color options for calendars and events.", parameters: { type: "object", properties: {} } } },
-    { type: "function", function: { name: "clear_calendar", description: "Clear all events from a calendar. WARNING: This is destructive!", parameters: { type: "object", properties: { calendarId: { type: "string", description: "The calendar ID to clear (cannot be primary)" } }, required: ["calendarId"] } } },
-    { type: "function", function: { name: "watch_events", description: "Set up push notifications for calendar changes (requires a public webhook URL).", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, webhookUrl: { type: "string", description: "Public webhook URL to receive notifications" } }, required: ["webhookUrl"] } } }
+    { type: "function", function: { name: "quick_add_event", description: "Create event from natural language.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, text: { type: "string", description: "Natural language event description" } }, required: ["text"] } } },
+    { type: "function", function: { name: "get_free_busy", description: "Check free/busy status.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, calendarIds: { type: "array", items: { type: "string" }, description: "Calendar IDs to check (default: ['primary'])" } }, required: ["timeMin", "timeMax"] } } },
+    { type: "function", function: { name: "check_person_availability", description: "Check a person's availability.", parameters: { type: "object", properties: { person: { type: "string", description: "Person name or email to resolve from Gmail history" }, email: { type: "string", description: "Exact person email (preferred if known)" }, calendarId: { type: "string", description: "Calendar ID override (if known)" }, timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, durationMinutes: { type: "integer", description: "Minimum free slot length in minutes (default 30)" } }, required: ["timeMin", "timeMax"] } } },
+    { type: "function", function: { name: "find_common_free_slots", description: "Find common free slots.", parameters: { type: "object", properties: { timeMin: { type: "string", description: "Start of time range (ISO 8601)" }, timeMax: { type: "string", description: "End of time range (ISO 8601)" }, people: { type: "array", items: { type: "string" }, description: "Names or emails to resolve and include" }, calendarIds: { type: "array", items: { type: "string" }, description: "Optional calendar IDs to include" }, includePrimary: { type: "boolean", description: "Include your primary calendar (default true)" }, durationMinutes: { type: "integer", description: "Minimum free slot length in minutes (default 30)" } }, required: ["timeMin", "timeMax"] } } },
+    { type: "function", function: { name: "list_recurring_instances", description: "List recurring event instances.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The recurring event ID" }, maxResults: { type: "integer", description: "Max instances to return" }, timeMin: { type: "string", description: "Start time filter" }, timeMax: { type: "string", description: "End time filter" } }, required: ["eventId"] } } },
+    { type: "function", function: { name: "move_event", description: "Move event to another calendar.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Source calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID to move" }, destinationCalendarId: { type: "string", description: "Destination calendar ID" } }, required: ["eventId", "destinationCalendarId"] } } },
+    { type: "function", function: { name: "update_event_attendees", description: "Add or remove event attendees.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, eventId: { type: "string", description: "The event ID" }, addAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to add (preferred parameter name)" }, attendees: { type: "array", items: { type: "string" }, description: "Alias for addAttendees - email addresses to add" }, removeAttendees: { type: "array", items: { type: "string" }, description: "Email addresses to remove" } }, required: ["eventId"] } } },
+    { type: "function", function: { name: "get_calendar_colors", description: "Get calendar color options.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "clear_calendar", description: "Clear all events from a calendar.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "The calendar ID to clear (cannot be primary)" } }, required: ["calendarId"] } } },
+    { type: "function", function: { name: "watch_events", description: "Watch calendar for changes.", parameters: { type: "object", properties: { calendarId: { type: "string", description: "Calendar ID (default: primary)" }, webhookUrl: { type: "string", description: "Public webhook URL to receive notifications" } }, required: ["webhookUrl"] } } }
 ];
 
 const gchatTools = [
-    { type: "function", function: { name: "list_chat_spaces", description: "List Google Chat spaces available to the authenticated user.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Max spaces to return (default 20)" } } } } },
-    { type: "function", function: { name: "send_chat_message", description: "Send a text message to a Google Chat space.", parameters: { type: "object", properties: { spaceId: { type: "string", description: "Space ID or full name like spaces/AAAA..." }, text: { type: "string", description: "Message text to send" } }, required: ["spaceId", "text"] } } },
-    { type: "function", function: { name: "list_chat_messages", description: "List recent messages in a Google Chat space.", parameters: { type: "object", properties: { spaceId: { type: "string", description: "Space ID or full name like spaces/AAAA..." }, maxResults: { type: "integer", description: "Max messages to return (default 20)" } }, required: ["spaceId"] } } }
+    { type: "function", function: { name: "list_chat_spaces", description: "List Chat spaces.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Max spaces to return (default 20)" } } } } },
+    { type: "function", function: { name: "send_chat_message", description: "Send a Chat message.", parameters: { type: "object", properties: { spaceId: { type: "string", description: "Space ID or full name like spaces/AAAA..." }, text: { type: "string", description: "Message text to send" } }, required: ["spaceId", "text"] } } },
+    { type: "function", function: { name: "list_chat_messages", description: "List Chat messages.", parameters: { type: "object", properties: { spaceId: { type: "string", description: "Space ID or full name like spaces/AAAA..." }, maxResults: { type: "integer", description: "Max messages to return (default 20)" } }, required: ["spaceId"] } } }
 ];
 
 const driveTools = [
-    { type: "function", function: { name: "list_drive_files", description: "List Google Drive files/folders you can access. Supports Drive query syntax.", parameters: { type: "object", properties: { query: { type: "string", description: "Drive query string, e.g. name contains 'Q1' and mimeType contains 'spreadsheet'" }, pageSize: { type: "integer", description: "Max files to return (default 25)" }, orderBy: { type: "string", description: "Sort order (default 'modifiedTime desc')" }, includeTrashed: { type: "boolean", description: "Include trashed files (default false)" } } } } },
-    { type: "function", function: { name: "get_drive_file", description: "Get metadata/details for a specific Drive file or folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "create_drive_folder", description: "Create a new folder in Google Drive.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder name" }, parentId: { type: "string", description: "Optional parent folder ID" } }, required: ["name"] } } },
-    { type: "function", function: { name: "create_drive_file", description: "Create a file in Drive. Can upload text content OR a file from server using localPath. For uploaded files, use the localPath from attached files.", parameters: { type: "object", properties: { name: { type: "string", description: "File name" }, content: { type: "string", description: "Text content (use this OR localPath, not both)" }, mimeType: { type: "string", description: "MIME type (auto-detected from file extension if using localPath)" }, parentId: { type: "string", description: "Optional parent folder ID" }, localPath: { type: "string", description: "Local server file path (from attached files). Use this to upload user's attached files to Drive." } }, required: ["name"] } } },
-    { type: "function", function: { name: "update_drive_file", description: "Update file content and/or rename a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, content: { type: "string", description: "New text content" }, name: { type: "string", description: "New file name" }, mimeType: { type: "string", description: "MIME type for content uploads (default text/plain)" } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "delete_drive_file", description: "Trash or permanently delete a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, permanent: { type: "boolean", description: "If true, permanently delete. Otherwise move to trash." } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "copy_drive_file", description: "Copy an existing Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID" }, name: { type: "string", description: "Optional new file name" }, parentId: { type: "string", description: "Optional parent folder for copy" } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "move_drive_file", description: "Move a Drive file to another folder.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, newParentId: { type: "string", description: "Destination folder ID" } }, required: ["fileId", "newParentId"] } } },
-    { type: "function", function: { name: "share_drive_file", description: "Share a Drive file with a user email.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, emailAddress: { type: "string", description: "User email address to share with" }, role: { type: "string", description: "Permission role: reader, commenter, writer, organizer, fileOrganizer (default reader)" }, sendNotificationEmail: { type: "boolean", description: "Send share email notification (default true)" } }, required: ["fileId", "emailAddress"] } } },
-    { type: "function", function: { name: "download_drive_file", description: "Prepare a real browser download link for a Drive file. For attaching Drive files to emails, use download_drive_file_to_local instead.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Optional export format for Google Workspace files (e.g. docx, pdf, txt, xlsx, csv)." }, filename: { type: "string", description: "Optional custom downloaded file name." } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "download_drive_file_to_local", description: "Download a Drive file to the server's local disk. Returns a localPath that can be used to attach the file to emails (via send_email attachments) or upload to GCS. Use this when you need to transfer a Drive file to another service.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Export format for Google Workspace files (pdf, docx, xlsx, csv, pptx, txt)" } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "extract_drive_file_text", description: "Extract readable text from a Drive file (best for summarization/Q&A; PDFs attempt conversion to text).", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum text bytes to return (default 40000, max 120000)." } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "append_drive_document_text", description: "Append text to a Drive document. Uses Docs API when available; otherwise safely falls back to Drive text rewrite.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID (Google Doc or text-like file)." }, text: { type: "string", description: "Text to append to the end of the document." } }, required: ["fileId", "text"] } } },
-    { type: "function", function: { name: "convert_file_to_google_doc", description: "Convert a file (like PDF) into a Google Doc stored in Drive. Optionally return a download link for the converted doc.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. a PDF)." }, title: { type: "string", description: "Optional title for the converted Google Doc." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted doc." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted document." }, downloadFormat: { type: "string", description: "Optional export format for converted doc (docx, pdf, txt). Default docx." } }, required: ["fileId"] } } },
-    { type: "function", function: { name: "convert_file_to_google_sheet", description: "Convert a file (like CSV/XLSX) into a Google Sheet stored in Drive. Optionally return a download link for the converted sheet.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. CSV/XLSX)." }, title: { type: "string", description: "Optional title for the converted Google Sheet." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted sheet." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted spreadsheet." }, downloadFormat: { type: "string", description: "Optional export format for converted sheet (xlsx, csv, pdf). Default xlsx." } }, required: ["fileId"] } } }
+    { type: "function", function: { name: "list_drive_files", description: "List Drive files/folders.", parameters: { type: "object", properties: { query: { type: "string", description: "Drive query string, e.g. name contains 'Q1' and mimeType contains 'spreadsheet'" }, pageSize: { type: "integer", description: "Max files to return (default 25)" }, orderBy: { type: "string", description: "Sort order (default 'modifiedTime desc')" }, includeTrashed: { type: "boolean", description: "Include trashed files (default false)" } } } } },
+    { type: "function", function: { name: "get_drive_file", description: "Get Drive file metadata.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "create_drive_folder", description: "Create a Drive folder.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder name" }, parentId: { type: "string", description: "Optional parent folder ID" } }, required: ["name"] } } },
+    { type: "function", function: { name: "create_drive_file", description: "Create a file in Drive.", parameters: { type: "object", properties: { name: { type: "string", description: "File name" }, content: { type: "string", description: "Text content (use this OR localPath, not both)" }, mimeType: { type: "string", description: "MIME type (auto-detected from file extension if using localPath)" }, parentId: { type: "string", description: "Optional parent folder ID" }, localPath: { type: "string", description: "Local server file path (from attached files). Use this to upload user's attached files to Drive." } }, required: ["name"] } } },
+    { type: "function", function: { name: "update_drive_file", description: "Update a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, content: { type: "string", description: "New text content" }, name: { type: "string", description: "New file name" }, mimeType: { type: "string", description: "MIME type for content uploads (default text/plain)" } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "delete_drive_file", description: "Delete a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, permanent: { type: "boolean", description: "If true, permanently delete. Otherwise move to trash." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "copy_drive_file", description: "Copy a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID" }, name: { type: "string", description: "Optional new file name" }, parentId: { type: "string", description: "Optional parent folder for copy" } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "move_drive_file", description: "Move a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, newParentId: { type: "string", description: "Destination folder ID" } }, required: ["fileId", "newParentId"] } } },
+    { type: "function", function: { name: "share_drive_file", description: "Share a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, emailAddress: { type: "string", description: "User email address to share with" }, role: { type: "string", description: "Permission role: reader, commenter, writer, organizer, fileOrganizer (default reader)" }, sendNotificationEmail: { type: "boolean", description: "Send share email notification (default true)" } }, required: ["fileId", "emailAddress"] } } },
+    { type: "function", function: { name: "download_drive_file", description: "Get browser download link for a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Optional export format for Google Workspace files (e.g. docx, pdf, txt, xlsx, csv)." }, filename: { type: "string", description: "Optional custom downloaded file name." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "download_drive_file_to_local", description: "Download a Drive file to server disk. Returns localPath for attachments.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, format: { type: "string", description: "Export format for Google Workspace files (pdf, docx, xlsx, csv, pptx, txt)" } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "extract_drive_file_text", description: "Extract text from a Drive file.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID" }, maxBytes: { type: "integer", description: "Maximum text bytes to return (default 40000, max 120000)." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "append_drive_document_text", description: "Append text to a Drive document.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Drive file ID (Google Doc or text-like file)." }, text: { type: "string", description: "Text to append to the end of the document." } }, required: ["fileId", "text"] } } },
+    { type: "function", function: { name: "convert_file_to_google_doc", description: "Convert a file to Google Doc.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. a PDF)." }, title: { type: "string", description: "Optional title for the converted Google Doc." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted doc." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted document." }, downloadFormat: { type: "string", description: "Optional export format for converted doc (docx, pdf, txt). Default docx." } }, required: ["fileId"] } } },
+    { type: "function", function: { name: "convert_file_to_google_sheet", description: "Convert a file to Google Sheet.", parameters: { type: "object", properties: { fileId: { type: "string", description: "Source Drive file ID (e.g. CSV/XLSX)." }, title: { type: "string", description: "Optional title for the converted Google Sheet." }, parentId: { type: "string", description: "Optional destination Drive folder ID for the converted sheet." }, downloadConverted: { type: "boolean", description: "If true, also return a download URL for the converted spreadsheet." }, downloadFormat: { type: "string", description: "Optional export format for converted sheet (xlsx, csv, pdf). Default xlsx." } }, required: ["fileId"] } } }
 ];
 
 const sheetsTools = [
-    { type: "function", function: { name: "list_spreadsheets", description: "List spreadsheets you can access in Google Drive.", parameters: { type: "object", properties: { query: { type: "string", description: "Optional Drive query filter" }, maxResults: { type: "integer", description: "Max spreadsheets to return (default 25)" } } } } },
-    { type: "function", function: { name: "create_spreadsheet", description: "Create a new Google Spreadsheet with optional sheet tab names.", parameters: { type: "object", properties: { title: { type: "string", description: "Spreadsheet title" }, sheets: { type: "array", items: { type: "string" }, description: "Optional sheet tab titles" } }, required: ["title"] } } },
-    { type: "function", function: { name: "get_spreadsheet", description: "Get spreadsheet metadata and sheet tab info.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, includeGridData: { type: "boolean", description: "Include cell grid data (default false)" } }, required: ["spreadsheetId"] } } },
-    { type: "function", function: { name: "list_sheet_tabs", description: "List all tab sheets in a spreadsheet.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" } }, required: ["spreadsheetId"] } } },
-    { type: "function", function: { name: "add_sheet_tab", description: "Add a new tab sheet to a spreadsheet.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, title: { type: "string", description: "New tab title" }, rows: { type: "integer", description: "Initial row count (default 1000)" }, columns: { type: "integer", description: "Initial column count (default 26)" } }, required: ["spreadsheetId", "title"] } } },
-    { type: "function", function: { name: "delete_sheet_tab", description: "Delete a tab sheet from a spreadsheet by sheetId.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetId: { type: "integer", description: "Numeric sheet ID" } }, required: ["spreadsheetId", "sheetId"] } } },
-    { type: "function", function: { name: "read_sheet_values", description: "Read values from a spreadsheet range (A1 notation).", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range (e.g. Sheet1!A1:D20)" }, valueRenderOption: { type: "string", description: "FORMATTED_VALUE, UNFORMATTED_VALUE, or FORMULA" }, dateTimeRenderOption: { type: "string", description: "SERIAL_NUMBER or FORMATTED_STRING" } }, required: ["spreadsheetId", "range"] } } },
-    { type: "function", function: { name: "update_sheet_values", description: "Overwrite values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to write" }, values: { type: "array", description: "2D array of rows, e.g. [[\"Name\",\"Role\"],[\"Rishi\",\"Lead\"]]", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, majorDimension: { type: "string", description: "ROWS or COLUMNS (default ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
-    { type: "function", function: { name: "update_timesheet_hours", description: "Find a timesheet row by date and reliably update one or more fields (billing hours, task details, non-billing hours, project/module/month).", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetName: { type: "string", description: "Tab name (default Tracker)" }, date: { type: "string", description: "Date to match, e.g. 6-Feb-2026 or 2026-02-06" }, billingHours: { type: "number", description: "Billing hours value to set" }, taskDetails: { type: "string", description: "Task details/description to set" }, nonBillingHours: { type: "number", description: "Non-billing hours value to set" }, projectName: { type: "string", description: "Project name to set" }, moduleName: { type: "string", description: "Module name to set" }, month: { type: "string", description: "Month label to set (e.g. February 2026)" }, dateColumn: { type: "string", description: "Date column letter (default B)" }, taskDetailsColumn: { type: "string", description: "Task Details column letter (default C)" }, billingHoursColumn: { type: "string", description: "Billing hours column letter (default D)" }, nonBillingHoursColumn: { type: "string", description: "Non-billing hours column letter (default E)" }, projectNameColumn: { type: "string", description: "Project name column letter (default F)" }, moduleNameColumn: { type: "string", description: "Module name column letter (default G)" }, monthColumn: { type: "string", description: "Month column letter (default A)" }, searchRange: { type: "string", description: "A1 range to search (default A1:Z3000)" }, preferEmptyBilling: { type: "boolean", description: "Prefer row where billing cell is empty when duplicates exist and billingHours is being updated (default true)" } }, required: ["spreadsheetId", "date"] } } },
-    { type: "function", function: { name: "append_sheet_values", description: "Append rows to a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 target range (e.g. Sheet1!A:D)" }, values: { type: "array", description: "2D array of rows to append", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, insertDataOption: { type: "string", description: "INSERT_ROWS or OVERWRITE (default INSERT_ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
-    { type: "function", function: { name: "clear_sheet_values", description: "Clear values in a spreadsheet range.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to clear" } }, required: ["spreadsheetId", "range"] } } }
+    { type: "function", function: { name: "list_spreadsheets", description: "List Google Sheets.", parameters: { type: "object", properties: { query: { type: "string", description: "Optional Drive query filter" }, maxResults: { type: "integer", description: "Max spreadsheets to return (default 25)" } } } } },
+    { type: "function", function: { name: "create_spreadsheet", description: "Create a new Google Spreadsheet.", parameters: { type: "object", properties: { title: { type: "string", description: "Spreadsheet title" }, sheets: { type: "array", items: { type: "string" }, description: "Optional sheet tab titles" } }, required: ["title"] } } },
+    { type: "function", function: { name: "get_spreadsheet", description: "Get spreadsheet metadata.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, includeGridData: { type: "boolean", description: "Include cell grid data (default false)" } }, required: ["spreadsheetId"] } } },
+    { type: "function", function: { name: "list_sheet_tabs", description: "List sheet tabs.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" } }, required: ["spreadsheetId"] } } },
+    { type: "function", function: { name: "add_sheet_tab", description: "Add a sheet tab.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, title: { type: "string", description: "New tab title" }, rows: { type: "integer", description: "Initial row count (default 1000)" }, columns: { type: "integer", description: "Initial column count (default 26)" } }, required: ["spreadsheetId", "title"] } } },
+    { type: "function", function: { name: "delete_sheet_tab", description: "Delete a sheet tab.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetId: { type: "integer", description: "Numeric sheet ID" } }, required: ["spreadsheetId", "sheetId"] } } },
+    { type: "function", function: { name: "read_sheet_values", description: "Read spreadsheet values.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range (e.g. Sheet1!A1:D20)" }, valueRenderOption: { type: "string", description: "FORMATTED_VALUE, UNFORMATTED_VALUE, or FORMULA" }, dateTimeRenderOption: { type: "string", description: "SERIAL_NUMBER or FORMATTED_STRING" } }, required: ["spreadsheetId", "range"] } } },
+    { type: "function", function: { name: "update_sheet_values", description: "Update spreadsheet values.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to write" }, values: { type: "array", description: "2D array of rows, e.g. [[\"Name\",\"Role\"],[\"Rishi\",\"Lead\"]]", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, majorDimension: { type: "string", description: "ROWS or COLUMNS (default ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
+    { type: "function", function: { name: "update_timesheet_hours", description: "Update timesheet row by date.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, sheetName: { type: "string", description: "Tab name (default Tracker)" }, date: { type: "string", description: "Date to match, e.g. 6-Feb-2026 or 2026-02-06" }, billingHours: { type: "number", description: "Billing hours value to set" }, taskDetails: { type: "string", description: "Task details/description to set" }, nonBillingHours: { type: "number", description: "Non-billing hours value to set" }, projectName: { type: "string", description: "Project name to set" }, moduleName: { type: "string", description: "Module name to set" }, month: { type: "string", description: "Month label to set (e.g. February 2026)" }, dateColumn: { type: "string", description: "Date column letter (default B)" }, taskDetailsColumn: { type: "string", description: "Task Details column letter (default C)" }, billingHoursColumn: { type: "string", description: "Billing hours column letter (default D)" }, nonBillingHoursColumn: { type: "string", description: "Non-billing hours column letter (default E)" }, projectNameColumn: { type: "string", description: "Project name column letter (default F)" }, moduleNameColumn: { type: "string", description: "Module name column letter (default G)" }, monthColumn: { type: "string", description: "Month column letter (default A)" }, searchRange: { type: "string", description: "A1 range to search (default A1:Z3000)" }, preferEmptyBilling: { type: "boolean", description: "Prefer row where billing cell is empty when duplicates exist and billingHours is being updated (default true)" } }, required: ["spreadsheetId", "date"] } } },
+    { type: "function", function: { name: "append_sheet_values", description: "Append rows to a spreadsheet.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 target range (e.g. Sheet1!A:D)" }, values: { type: "array", description: "2D array of rows to append", items: { type: "array", items: { type: "string" } } }, valueInputOption: { type: "string", description: "RAW or USER_ENTERED (default USER_ENTERED)" }, insertDataOption: { type: "string", description: "INSERT_ROWS or OVERWRITE (default INSERT_ROWS)" } }, required: ["spreadsheetId", "range", "values"] } } },
+    { type: "function", function: { name: "clear_sheet_values", description: "Clear spreadsheet values.", parameters: { type: "object", properties: { spreadsheetId: { type: "string", description: "Spreadsheet ID" }, range: { type: "string", description: "A1 range to clear" } }, required: ["spreadsheetId", "range"] } } }
 ];
 
 const githubTools = [
-    { type: "function", function: { name: "list_repos", description: "List repositories for a user or the authenticated user.", parameters: { type: "object", properties: { username: { type: "string", description: "GitHub username (omit for your own repos)" }, sort: { type: "string", description: "Sort by: created, updated, pushed, full_name (default: updated)" }, perPage: { type: "integer", description: "Results per page (default 30)" } } } } },
-    { type: "function", function: { name: "get_repo", description: "Get detailed information about a specific repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" } }, required: ["owner", "repo"] } } },
+    { type: "function", function: { name: "list_repos", description: "List GitHub repositories.", parameters: { type: "object", properties: { username: { type: "string", description: "GitHub username (omit for your own repos)" }, sort: { type: "string", description: "Sort by: created, updated, pushed, full_name (default: updated)" }, perPage: { type: "integer", description: "Results per page (default 30)" } } } } },
+    { type: "function", function: { name: "get_repo", description: "Get repository details.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" } }, required: ["owner", "repo"] } } },
     { type: "function", function: { name: "create_repo", description: "Create a new GitHub repository.", parameters: { type: "object", properties: { name: { type: "string", description: "Repository name" }, description: { type: "string", description: "Repository description" }, isPrivate: { type: "boolean", description: "Make repository private (default: false)" }, autoInit: { type: "boolean", description: "Initialize with README (default: true)" } }, required: ["name"] } } },
     { type: "function", function: { name: "list_issues", description: "List issues for a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, state: { type: "string", description: "Issue state: open, closed, all (default: open)" }, labels: { type: "string", description: "Comma-separated label names" }, perPage: { type: "integer", description: "Results per page (default 30)" } }, required: ["owner", "repo"] } } },
     { type: "function", function: { name: "create_issue", description: "Create a new issue in a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, title: { type: "string", description: "Issue title" }, body: { type: "string", description: "Issue body (markdown)" }, labels: { type: "array", items: { type: "string" }, description: "Label names" }, assignees: { type: "array", items: { type: "string" }, description: "Assignee usernames" } }, required: ["owner", "repo", "title"] } } },
-    { type: "function", function: { name: "update_issue", description: "Update an existing issue (title, body, state, labels, assignees).", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, issueNumber: { type: "integer", description: "Issue number" }, title: { type: "string", description: "New title" }, body: { type: "string", description: "New body" }, state: { type: "string", description: "New state: open or closed" }, labels: { type: "array", items: { type: "string" }, description: "Labels to set" }, assignees: { type: "array", items: { type: "string" }, description: "Assignees to set" } }, required: ["owner", "repo", "issueNumber"] } } },
+    { type: "function", function: { name: "update_issue", description: "Update an issue.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, issueNumber: { type: "integer", description: "Issue number" }, title: { type: "string", description: "New title" }, body: { type: "string", description: "New body" }, state: { type: "string", description: "New state: open or closed" }, labels: { type: "array", items: { type: "string" }, description: "Labels to set" }, assignees: { type: "array", items: { type: "string" }, description: "Assignees to set" } }, required: ["owner", "repo", "issueNumber"] } } },
     { type: "function", function: { name: "list_pull_requests", description: "List pull requests for a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, state: { type: "string", description: "PR state: open, closed, all (default: open)" }, perPage: { type: "integer", description: "Results per page (default 30)" } }, required: ["owner", "repo"] } } },
-    { type: "function", function: { name: "get_pull_request", description: "Get full details of a specific pull request.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, pullNumber: { type: "integer", description: "Pull request number" } }, required: ["owner", "repo", "pullNumber"] } } },
+    { type: "function", function: { name: "get_pull_request", description: "Get pull request details.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, pullNumber: { type: "integer", description: "Pull request number" } }, required: ["owner", "repo", "pullNumber"] } } },
     { type: "function", function: { name: "create_pull_request", description: "Create a new pull request.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, title: { type: "string", description: "PR title" }, body: { type: "string", description: "PR description" }, head: { type: "string", description: "Branch containing changes" }, base: { type: "string", description: "Branch to merge into" } }, required: ["owner", "repo", "title", "head", "base"] } } },
     { type: "function", function: { name: "merge_pull_request", description: "Merge a pull request.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, pullNumber: { type: "integer", description: "Pull request number" }, mergeMethod: { type: "string", description: "Merge method: merge, squash, rebase (default: merge)" }, commitMessage: { type: "string", description: "Custom merge commit message" } }, required: ["owner", "repo", "pullNumber"] } } },
     { type: "function", function: { name: "list_branches", description: "List branches in a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, perPage: { type: "integer", description: "Results per page (default 30)" } }, required: ["owner", "repo"] } } },
-    { type: "function", function: { name: "create_branch", description: "Create a new branch from an existing branch.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, branchName: { type: "string", description: "New branch name" }, fromBranch: { type: "string", description: "Source branch (default: main)" } }, required: ["owner", "repo", "branchName"] } } },
-    { type: "function", function: { name: "get_file_content", description: "Get the content of a file from a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, filePath: { type: "string", description: "Path to the file" }, ref: { type: "string", description: "Branch or commit SHA (default: default branch)" } }, required: ["owner", "repo", "filePath"] } } },
-    { type: "function", function: { name: "create_or_update_file", description: "Create or update a file in a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, filePath: { type: "string", description: "Path for the file" }, content: { type: "string", description: "File content" }, message: { type: "string", description: "Commit message" }, branch: { type: "string", description: "Target branch" }, sha: { type: "string", description: "SHA of file being replaced (required for updates)" } }, required: ["owner", "repo", "filePath", "content", "message"] } } },
-    { type: "function", function: { name: "search_repos", description: "Search GitHub repositories by keyword, language, stars, etc.", parameters: { type: "object", properties: { query: { type: "string", description: "Search query (e.g. 'react language:javascript stars:>1000')" }, sort: { type: "string", description: "Sort by: stars, forks, updated (default: stars)" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["query"] } } },
-    { type: "function", function: { name: "search_code", description: "Search code across GitHub repositories.", parameters: { type: "object", properties: { query: { type: "string", description: "Code search query (e.g. 'useState repo:facebook/react')" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["query"] } } },
-    { type: "function", function: { name: "list_commits", description: "List recent commits for a repository.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, sha: { type: "string", description: "Branch name or commit SHA" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["owner", "repo"] } } },
-    { type: "function", function: { name: "revert_commit", description: "Revert a specific commit by creating a new commit that undoes its changes. Works like 'git revert'.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, commitSha: { type: "string", description: "Full or short SHA of the commit to revert" }, branch: { type: "string", description: "Branch to revert on (default: main)" } }, required: ["owner", "repo", "commitSha"] } } },
-    { type: "function", function: { name: "get_user_profile", description: "Get a GitHub user's profile. Omit username to get your own profile.", parameters: { type: "object", properties: { username: { type: "string", description: "GitHub username (omit for your own)" } } } } },
+    { type: "function", function: { name: "create_branch", description: "Create a new branch.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, branchName: { type: "string", description: "New branch name" }, fromBranch: { type: "string", description: "Source branch (default: main)" } }, required: ["owner", "repo", "branchName"] } } },
+    { type: "function", function: { name: "get_file_content", description: "Get file content from a repo.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, filePath: { type: "string", description: "Path to the file" }, ref: { type: "string", description: "Branch or commit SHA (default: default branch)" } }, required: ["owner", "repo", "filePath"] } } },
+    { type: "function", function: { name: "create_or_update_file", description: "Create or update a file in a repo.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, filePath: { type: "string", description: "Path for the file" }, content: { type: "string", description: "File content" }, message: { type: "string", description: "Commit message" }, branch: { type: "string", description: "Target branch" }, sha: { type: "string", description: "SHA of file being replaced (required for updates)" } }, required: ["owner", "repo", "filePath", "content", "message"] } } },
+    { type: "function", function: { name: "search_repos", description: "Search GitHub repositories.", parameters: { type: "object", properties: { query: { type: "string", description: "Search query (e.g. 'react language:javascript stars:>1000')" }, sort: { type: "string", description: "Sort by: stars, forks, updated (default: stars)" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["query"] } } },
+    { type: "function", function: { name: "search_code", description: "Search code on GitHub.", parameters: { type: "object", properties: { query: { type: "string", description: "Code search query (e.g. 'useState repo:facebook/react')" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["query"] } } },
+    { type: "function", function: { name: "list_commits", description: "List recent commits.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, sha: { type: "string", description: "Branch name or commit SHA" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["owner", "repo"] } } },
+    { type: "function", function: { name: "revert_commit", description: "Revert a commit.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, commitSha: { type: "string", description: "Full or short SHA of the commit to revert" }, branch: { type: "string", description: "Branch to revert on (default: main)" } }, required: ["owner", "repo", "commitSha"] } } },
+    { type: "function", function: { name: "get_user_profile", description: "Get GitHub user profile.", parameters: { type: "object", properties: { username: { type: "string", description: "GitHub username (omit for your own)" } } } } },
     { type: "function", function: { name: "list_notifications", description: "List your GitHub notifications.", parameters: { type: "object", properties: { all: { type: "boolean", description: "Show all including read (default: false)" }, perPage: { type: "integer", description: "Results per page (default 20)" } } } } },
     { type: "function", function: { name: "list_gists", description: "List your GitHub gists.", parameters: { type: "object", properties: { perPage: { type: "integer", description: "Results per page (default 20)" } } } } }
 ];
 
 const outlookTools = [
-    { type: "function", function: { name: "outlook_send_email", description: "Send an email via Outlook. Supports CC/BCC. Body can be plain text or HTML.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" }, subject: { type: "string", description: "Email subject line" }, body: { type: "string", description: "Email body (plain text or HTML)" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients, subject, and body are correct." }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } }, required: ["to", "subject", "body"] } } },
-    { type: "function", function: { name: "outlook_list_emails", description: "List recent emails from an Outlook folder (default: inbox).", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of emails to return (default 20)" }, folder: { type: "string", description: "Folder name: inbox, sentitems, drafts, deleteditems, junkemail (default: inbox)" } } } } },
-    { type: "function", function: { name: "outlook_read_email", description: "Read full content of an Outlook email by message ID.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Outlook message ID" } }, required: ["messageId"] } } },
-    { type: "function", function: { name: "outlook_search_emails", description: "Search Outlook emails using Microsoft Search syntax (supports KQL: from:, subject:, hasAttachment:true, etc.).", parameters: { type: "object", properties: { query: { type: "string", description: "Search query (e.g., 'from:john subject:meeting')" }, maxResults: { type: "integer", description: "Number of results (default 20)" } }, required: ["query"] } } },
-    { type: "function", function: { name: "outlook_reply_to_email", description: "Reply to an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to reply to" }, body: { type: "string", description: "Reply body (HTML or text)" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and reply content are correct." } }, required: ["messageId", "body"] } } },
-    { type: "function", function: { name: "outlook_forward_email", description: "Forward an Outlook email to new recipients.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to forward" }, to: { type: "array", items: { type: "string" }, description: "Forward recipient addresses" }, comment: { type: "string", description: "Comment to include" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms recipients and forward content are correct." } }, required: ["messageId", "to"] } } },
-    { type: "function", function: { name: "outlook_delete_email", description: "Delete an Outlook email permanently.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to delete" } }, required: ["messageId"] } } },
-    { type: "function", function: { name: "outlook_move_email", description: "Move an Outlook email to a different folder.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to move" }, destinationFolderId: { type: "string", description: "Destination folder ID (use outlook_list_folders to find IDs)" } }, required: ["messageId", "destinationFolderId"] } } },
+    { type: "function", function: { name: "outlook_send_email", description: "Send an email via Outlook.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" }, subject: { type: "string", description: "Email subject line" }, body: { type: "string", description: "Email body (plain text or HTML)" }, confirmSend: { type: "boolean", description: "Set true after user confirms." }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } }, required: ["to", "subject", "body"] } } },
+    { type: "function", function: { name: "outlook_list_emails", description: "List Outlook emails.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of emails to return (default 20)" }, folder: { type: "string", description: "Folder name: inbox, sentitems, drafts, deleteditems, junkemail (default: inbox)" } } } } },
+    { type: "function", function: { name: "outlook_read_email", description: "Read an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Outlook message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_search_emails", description: "Search Outlook emails (KQL: from:, subject:, hasAttachment:true).", parameters: { type: "object", properties: { query: { type: "string", description: "Search query (e.g., 'from:john subject:meeting')" }, maxResults: { type: "integer", description: "Number of results (default 20)" } }, required: ["query"] } } },
+    { type: "function", function: { name: "outlook_reply_to_email", description: "Reply to an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to reply to" }, body: { type: "string", description: "Reply body (HTML or text)" }, confirmSend: { type: "boolean", description: "Set true after user confirms." } }, required: ["messageId", "body"] } } },
+    { type: "function", function: { name: "outlook_forward_email", description: "Forward an Outlook email to new recipients.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to forward" }, to: { type: "array", items: { type: "string" }, description: "Forward recipient addresses" }, comment: { type: "string", description: "Comment to include" }, confirmSend: { type: "boolean", description: "Set true after user confirms." } }, required: ["messageId", "to"] } } },
+    { type: "function", function: { name: "outlook_delete_email", description: "Delete an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to delete" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_move_email", description: "Move an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID to move" }, destinationFolderId: { type: "string", description: "Destination folder ID (use outlook_list_folders to find IDs)" } }, required: ["messageId", "destinationFolderId"] } } },
     { type: "function", function: { name: "outlook_mark_as_read", description: "Mark an Outlook email as read.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
     { type: "function", function: { name: "outlook_mark_as_unread", description: "Mark an Outlook email as unread.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
-    { type: "function", function: { name: "outlook_list_folders", description: "List all Outlook mail folders with item counts.", parameters: { type: "object", properties: {} } } },
-    { type: "function", function: { name: "outlook_create_folder", description: "Create a new Outlook mail folder.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder display name" }, parentFolderId: { type: "string", description: "Parent folder ID (omit for top-level)" } }, required: ["name"] } } },
-    { type: "function", function: { name: "outlook_get_attachments", description: "List attachments on an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
-    { type: "function", function: { name: "outlook_create_draft", description: "Create a draft email in Outlook.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient addresses" }, subject: { type: "string", description: "Subject line" }, body: { type: "string", description: "Email body (HTML or text)" }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } } } } },
-    { type: "function", function: { name: "outlook_send_draft", description: "Send an existing Outlook draft.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Draft message ID" }, confirmSend: { type: "boolean", description: "Set to true ONLY after the user explicitly confirms the draft should be sent." } }, required: ["messageId"] } } },
-    { type: "function", function: { name: "outlook_list_drafts", description: "List Outlook draft emails.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of drafts to return (default 20)" } } } } },
-    { type: "function", function: { name: "outlook_flag_email", description: "Set or clear a flag on an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" }, flagStatus: { type: "string", description: "Flag status: flagged, complete, notFlagged (default: flagged)" } }, required: ["messageId"] } } },
-    { type: "function", function: { name: "outlook_get_user_profile", description: "Get the connected Outlook/Microsoft user's profile information.", parameters: { type: "object", properties: {} } } }
+    { type: "function", function: { name: "outlook_list_folders", description: "List Outlook folders.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "outlook_create_folder", description: "Create an Outlook folder.", parameters: { type: "object", properties: { name: { type: "string", description: "Folder display name" }, parentFolderId: { type: "string", description: "Parent folder ID (omit for top-level)" } }, required: ["name"] } } },
+    { type: "function", function: { name: "outlook_get_attachments", description: "Get Outlook attachments.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_create_draft", description: "Create an Outlook draft.", parameters: { type: "object", properties: { to: { type: "array", items: { type: "string" }, description: "Recipient addresses" }, subject: { type: "string", description: "Subject line" }, body: { type: "string", description: "Email body (HTML or text)" }, cc: { type: "array", items: { type: "string" }, description: "CC addresses" }, bcc: { type: "array", items: { type: "string" }, description: "BCC addresses" } } } } },
+    { type: "function", function: { name: "outlook_send_draft", description: "Send an Outlook draft.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Draft message ID" }, confirmSend: { type: "boolean", description: "Set true after user confirms." } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_list_drafts", description: "List Outlook drafts.", parameters: { type: "object", properties: { maxResults: { type: "integer", description: "Number of drafts to return (default 20)" } } } } },
+    { type: "function", function: { name: "outlook_flag_email", description: "Flag an Outlook email.", parameters: { type: "object", properties: { messageId: { type: "string", description: "Message ID" }, flagStatus: { type: "string", description: "Flag status: flagged, complete, notFlagged (default: flagged)" } }, required: ["messageId"] } } },
+    { type: "function", function: { name: "outlook_get_user_profile", description: "Get Outlook user profile.", parameters: { type: "object", properties: {} } } }
 ];
 
 const docsTools = [
-    { type: "function", function: { name: "list_documents", description: "List Google Docs documents. Uses Drive API to find documents by name.", parameters: { type: "object", properties: { query: { type: "string", description: "Optional name filter (e.g. 'Meeting Notes')" }, pageSize: { type: "integer", description: "Max documents to return (default 25)" } } } } },
-    { type: "function", function: { name: "get_document", description: "Get full structure/metadata of a Google Doc by document ID.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" } }, required: ["documentId"] } } },
-    { type: "function", function: { name: "create_document", description: "Create a new Google Doc with a title and optional initial content.", parameters: { type: "object", properties: { title: { type: "string", description: "Document title" }, content: { type: "string", description: "Optional initial text content" } }, required: ["title"] } } },
-    { type: "function", function: { name: "insert_text", description: "Insert text at a specific index in a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, text: { type: "string", description: "Text to insert" }, index: { type: "integer", description: "Character index to insert at (default 1 = start)" } }, required: ["documentId", "text"] } } },
-    { type: "function", function: { name: "replace_text", description: "Find and replace all occurrences of text in a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, findText: { type: "string", description: "Text to find" }, replaceWith: { type: "string", description: "Replacement text" }, matchCase: { type: "boolean", description: "Case-sensitive match (default false)" } }, required: ["documentId", "findText", "replaceWith"] } } },
-    { type: "function", function: { name: "delete_content", description: "Delete content in a Google Doc between start and end indices.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, startIndex: { type: "integer", description: "Start character index" }, endIndex: { type: "integer", description: "End character index" } }, required: ["documentId", "startIndex", "endIndex"] } } },
-    { type: "function", function: { name: "append_text", description: "Append text to the end of a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, text: { type: "string", description: "Text to append" } }, required: ["documentId", "text"] } } },
-    { type: "function", function: { name: "get_document_text", description: "Extract plain text content from a Google Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" } }, required: ["documentId"] } } }
+    { type: "function", function: { name: "list_documents", description: "List Google Docs.", parameters: { type: "object", properties: { query: { type: "string", description: "Optional name filter (e.g. 'Meeting Notes')" }, pageSize: { type: "integer", description: "Max documents to return (default 25)" } } } } },
+    { type: "function", function: { name: "get_document", description: "Get Doc metadata.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" } }, required: ["documentId"] } } },
+    { type: "function", function: { name: "create_document", description: "Create a new Google Doc.", parameters: { type: "object", properties: { title: { type: "string", description: "Document title" }, content: { type: "string", description: "Optional initial text content" } }, required: ["title"] } } },
+    { type: "function", function: { name: "insert_text", description: "Insert text in a Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, text: { type: "string", description: "Text to insert" }, index: { type: "integer", description: "Character index to insert at (default 1 = start)" } }, required: ["documentId", "text"] } } },
+    { type: "function", function: { name: "replace_text", description: "Find and replace text in a Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, findText: { type: "string", description: "Text to find" }, replaceWith: { type: "string", description: "Replacement text" }, matchCase: { type: "boolean", description: "Case-sensitive match (default false)" } }, required: ["documentId", "findText", "replaceWith"] } } },
+    { type: "function", function: { name: "delete_content", description: "Delete content in a Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, startIndex: { type: "integer", description: "Start character index" }, endIndex: { type: "integer", description: "End character index" } }, required: ["documentId", "startIndex", "endIndex"] } } },
+    { type: "function", function: { name: "append_text", description: "Append text to a Doc.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" }, text: { type: "string", description: "Text to append" } }, required: ["documentId", "text"] } } },
+    { type: "function", function: { name: "get_document_text", description: "Get Doc text content.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" } }, required: ["documentId"] } } }
 ];
 
 const teamsTools = [
-    { type: "function", function: { name: "teams_list_teams", description: "List Microsoft Teams the user has joined.", parameters: { type: "object", properties: {} } } },
-    { type: "function", function: { name: "teams_get_team", description: "Get details about a specific Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" } }, required: ["teamId"] } } },
-    { type: "function", function: { name: "teams_list_channels", description: "List channels in a Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" } }, required: ["teamId"] } } },
-    { type: "function", function: { name: "teams_send_channel_message", description: "Send a message to a channel in a Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" }, channelId: { type: "string", description: "Channel ID" }, message: { type: "string", description: "Message content (plain text or HTML)" }, contentType: { type: "string", description: "Content type: text or html (default text)" } }, required: ["teamId", "channelId", "message"] } } },
-    { type: "function", function: { name: "teams_list_channel_messages", description: "List recent messages from a channel in a Microsoft Team.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" }, channelId: { type: "string", description: "Channel ID" }, top: { type: "integer", description: "Number of messages to return (default 20)" } }, required: ["teamId", "channelId"] } } },
-    { type: "function", function: { name: "teams_list_chats", description: "List the user's Microsoft Teams chats (1:1 and group).", parameters: { type: "object", properties: { top: { type: "integer", description: "Number of chats to return (default 20)" } } } } },
-    { type: "function", function: { name: "teams_send_chat_message", description: "Send a message in a Microsoft Teams chat.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" }, message: { type: "string", description: "Message content (plain text or HTML)" }, contentType: { type: "string", description: "Content type: text or html (default text)" } }, required: ["chatId", "message"] } } },
-    { type: "function", function: { name: "teams_list_chat_messages", description: "List recent messages from a Microsoft Teams chat.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" }, top: { type: "integer", description: "Number of messages to return (default 20)" } }, required: ["chatId"] } } },
-    { type: "function", function: { name: "teams_create_chat", description: "Create a new Microsoft Teams 1:1 or group chat.", parameters: { type: "object", properties: { chatType: { type: "string", description: "Chat type: oneOnOne or group" }, members: { type: "array", items: { type: "string" }, description: "Array of member email addresses" }, topic: { type: "string", description: "Chat topic (for group chats)" } }, required: ["chatType", "members"] } } },
-    { type: "function", function: { name: "teams_get_chat_members", description: "List members of a Microsoft Teams chat.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" } }, required: ["chatId"] } } }
+    { type: "function", function: { name: "teams_list_teams", description: "List Teams.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "teams_get_team", description: "Get Team details.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" } }, required: ["teamId"] } } },
+    { type: "function", function: { name: "teams_list_channels", description: "List Team channels.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" } }, required: ["teamId"] } } },
+    { type: "function", function: { name: "teams_send_channel_message", description: "Send a channel message.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" }, channelId: { type: "string", description: "Channel ID" }, message: { type: "string", description: "Message content (plain text or HTML)" }, contentType: { type: "string", description: "Content type: text or html (default text)" } }, required: ["teamId", "channelId", "message"] } } },
+    { type: "function", function: { name: "teams_list_channel_messages", description: "List channel messages.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" }, channelId: { type: "string", description: "Channel ID" }, top: { type: "integer", description: "Number of messages to return (default 20)" } }, required: ["teamId", "channelId"] } } },
+    { type: "function", function: { name: "teams_list_chats", description: "List Teams chats.", parameters: { type: "object", properties: { top: { type: "integer", description: "Number of chats to return (default 20)" } } } } },
+    { type: "function", function: { name: "teams_send_chat_message", description: "Send a Teams chat message.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" }, message: { type: "string", description: "Message content (plain text or HTML)" }, contentType: { type: "string", description: "Content type: text or html (default text)" } }, required: ["chatId", "message"] } } },
+    { type: "function", function: { name: "teams_list_chat_messages", description: "List Teams chat messages.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" }, top: { type: "integer", description: "Number of messages to return (default 20)" } }, required: ["chatId"] } } },
+    { type: "function", function: { name: "teams_create_chat", description: "Create a Teams chat.", parameters: { type: "object", properties: { chatType: { type: "string", description: "Chat type: oneOnOne or group" }, members: { type: "array", items: { type: "string" }, description: "Array of member email addresses" }, topic: { type: "string", description: "Chat topic (for group chats)" } }, required: ["chatType", "members"] } } },
+    { type: "function", function: { name: "teams_get_chat_members", description: "List chat members.", parameters: { type: "object", properties: { chatId: { type: "string", description: "Chat ID" } }, required: ["chatId"] } } }
 ];
 
 const gcsTools = [
-    { type: "function", function: { name: "gcs_list_buckets", description: "List all GCS buckets in the project.", parameters: { type: "object", properties: {} } } },
-    { type: "function", function: { name: "gcs_get_bucket", description: "Get metadata for a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
-    { type: "function", function: { name: "gcs_create_bucket", description: "Create a new GCS bucket.", parameters: { type: "object", properties: { name: { type: "string", description: "Bucket name (globally unique)" }, location: { type: "string", description: "Bucket location (default US)" }, storageClass: { type: "string", description: "Storage class: STANDARD, NEARLINE, COLDLINE, ARCHIVE (default STANDARD)" } }, required: ["name"] } } },
-    { type: "function", function: { name: "gcs_delete_bucket", description: "Delete a GCS bucket (must be empty).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
-    { type: "function", function: { name: "gcs_list_objects", description: "List objects in a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Filter objects by prefix (folder path)" }, maxResults: { type: "integer", description: "Maximum number of objects to return" } }, required: ["bucket"] } } },
-    { type: "function", function: { name: "gcs_upload_object", description: "Upload content OR a file to a GCS bucket. Can upload text content OR a file from server using localPath. For uploaded files, use the localPath from attached files.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, content: { type: "string", description: "Text content to upload (use this OR localPath, not both)" }, contentType: { type: "string", description: "MIME type (auto-detected from file extension if using localPath)" }, localPath: { type: "string", description: "Local server file path (from attached files). Use this to upload user's attached files to GCS." } }, required: ["bucket", "name"] } } },
-    { type: "function", function: { name: "gcs_download_object", description: "Download/read the content of an object from a GCS bucket. Returns a download URL for the file.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, filename: { type: "string", description: "Optional: desired filename for download (defaults to object name)" } }, required: ["bucket", "name"] } } },
-    { type: "function", function: { name: "gcs_delete_object", description: "Delete an object from a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
-    { type: "function", function: { name: "gcs_copy_object", description: "Copy an object between buckets or within a bucket.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (default same as source)" }, destObject: { type: "string", description: "Destination object name (default same as source)" } }, required: ["sourceBucket", "sourceObject"] } } },
-    { type: "function", function: { name: "gcs_get_object_metadata", description: "Get metadata for an object in a GCS bucket (size, content type, timestamps).", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
-    { type: "function", function: { name: "gcs_move_object", description: "Move an object to a different location (copy + delete source). Can move between buckets or rename within same bucket.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (defaults to source bucket)" }, destObject: { type: "string", description: "Destination object name (required for move)" } }, required: ["sourceBucket", "sourceObject", "destObject"] } } },
-    { type: "function", function: { name: "gcs_rename_object", description: "Rename an object within the same bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, oldName: { type: "string", description: "Current object name" }, newName: { type: "string", description: "New object name" } }, required: ["bucket", "oldName", "newName"] } } },
-    { type: "function", function: { name: "gcs_make_object_public", description: "Make an object publicly accessible. Returns public URL.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" } }, required: ["bucket", "name"] } } },
-    { type: "function", function: { name: "gcs_make_object_private", description: "Remove public access from an object.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" } }, required: ["bucket", "name"] } } },
-    { type: "function", function: { name: "gcs_generate_signed_url", description: "Generate a temporary signed URL for secure file sharing. URL expires after specified hours.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" }, expirationHours: { type: "integer", description: "URL validity in hours (default 24)" } }, required: ["bucket", "name"] } } },
-    { type: "function", function: { name: "gcs_batch_delete_objects", description: "Delete multiple objects matching a prefix. REQUIRES confirmDelete=true to prevent accidents.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Delete all objects with this prefix (e.g., 'old-files/' or 'temp-')" }, confirmDelete: { type: "boolean", description: "MUST be true to confirm deletion" } }, required: ["bucket", "prefix", "confirmDelete"] } } }
+    { type: "function", function: { name: "gcs_list_buckets", description: "List GCS buckets.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "gcs_get_bucket", description: "Get bucket metadata.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
+    { type: "function", function: { name: "gcs_create_bucket", description: "Create a GCS bucket.", parameters: { type: "object", properties: { name: { type: "string", description: "Bucket name (globally unique)" }, location: { type: "string", description: "Bucket location (default US)" }, storageClass: { type: "string", description: "Storage class: STANDARD, NEARLINE, COLDLINE, ARCHIVE (default STANDARD)" } }, required: ["name"] } } },
+    { type: "function", function: { name: "gcs_delete_bucket", description: "Delete a GCS bucket.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" } }, required: ["bucket"] } } },
+    { type: "function", function: { name: "gcs_list_objects", description: "List GCS objects.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Filter objects by prefix (folder path)" }, maxResults: { type: "integer", description: "Maximum number of objects to return" } }, required: ["bucket"] } } },
+    { type: "function", function: { name: "gcs_upload_object", description: "Upload to GCS.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, content: { type: "string", description: "Text content to upload (use this OR localPath, not both)" }, contentType: { type: "string", description: "MIME type (auto-detected from file extension if using localPath)" }, localPath: { type: "string", description: "Local server file path (from attached files). Use this to upload user's attached files to GCS." } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_download_object", description: "Download from GCS.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" }, filename: { type: "string", description: "Optional: desired filename for download (defaults to object name)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_delete_object", description: "Delete a GCS object.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_copy_object", description: "Copy a GCS object.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (default same as source)" }, destObject: { type: "string", description: "Destination object name (default same as source)" } }, required: ["sourceBucket", "sourceObject"] } } },
+    { type: "function", function: { name: "gcs_get_object_metadata", description: "Get object metadata.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name (path in bucket)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_move_object", description: "Move a GCS object.", parameters: { type: "object", properties: { sourceBucket: { type: "string", description: "Source bucket name" }, sourceObject: { type: "string", description: "Source object name" }, destBucket: { type: "string", description: "Destination bucket name (defaults to source bucket)" }, destObject: { type: "string", description: "Destination object name (required for move)" } }, required: ["sourceBucket", "sourceObject", "destObject"] } } },
+    { type: "function", function: { name: "gcs_rename_object", description: "Rename a GCS object.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, oldName: { type: "string", description: "Current object name" }, newName: { type: "string", description: "New object name" } }, required: ["bucket", "oldName", "newName"] } } },
+    { type: "function", function: { name: "gcs_make_object_public", description: "Make object public.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_make_object_private", description: "Make object private.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_generate_signed_url", description: "Generate signed URL.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, name: { type: "string", description: "Object name" }, expirationHours: { type: "integer", description: "URL validity in hours (default 24)" } }, required: ["bucket", "name"] } } },
+    { type: "function", function: { name: "gcs_batch_delete_objects", description: "Batch delete objects by prefix.", parameters: { type: "object", properties: { bucket: { type: "string", description: "Bucket name" }, prefix: { type: "string", description: "Delete all objects with this prefix (e.g., 'old-files/' or 'temp-')" }, confirmDelete: { type: "boolean", description: "MUST be true to confirm deletion" } }, required: ["bucket", "prefix", "confirmDelete"] } } }
 ];
 
 // ============================================================
@@ -7058,131 +7058,133 @@ function buildAgentSystemPrompt({ statusText, toolCount, dateContext, connectedS
 
     // Add user context for email signatures
     const userContext = userFirstName && userEmail
-        ? `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📧 EMAIL SIGNATURE RULES (MANDATORY)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n**Current User:** ${userFirstName} (${userEmail})\n\n**When composing/drafting emails:**\n1. ALWAYS show recipient email address in your confirmation message\n2. ALWAYS end the email body with this EXACT signature (nothing more):\n\n   Best regards,\n   ${userFirstName}\n\n3. NEVER add "[Your Position]", "[Your Contact Information]", "[Your Title]", or ANY placeholder text after the signature\n4. NEVER use "[Your Name]", "Your Name", or any name placeholder — use ONLY the first name: "${userFirstName}"\n5. NEVER ask the user for their name — you already know it is "${userFirstName}"\n6. The signature is COMPLETE as: "Best regards,\\n${userFirstName}" — stop there\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+        ? `\n\n**EMAIL SIGNATURE** — Current user: ${userFirstName} (${userEmail})\nEnd every email body with EXACTLY: "Best regards,\\n${userFirstName}" — nothing after. No placeholders ([Your Position], [Your Title], etc.). Never ask for the user's name.`
         : '';
 
-    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You can perform complex, multi-step operations across all connected services.${userContext}
+    const basePrompt = `You are a powerful AI assistant integrated with Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You execute complex, multi-step operations across connected services.${userContext}
 
 Connected Services: ${statusText}
 Total Tools Available: ${toolCount}
 
-## EXECUTION MODE:
-- A single user command can contain multiple tasks. Treat it as one end-to-end workflow, not separate mini chats.
-- Create an internal plan, execute tools, evaluate results, and continue until the user goal is complete or truly blocked.
-- Prefer action over clarification. Ask follow-up questions only when a required value is missing or an operation is destructive.
+## EXECUTION APPROACH
+Complete each request end-to-end. Execute tools, evaluate results, continue until done. Only ask when a required value is truly missing or an action is destructive.
 
-## CORE RULES - Follow these STRICTLY:
+---
 
-0. **CALENDAR EVENT VALIDATION (CRITICAL)**: When creating calendar events/meetings, you MUST ask for missing information BEFORE calling create_event or create_meet_event:
-   - If meeting title/name is missing or generic ("meeting", "event"), ask: "What should I name this meeting?"
-   - If attendees are missing and it's NOT explicitly a personal reminder, ask: "Who should I invite to this meeting?"
-   - NEVER create meetings with generic titles like "Meeting" or "Event" without confirming first
-   - NEVER create business meetings without attendees unless user explicitly says it's personal/solo
-   - If user asks to create/schedule a meeting, use Calendar meeting tools. Do NOT route this to Google Docs tools.
+## CORE RULES
 
-1. **DISCOVERY FIRST, NEVER GUESS**: When the user refers to emails/docs/files/issues by description, use search/list/discovery tools first. Never invent IDs, email addresses, or repository names.
+**1. DISCOVERY FIRST**
+Never invent IDs, email addresses, or repository names. Always use search/list/discovery tools first when the user refers to emails, files, issues, or repos by description.
 
-1b. **CLEAN FILE OPERATIONS**: When downloading/attaching files, search for the file using list_drive_files or gcs_list_objects, then immediately download it. In your response text, do NOT list all the search results - just confirm the file was found and provide the download link or confirm the attachment. Keep it concise: "Found and downloaded [filename]" or "Attached [filename] to email".
+**2. FILE SEARCH & SELECTION**
+- Search Drive (list_drive_files) or GCS (gcs_list_objects) before any file download or attachment.
+- If search returns **multiple matches**: stop and ask the user which file they want. List each option with name and type. Never auto-select.
+- If search returns **one match**: proceed immediately without asking.
+- In your response, do not enumerate search results — just confirm what was found and what was done.
 
-1c. **MULTIPLE FILE MATCHES - ASK USER (CRITICAL)**: When searching for a file to download/attach and the search returns MORE THAN ONE file that could match the user's request, you MUST stop and ask the user which one they want. List each matching file with its name and type. Example: User says "download face recognition doc" and you find both "PRD_Face_Recognition.docx" and "Face_Recognition_System.pdf" - you MUST ask "I found 2 files: 1) PRD_Face_Recognition.docx (Document), 2) Face_Recognition_System.pdf (PDF). Which one would you like?" NEVER auto-select when there are multiple matches.
+**3. CALENDAR EVENT VALIDATION**
+Before calling create_event or create_meet_event:
+- If the meeting title is missing or generic (e.g. "meeting", "event") → ask: "What should I name this meeting?"
+- If attendees are missing and it is not a personal reminder/block → ask: "Who should I invite?"
+- Do not route calendar requests to Google Docs tools.
+- Skip attendee check only if the user explicitly says "personal", "just me", "reminder", or "block time".
 
-2. **ONE COMMAND -> MULTI-TOOL EXECUTION**: If the user asks for a compound task, execute all required steps in the same request flow.
-   - "Read and reply to John's latest email" -> search_emails -> read_email -> reply_to_email
-   - "Create an issue for the bug and email the team" -> create_issue -> send_email
-   - "Find calendar events for today and email attendees" -> list_events -> send_email
-   - "List my spreadsheets and summarize tabs" -> list_spreadsheets -> list_sheet_tabs
-   - "Check my PRs and schedule review slots" -> list_pull_requests -> create_event
+**4. EMAIL SEND CONFIRMATION**
+Before any send action (send_email, reply_to_email, forward_email, send_draft, outlook_send_email, outlook_reply_to_email, outlook_forward_email, outlook_send_draft):
+- Show recipient(s), subject, and body preview. Ask: "Shall I send this?"
+- On user confirmation, call the tool with confirmSend: true immediately. Do not ask again.
+- If the tool returns a "confirmation required" message, present details cleanly — never echo raw tool text.
 
-3. **PARALLELIZE WHEN INDEPENDENT**: When subtasks do not depend on each other, call multiple tools in the same turn.
-   - Example: gather Gmail unread count, Outlook unread count, and today's calendar events at the same time.
+**5. EMAIL RECIPIENTS**
+When the user gives a person's name (not a full email address):
+- Pass the raw name directly to send_email/create_draft (e.g. to: ["kamalakar"]). The backend resolves it from Gmail history.
+- Never construct or guess an email address (e.g. do not append @domain.com yourself).
+- Never call search_emails to find a recipient's address — pass the name and let the system resolve it.
+- If resolution fails, ask: "I couldn't find an email for [name]. Could you provide their exact address?"
 
-4. **SEQUENCE WHEN DEPENDENT**: If a later step needs output from an earlier step, chain tools in order.
-   - Example: search -> read -> extract recipient -> draft/send.
+**6. ATTACHING DRIVE / GCS FILES TO EMAIL**
+Silently: 1) list_drive_files/gcs_list_objects → 2) download_drive_file_to_local/gcs_download_object → 3) send_email with attachments: [{ localPath }].
+- Use the EXACT localPath from step 2. Never skip step 2. Never use download_drive_file (browser URL, not local path).
+- On confirmation re-send: reuse existing localPath. Do NOT repeat steps 1-2.
 
-5. **NEVER STOP MID-TASK**: Continue tool execution until completion for normal workflows.
+**7. COMPOUND TASKS**
+Chain all steps in one flow: e.g. search_emails → read_email → reply_to_email.
 
-5b. **EMAIL SEND CONFIRMATION REQUIRED**: Before calling any send action (send_email, reply_to_email, forward_email, send_draft, outlook_send_email, outlook_reply_to_email, outlook_forward_email, outlook_send_draft), show the final recipients/target, subject (if available), and body summary and ask the user to confirm. Only send after explicit confirmation, and pass confirmSend: true.
-   - **HANDLING CONFIRMATION TOOL RESULT**: If a send tool returns "Email send confirmation required before sending", do NOT echo that raw text to the user. Instead present the details cleanly (To, Subject, Body preview) and ask "Shall I go ahead and send this?" in plain language.
-   - **ONCE USER CONFIRMS**: When the user says "yes", "ok", "send", "go ahead" etc. after seeing your confirmation, call the send tool again with confirmSend: true immediately — do NOT ask again.
+**8. PARALLELISE / SEQUENCE**
+Run independent subtasks simultaneously. Chain dependent steps in order.
 
-6. **RECOVER FROM FAILURES**: If a tool fails due to missing ID, scope, or lookup ambiguity, run the appropriate discovery/diagnostic tool and retry with corrected arguments. Explain blockers only after retry paths are exhausted.
+**9. NEVER STOP MID-TASK**
+Continue until the goal is complete. No unnecessary confirmations on non-destructive steps.
 
-7. **SAFETY FOR DESTRUCTIVE ACTIONS**: For delete/trash/clear/bulk-destructive operations, ask for confirmation unless the user explicitly requested that exact destructive action.
+**10. RECOVER FROM FAILURES**
+If a tool fails, run a discovery tool and retry. Surface blockers only after retries are exhausted.
 
-8. **USE BATCH OPERATIONS**: For multi-email modifications, prefer batch_modify_emails over repeated single-item calls.
+**11. DESTRUCTIVE ACTION SAFETY**
+Confirm delete/trash/clear/bulk operations unless explicitly requested.
 
-9. **CROSS-SERVICE ORCHESTRATION**: Combine Gmail, Calendar, Chat, Drive, Sheets, Docs, GitHub, Outlook, Teams, and GCS tools when useful to finish the full request.
+**12. BATCH OVER REPEATED CALLS**
+Use batch_modify_emails for bulk operations.
 
-10. **BE PROACTIVE BUT ACCURATE**: Share helpful observations discovered during execution, but never claim success unless tool output confirms it.
+**13. SERVICE & TOOL DISCIPLINE**
+Never cross service tools (Sheets ≠ Docs, GitHub ≠ Drive). Verify success from tool output.
 
-11. **DOCUMENT VS SHEET DISCIPLINE**: Never use Sheets tools for Google Docs/document IDs. Never use GitHub repository file tools to edit Drive/Docs files.
+---
 
-## TOOL USAGE TIPS:
-- Gmail: search_emails supports full Gmail query syntax (from:, to:, subject:, is:unread, has:attachment, etc.)
-- Calendar: Use list_events with timeMin/timeMax for date ranges. Use create_meet_event or create_event with createMeetLink=true for Google Meet.
-- Calendar event creation (CRITICAL - MUST FOLLOW): BEFORE calling create_event or create_meet_event, validate required information. If user says "create a meeting" or "schedule a meeting" without details: 1) Meeting title - if missing or generic ("meeting", "event"), STOP and ask "What should I name this meeting?", 2) Attendees - if missing and NOT a personal reminder, STOP and ask "Who should I invite to this meeting?". DO NOT proceed with tool call until you have this information. Generic titles like "Meeting" or "Event" are NOT acceptable without user confirmation. ONLY skip attendees if user explicitly says "personal", "reminder", "block time", or "just for me".
-- Calendar timezone: ALWAYS pass the timeZone parameter when creating or updating calendar events. CRITICAL: When the user says a time like "12pm", use that time DIRECTLY in the ISO string (e.g. "2026-02-11T12:00:00") — do NOT convert it to UTC. The timeZone parameter tells the API what timezone the datetime is in. Example: if user says "12pm to 1pm" and timezone is Asia/Kolkata, use startDateTime="2026-02-11T12:00:00" endDateTime="2026-02-11T13:00:00" timeZone="Asia/Kolkata". NEVER subtract or add UTC offsets to the time the user specified.
-- Calendar attendees: If the user gives a person name (not exact email), pass the name directly to the tool. The system will resolve it from Gmail history. NEVER construct an email address yourself by combining a name with a domain you see from other contacts.
-- Calendar attendees (self-only intent): If the user says "just me", "only me", or "just myself", keep the attendee list self-only and NEVER resolve "me" to another contact.
-- Email recipients (CRITICAL - READ CAREFULLY): When the user provides a person's name (not a full email), pass JUST THE NAME to send_email/create_draft — the system will automatically resolve it from Gmail history. RULES:
-  1. NEVER construct/fabricate an email address yourself. For example, if user says "send to shubham" and you know others use @terralogic.com, do NOT guess "shubham@terralogic.com" — that is WRONG. The real email might be "shubham.barhate@terralogic.com" or completely different.
-  2. Pass the raw name (e.g., to: ["shubham"]) and let the system resolve it.
-  3. DO NOT call search_emails to find recipient addresses before sending - just pass the name directly to send_email/create_draft and let the backend resolve it.
-  4. If resolution fails, the backend will return an error. Then ASK the user: "I couldn't find an email for [name]. Could you provide their exact email address?"
-  5. NEVER guess email formats like firstname@domain.com, firstname.lastname@domain.com, etc.
-  6. NEVER use placeholder domains (example.com, test.com, domain.com).
-- Email formatting: Use \n for line breaks in email body (will be converted to proper HTML breaks). For professional emails, include proper greetings, spacing, and signatures.
-- Email sending confirmation: Always ask the user to confirm final details before any send action (send_email, reply_to_email, forward_email, send_draft, outlook_send_email, outlook_reply_to_email, outlook_forward_email, outlook_send_draft). After confirmation, call with confirmSend: true.
-- Email attachments: To attach uploaded files, use the attachments parameter with localPath from attached files. Example: attachments: [{ localPath: "path/from/attached/files" }]
-- Calendar availability: Use check_person_availability for one person and find_common_free_slots for multiple people. Availability only works for calendars the user can access.
-- Calendar attendees vs availability: Checking availability and adding attendees are COMPLETELY SEPARATE. If check_person_availability fails (calendar not shared), you can STILL add them as an attendee using update_event_attendees or create the event with them in the attendees list. Google Calendar will automatically send them an email invitation. NEVER skip adding an attendee just because availability check failed. NEVER send a manual email invitation instead — just add them directly as an attendee.
-- Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
-- Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
-- Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access. Use download_drive_file for real file downloads, extract_drive_file_text for summarization/Q&A, append_drive_document_text to append text to docs/files, convert_file_to_google_doc to convert PDFs/files into Docs stored in Drive, and convert_file_to_google_sheet to convert CSV/XLSX/files into Sheets stored in Drive.
-- ATTACHING DRIVE/GCS FILES TO EMAIL (3-step process — do this silently, user does NOT need to know about intermediate steps):
-  When a user says "attach [file] to email", "send [file] to [person]", "email [file] from Drive/bucket":
-  Step 1: list_drive_files (or gcs_list_objects) to find the file and get its fileId/objectName
-  Step 2: download_drive_file_to_local (or gcs_download_object) — this is a required technical step to prepare the file for attachment. Do NOT mention this step to the user.
-  Step 3: send_email (or outlook_send_email) with attachments: [{ localPath: "<EXACT localPath from Step 2 result>" }]
-  In your response, just say "Attached [filename] to the email to [recipient]" — never say "I downloaded the file first" or mention the local path.
-  CRITICAL RULES:
-  - The localPath in Step 3 MUST be the EXACT full absolute path returned by Step 2
-  - NEVER skip Step 2 — without it there is NO file to attach
-  - NEVER paste file content into the email body as a substitute for attaching
-  - NEVER use extract_drive_file_text for attachments — that is for reading/summarizing only
-  - NEVER use download_drive_file for attachments — it returns a browser URL, NOT a local file
-  - **NO RE-DOWNLOAD ON CONFIRMATION (CRITICAL)**: If you already completed Steps 1 & 2 earlier in this conversation and have a localPath, when the user confirms the send, call send_email DIRECTLY with that SAME localPath and confirmSend: true. Do NOT call list_drive_files or download_drive_file_to_local again — the file is ALREADY on disk. Re-downloading is wrong and wastes time.
-- Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
-- Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
-- Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
-- Sheets MCP: MCP tools are prefixed with ${SHEETS_MCP_TOOL_PREFIX} and provide fallback read/update operations when needed.
-- Sheets write safety: Never claim a sheet update succeeded unless tool output indicates verification/read-back succeeded.
-- GitHub: Use owner/repo format. search_repos for discovery. list_issues/list_pull_requests for project management.
-- Outlook: All Outlook tools are prefixed with outlook_. outlook_search_emails supports Microsoft KQL (from:, subject:, hasAttachment:true). Use outlook_list_folders to get folder IDs before moving emails. Cross-service: combine Gmail + Outlook for multi-mailbox workflows.
-- Google Docs: Use list_documents to find Docs by name. Use get_document_text to read content. Use create_document to create new docs. Use insert_text/append_text to add content. Use replace_text for find-and-replace. If Docs write scope is missing, use append_drive_document_text (or extract_drive_file_text + update_drive_file) as fallback.
-- Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
-- GCS (Cloud Storage): All GCS tools are prefixed with gcs_. GCS buckets store raw objects/files separate from Google Drive. When the user mentions bucket names (e.g., "yikes-clickscan", "my-bucket"), always use gcs_list_objects NOT Drive tools. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets. Use gcs_move_object to move (copy+delete). Use gcs_rename_object to rename within same bucket. Use gcs_make_object_public to get public URLs or gcs_generate_signed_url for temporary secure access. Use gcs_batch_delete_objects to delete multiple files by prefix (requires confirmDelete=true).
-- Service disambiguation: GCS bucket names are typically lowercase with hyphens (e.g., "yikes-clickscan", "my-data-bucket"). Google Drive folder names can have any casing/spaces. If a user refers to a hyphenated lowercase name that sounds like a bucket, try GCS first. If unsure, check both.
-- File Discovery & Downloads: When the user asks to download/get a specific file by name (e.g., "download facial recognition PDF"), search Drive FIRST using list_drive_files. If MULTIPLE files match the search term, STOP and ask the user "I found multiple files matching '[search term]'. Which one would you like?" and list the options with their names and types. Only proceed to download after the user selects one. If only ONE file matches, immediately download it. Use download_drive_file_to_local only when the file must be attached to an email or uploaded to another service. The goal is clean UX - user should only see the final download link, not all the intermediate search steps. For general browsing requests (e.g., "show me my PDFs", "list all files"), then display search results normally.
+## SERVICE QUICK REFERENCE
 
-## FINAL RESPONSE QUALITY:
-- Provide a concise outcome summary of what was completed.
-- Include key outputs/links/IDs the user needs next.
-- If anything failed, state exactly what failed and what retry/permission is needed.
-- Do not include internal chain-of-thought. Keep reasoning brief and action-focused.`;
+**Gmail**
+search_emails supports full Gmail query syntax: from:, to:, subject:, is:unread, has:attachment, label:, etc.
 
-    const dateContextPrompt = `DATE CONTEXT FOR THIS REQUEST
-- Current timestamp (UTC): ${dateContext.nowIso}
-- Local timezone: ${dateContext.timeZone}
-- Local time now: ${new Date().toLocaleString('en-US', { timeZone: dateContext.timeZone, hour12: true, hour: 'numeric', minute: '2-digit' })}
-- Today: ${dateContext.today} (${dateContext.weekday})
-- Tomorrow: ${dateContext.tomorrow}
-- Yesterday: ${dateContext.yesterday}
+**Calendar**
+- Date ranges: list_events with timeMin/timeMax.
+- Google Meet: create_meet_event or create_event with createMeetLink: true.
+- Timezone: always pass timeZone. See DATE CONTEXT section for details.
+- Attendee names: pass the name directly; the system resolves emails from Gmail history.
+- "Just me" / "only me" → self-only event, never resolve to another contact.
+- If check_person_availability fails, you can still add them as attendee. Calendar sends invites automatically.
+- get_event requires a Calendar eventId — not a Gmail messageId.
 
-Rules:
-- Resolve relative date words (today, tomorrow, yesterday, this week, next week) using this context.
-- For date-specific calendar lookups, always send explicit ISO timeMin and timeMax to list_events, get_free_busy, check_person_availability, and find_common_free_slots.
-- IMPORTANT: When creating calendar events, use the user's spoken time directly in the ISO datetime string WITHOUT converting to UTC. Pass the timeZone parameter separately. For example, "meeting at 3pm" with timezone Asia/Kolkata → startDateTime: "2026-02-11T15:00:00", timeZone: "Asia/Kolkata".`;
+**Email attachments (user-uploaded files)**
+Use the attachments parameter with the localPath provided in the attached files list. Example: attachments: [{ localPath: "/path/to/file" }]
+
+**Drive**
+list_drive_files → share_drive_file / download_drive_file / extract_drive_file_text / convert_file_to_google_doc. append_drive_document_text to append.
+
+**Sheets**
+list_spreadsheets → read_sheet_values before edits. update_timesheet_hours for date-based entries (never hardcode rows). MCP fallback prefix: ${SHEETS_MCP_TOOL_PREFIX}.
+
+**Google Docs**
+list_documents → get_document_text → create_document / insert_text / append_text / replace_text. No write scope? Use append_drive_document_text.
+
+**Google Chat**
+list_chat_spaces → send_chat_message.
+
+**GitHub**
+Use owner/repo format. search_repos for discovery.
+
+**Outlook**
+Prefix: outlook_. KQL search: from:, subject:, hasAttachment:true. Use outlook_list_folders before moving.
+
+**Teams**
+Prefix: teams_. teams_list_teams → teams_list_channels → teams_send_channel_message. Chats: teams_list_chats → teams_send_chat_message.
+
+**GCS**
+Prefix: gcs_. Bucket names are lowercase-hyphen. gcs_list_buckets → gcs_list_objects (use prefix for folders). gcs_batch_delete_objects requires confirmDelete: true. gcs_generate_signed_url for temp links.
+
+**Service disambiguation**
+Lowercase-hyphen names (e.g. "my-data-bucket") → try GCS first, then Drive.
+
+---
+
+## RESPONSE QUALITY
+- Summarise concisely. Include links/IDs the user needs. State failures clearly. No chain-of-thought.`;
+
+    const dateContextPrompt = `DATE CONTEXT
+Now: ${dateContext.nowIso} | TZ: ${dateContext.timeZone} | Today: ${dateContext.today} (${dateContext.weekday}) | Tomorrow: ${dateContext.tomorrow} | Yesterday: ${dateContext.yesterday}
+
+- Resolve relative dates (today, tomorrow, etc.) from this context.
+- Calendar lookups: always send explicit ISO timeMin/timeMax.
+- Calendar events: use the user's spoken time directly in ISO (do NOT convert to UTC). Pass timeZone separately. E.g. "3pm IST" → startDateTime: "2026-02-11T15:00:00", timeZone: "Asia/Kolkata".`;
 
     return `${basePrompt}\n\n${dateContextPrompt}`;
 }
@@ -8444,33 +8446,21 @@ app.post('/api/meet/finalize', async (req, res) => {
                 text: caption.text
             }));
 
-            const polishPrompt = `You are cleaning an automatic speech recognition (ASR) transcript from Google Meet. Google Meet's ASR makes frequent mistakes especially with technical jargon, proper nouns, and Indian English accents.
+            const polishPrompt = `Fix this ASR transcript. Return ONLY valid JSON.
 
-Input turns (JSON):
-${JSON.stringify(turnsForModel)}
+Input: ${JSON.stringify(turnsForModel)}
 
-Return ONLY valid JSON in this exact shape:
-{
-  "turns": [
-    { "sourceIndex": 1, "speaker": "...", "text": "..." }
-  ]
-}
+Output shape: { "turns": [{ "sourceIndex": 1, "speaker": "...", "text": "..." }] }
 
-CRITICAL RULES for fixing ASR errors:
-- Fix words that sound similar but are wrong in context (e.g. "Mcptation" → "MCP integration", "rubra tap" → "Rubrik app", "composer" → "Composer", "irradable" → "I'll be right back")
-- Fix technical terms: OAuth, API, GitHub, MCP, OpenAI, GPT, etc. — capitalize them correctly
-- Fix proper names and product names based on context
-- Fix grammar and sentence flow so it reads naturally
-- Remove filler words that are clearly ASR noise (not real speech)
-- Each item must be a single speaker turn in chronological order
-- You MAY split one source turn into multiple turns when multiple speakers appear in one line
-- Keep or correct speaker names when obvious from text; otherwise keep original speaker name
-- Do NOT add speaker names inside the text field
-- Remove UI noise: "Jump to bottom", "arrow_downward", "Coming out of English", stray duplicated labels
-- Remove exact duplicates caused by live-caption glitches
-- Preserve meaning and intent; do not invent facts or add information not present
-- If a turn is pure noise with no recoverable meaning, omit it entirely
-- No markdown, no code fences, no extra keys in JSON`;
+Rules:
+- Fix misheard words by context (e.g. "Mcptation" → "MCP integration", "rubra tap" → "Rubrik app")
+- Capitalize technical terms correctly: OAuth, API, GitHub, MCP, OpenAI, GPT, etc.
+- Fix grammar and sentence flow naturally
+- Remove ASR filler noise and pure-noise turns
+- Split multi-speaker turns; keep original speaker names unless clearly wrong
+- Do not add speaker names inside text field
+- Do not invent facts or add information not present
+- No markdown, no code fences, no extra keys`;
 
             try {
                 console.log('[Meet] Polishing transcript text with OpenAI...');
@@ -8480,7 +8470,7 @@ CRITICAL RULES for fixing ASR errors:
                     messages: [
                         {
                             role: 'system',
-                            content: 'You are a strict ASR transcript cleaner. You fix Google Meet speech recognition errors. Return JSON only, no other text.'
+                            content: 'You fix ASR transcript errors. Return JSON only.'
                         },
                         {
                             role: 'user',
@@ -8488,7 +8478,7 @@ CRITICAL RULES for fixing ASR errors:
                         }
                     ],
                     temperature: 0.1,
-                    max_tokens: 6000
+                    max_tokens: 16000
                 });
 
                 const raw = polishCompletion.choices?.[0]?.message?.content || '';
@@ -8542,36 +8532,20 @@ CRITICAL RULES for fixing ASR errors:
         }
 
         // Generate AI summary using OpenAI
-        const summaryPrompt = `Meeting Title: ${session.metadata.title || 'Google Meet'}
-Date: ${new Date(session.startTime).toLocaleString()}
+        const summaryPrompt = `Meeting: ${session.metadata.title || 'Google Meet'} (${new Date(session.startTime).toLocaleString()})
 
-Transcript (step-by-step):
+Transcript:
 ${transcriptStepByStep}
 
-Create meeting notes using EXACTLY this markdown structure (same headings, same order):
+Generate meeting notes in this exact structure:
 
 ## Key Discussion Points
-- ...
-
 ## Decisions Made
-- Decision: ...
-- Owner: ...
-- Rationale: ...
-
-## Action Items
-- Owner: ... | Action: ... | Due: ...
-
+## Action Items (Owner | Action | Due)
 ## Next Steps
-1. ...
-
 ## Open Questions
-- ...
 
-Rules:
-- Use concise, factual points based only on the transcript.
-- If a section has no clear information, write exactly: "- None identified."
-- Keep speaker names and responsibilities exactly as mentioned.
-- Do not add extra headings, intro text, or closing text.`;
+Rules: Concise factual points only. If a section has nothing, write "- None identified." No intro/closing text.`;
 
         console.log('[Meet] Generating summary with OpenAI...');
 
@@ -8580,7 +8554,7 @@ Rules:
             messages: [
                 {
                     role: 'system',
-                    content: 'You are a strict meeting-notes formatter. Follow requested output structure exactly.'
+                    content: 'You are a meeting-notes formatter. Follow the requested structure exactly.'
                 },
                 {
                     role: 'user',
@@ -8588,7 +8562,7 @@ Rules:
                 }
             ],
             temperature: 0.2,
-            max_tokens: 2000
+            max_tokens: 4000
         });
 
         const summary = completion.choices[0].message.content;
