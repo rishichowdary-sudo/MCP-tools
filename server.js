@@ -147,14 +147,35 @@ const OPENAI_TEMPERATURE = Number.isFinite(parsedOpenAiTemperature)
 const parsedOpenAiMaxOutput = Number.parseInt(process.env.OPENAI_MAX_OUTPUT_TOKENS || '', 10);
 const OPENAI_MAX_OUTPUT_TOKENS = Number.isFinite(parsedOpenAiMaxOutput) && parsedOpenAiMaxOutput > 0
     ? parsedOpenAiMaxOutput
-    : null;
-const CHAT_HISTORY_MAX_MESSAGES = 24;
-const CHAT_HISTORY_MAX_MESSAGE_CHARS = 3000;
-const CHAT_HISTORY_MAX_TOTAL_CHARS = 30000;
-const MODEL_TOOL_RESULT_MAX_CHARS = 4000;
-const MODEL_TOOL_VALUE_MAX_STRING_CHARS = 1200;
-const MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS = 25;
-const MODEL_TOOL_VALUE_MAX_OBJECT_KEYS = 60;
+    : 1500;
+const CHAT_HISTORY_MAX_MESSAGES = Math.max(
+    6,
+    Number.parseInt(process.env.CHAT_HISTORY_MAX_MESSAGES || '14', 10) || 14
+);
+const CHAT_HISTORY_MAX_MESSAGE_CHARS = Math.max(
+    600,
+    Number.parseInt(process.env.CHAT_HISTORY_MAX_MESSAGE_CHARS || '1800', 10) || 1800
+);
+const CHAT_HISTORY_MAX_TOTAL_CHARS = Math.max(
+    3000,
+    Number.parseInt(process.env.CHAT_HISTORY_MAX_TOTAL_CHARS || '12000', 10) || 12000
+);
+const MODEL_TOOL_RESULT_MAX_CHARS = Math.max(
+    1200,
+    Number.parseInt(process.env.MODEL_TOOL_RESULT_MAX_CHARS || '2500', 10) || 2500
+);
+const MODEL_TOOL_VALUE_MAX_STRING_CHARS = Math.max(
+    400,
+    Number.parseInt(process.env.MODEL_TOOL_VALUE_MAX_STRING_CHARS || '900', 10) || 900
+);
+const MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS = Math.max(
+    8,
+    Number.parseInt(process.env.MODEL_TOOL_VALUE_MAX_ARRAY_ITEMS || '20', 10) || 20
+);
+const MODEL_TOOL_VALUE_MAX_OBJECT_KEYS = Math.max(
+    20,
+    Number.parseInt(process.env.MODEL_TOOL_VALUE_MAX_OBJECT_KEYS || '50', 10) || 50
+);
 const ASSISTANT_RESPONSE_MAX_CHARS = 12000;
 const DRIVE_TEXT_EDIT_MAX_CHARS = 250000;
 
@@ -644,6 +665,56 @@ function buildSafeChatHistory(
     }
 
     return selected;
+}
+
+function cloneToolsForRequest(tools = []) {
+    if (!Array.isArray(tools)) return [];
+    return tools.map(tool => {
+        try {
+            return JSON.parse(JSON.stringify(tool));
+        } catch {
+            const params = tool?.function?.parameters;
+            return {
+                ...tool,
+                function: tool?.function
+                    ? {
+                        ...tool.function,
+                        parameters: params && typeof params === 'object'
+                            ? {
+                                ...params,
+                                properties: params.properties && typeof params.properties === 'object'
+                                    ? { ...params.properties }
+                                    : params.properties
+                            }
+                            : params
+                    }
+                    : tool?.function
+            };
+        }
+    });
+}
+
+function applyEmailSignatureHintToTools(tools = [], userFirstName = '') {
+    if (!Array.isArray(tools) || !userFirstName) return;
+    const sigNote = ` Always end email body with "Best regards,\\n${userFirstName}". No other signature or placeholders.`;
+    const emailSendTools = new Set([
+        'send_email',
+        'reply_to_email',
+        'forward_email',
+        'create_draft',
+        'outlook_send_email',
+        'outlook_reply_to_email',
+        'outlook_forward_email',
+        'outlook_create_draft'
+    ]);
+
+    for (const tool of tools) {
+        if (!emailSendTools.has(tool?.function?.name)) continue;
+        const bodySchema = tool?.function?.parameters?.properties?.body;
+        if (!bodySchema || typeof bodySchema.description !== 'string') continue;
+        if (bodySchema.description.includes('Best regards,')) continue;
+        bodySchema.description += sigNote;
+    }
 }
 
 function normalizeReadableText(text, maxChars = 40000) {
@@ -7377,12 +7448,13 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
     };
 
     const toolContext = getConnectedToolContext();
-    const { selectedTools: availableTools, routingHints } = selectToolsForMessageIntent({
+    const { selectedTools, routingHints } = selectToolsForMessageIntent({
         userMessage: message,
         availableTools: toolContext.availableTools,
         docsConnected: toolContext.docsConnected,
         docsListOnlyConnected: toolContext.docsListOnlyConnected
     });
+    const requestTools = cloneToolsForRequest(selectedTools);
     const dateContext = getCurrentDateContext();
 
     // Get user's first name for email signatures (injected into email tool descriptions only)
@@ -7399,19 +7471,11 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
     } catch (err) {
         console.log('Could not get user name for signature:', err.message);
     }
-    if (userFirstName) {
-        const sigNote = ` Always end email body with "Best regards,\\n${userFirstName}". No other signature or placeholders.`;
-        const emailSendTools = new Set(['send_email', 'reply_to_email', 'forward_email', 'create_draft', 'outlook_send_email', 'outlook_reply_to_email', 'outlook_forward_email', 'outlook_create_draft']);
-        for (const tool of availableTools) {
-            if (emailSendTools.has(tool.function.name) && tool.function.parameters?.properties?.body) {
-                tool.function.parameters.properties.body.description += sigNote;
-            }
-        }
-    }
+    applyEmailSignatureHintToTools(requestTools, userFirstName);
 
     const systemPrompt = buildAgentSystemPrompt({
         statusText: toolContext.statusText,
-        toolCount: availableTools.length,
+        toolCount: requestTools.length,
         dateContext,
         connectedServices: toolContext.connectedServices
     });
@@ -7440,7 +7504,7 @@ ${attachedFilesBlock}
         ...safeHistory,
         { role: 'user', content: enrichedUserMessage }
     ];
-    const toolChoice = availableTools.length > 0 ? 'auto' : undefined;
+    const toolChoice = requestTools.length > 0 ? 'auto' : undefined;
 
     // Use OpenAI streaming for the first call
     const request = {
@@ -7449,8 +7513,8 @@ ${attachedFilesBlock}
         temperature: OPENAI_TEMPERATURE,
         stream: true
     };
-    if (Array.isArray(availableTools) && availableTools.length > 0) {
-        request.tools = availableTools;
+    if (Array.isArray(requestTools) && requestTools.length > 0) {
+        request.tools = requestTools;
         request.tool_choice = toolChoice || 'auto';
         request.parallel_tool_calls = true;
     }
@@ -7589,8 +7653,8 @@ ${attachedFilesBlock}
             temperature: OPENAI_TEMPERATURE,
             stream: true
         };
-        if (Array.isArray(availableTools) && availableTools.length > 0) {
-            nextRequest.tools = availableTools;
+        if (Array.isArray(requestTools) && requestTools.length > 0) {
+            nextRequest.tools = requestTools;
             nextRequest.tool_choice = toolChoice || 'auto';
             nextRequest.parallel_tool_calls = true;
         }
@@ -7825,12 +7889,13 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
     };
 
     const toolContext = getConnectedToolContext();
-    const { selectedTools: availableTools, routingHints } = selectToolsForMessageIntent({
+    const { selectedTools, routingHints } = selectToolsForMessageIntent({
         userMessage: message,
         availableTools: toolContext.availableTools,
         docsConnected: toolContext.docsConnected,
         docsListOnlyConnected: toolContext.docsListOnlyConnected
     });
+    const requestTools = cloneToolsForRequest(selectedTools);
     const dateContext = getCurrentDateContext();
 
     // Get user's first name for email signatures (injected into email tool descriptions only)
@@ -7847,19 +7912,11 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
     } catch (err) {
         console.log('Could not get user name for signature:', err.message);
     }
-    if (userFirstName) {
-        const sigNote = ` Always end email body with "Best regards,\\n${userFirstName}". No other signature or placeholders.`;
-        const emailSendTools = new Set(['send_email', 'reply_to_email', 'forward_email', 'create_draft', 'outlook_send_email', 'outlook_reply_to_email', 'outlook_forward_email', 'outlook_create_draft']);
-        for (const tool of availableTools) {
-            if (emailSendTools.has(tool.function.name) && tool.function.parameters?.properties?.body) {
-                tool.function.parameters.properties.body.description += sigNote;
-            }
-        }
-    }
+    applyEmailSignatureHintToTools(requestTools, userFirstName);
 
     const systemPrompt = buildAgentSystemPrompt({
         statusText: toolContext.statusText,
-        toolCount: availableTools.length,
+        toolCount: requestTools.length,
         dateContext,
         connectedServices: toolContext.connectedServices
     });
@@ -7888,11 +7945,11 @@ ${attachedFilesBlock}
         ...safeHistory,
         { role: 'user', content: enrichedUserMessage }
     ];
-    const toolChoice = availableTools.length > 0 ? 'auto' : undefined;
+    const toolChoice = requestTools.length > 0 ? 'auto' : undefined;
 
     let completion = await createCompletionWithRetry({
         messages,
-        tools: availableTools,
+        tools: requestTools,
         toolChoice
     });
     let activeModel = completion.model;
@@ -7980,7 +8037,7 @@ ${attachedFilesBlock}
 
         completion = await createCompletionWithRetry({
             messages,
-            tools: availableTools,
+            tools: requestTools,
             toolChoice
         });
         activeModel = completion.model;
