@@ -16,6 +16,16 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = String(process.env.HOST || '127.0.0.1').trim() || '127.0.0.1';
+const ALLOW_REMOTE_API = /^(1|true|yes)$/i.test(String(process.env.ALLOW_REMOTE_API || '').trim());
+
+function isLoopbackAddress(address) {
+    const value = String(address || '').trim().toLowerCase();
+    if (!value) return false;
+    if (value === '::1' || value === '127.0.0.1' || value === '::ffff:127.0.0.1') return true;
+    if (value.startsWith('::ffff:127.')) return true;
+    return false;
+}
 
 // Security: restrict CORS to same-origin and localhost
 app.use(cors({
@@ -27,6 +37,14 @@ app.use(cors({
     },
     credentials: true
 }));
+
+// Security: local-only API by default. Set ALLOW_REMOTE_API=true to disable this guard.
+app.use((req, res, next) => {
+    if (ALLOW_REMOTE_API) return next();
+    const ip = req.ip || req.socket?.remoteAddress || '';
+    if (isLoopbackAddress(ip)) return next();
+    return res.status(403).json({ error: 'Remote access is disabled. Set ALLOW_REMOTE_API=true to enable.' });
+});
 
 // Security headers
 app.use((req, res, next) => {
@@ -50,7 +68,9 @@ app.use('/api/', (req, res, next) => {
 app.use('/api/chat', chatLimiter);
 app.use('/api/upload', uploadLimiter);
 
-app.use(express.json({ limit: '5gb' }));
+const JSON_BODY_LIMIT = String(process.env.JSON_BODY_LIMIT || '5gb').trim() || '5gb';
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: false, limit: JSON_BODY_LIMIT }));
 app.use(express.static('public'));
 
 // File upload configuration
@@ -79,10 +99,15 @@ const storage = multer.diskStorage({
     }
 });
 
+const MAX_UPLOAD_BYTES = Math.max(
+    1 * 1024 * 1024,
+    Number.parseInt(process.env.MAX_UPLOAD_BYTES || `${5 * 1024 * 1024 * 1024}`, 10) || (5 * 1024 * 1024 * 1024)
+);
+
 const upload = multer({
     storage,
     limits: {
-        fileSize: 5 * 1024 * 1024 * 1024 // 5GB max file size for Drive/GCS uploads
+        fileSize: MAX_UPLOAD_BYTES
     },
     fileFilter: (req, file, cb) => {
         // Allow all file types for now
@@ -178,6 +203,18 @@ const MODEL_TOOL_VALUE_MAX_OBJECT_KEYS = Math.max(
 );
 const ASSISTANT_RESPONSE_MAX_CHARS = 12000;
 const DRIVE_TEXT_EDIT_MAX_CHARS = 250000;
+const MAX_CHAT_MESSAGE_CHARS = Math.max(
+    200,
+    Number.parseInt(process.env.MAX_CHAT_MESSAGE_CHARS || '12000', 10) || 12000
+);
+const MAX_CHAT_HISTORY_ITEMS = Math.max(
+    2,
+    Number.parseInt(process.env.MAX_CHAT_HISTORY_ITEMS || '40', 10) || 40
+);
+const MAX_CHAT_ATTACHED_FILES = Math.max(
+    1,
+    Number.parseInt(process.env.MAX_CHAT_ATTACHED_FILES || '10', 10) || 10
+);
 
 // Google OAuth scopes setup (Gmail, Calendar, Chat, Drive, Sheets, Docs)
 const SCOPES = [
@@ -8241,6 +8278,15 @@ app.post('/api/chat/stream', async (req, res) => {
         if (typeof message !== 'string' || !message.trim()) {
             return res.status(400).json({ error: 'message must be a non-empty string' });
         }
+        if (message.length > MAX_CHAT_MESSAGE_CHARS) {
+            return res.status(400).json({ error: `message exceeds max length (${MAX_CHAT_MESSAGE_CHARS} chars)` });
+        }
+        if (Array.isArray(history) && history.length > MAX_CHAT_HISTORY_ITEMS) {
+            return res.status(400).json({ error: `history exceeds max items (${MAX_CHAT_HISTORY_ITEMS})` });
+        }
+        if (Array.isArray(attachedFiles) && attachedFiles.length > MAX_CHAT_ATTACHED_FILES) {
+            return res.status(400).json({ error: `too many attached files (max ${MAX_CHAT_ATTACHED_FILES})` });
+        }
 
         // Set up SSE headers
         res.setHeader('Content-Type', 'text/event-stream');
@@ -8847,6 +8893,15 @@ app.post('/api/chat', async (req, res) => {
         if (typeof message !== 'string' || !message.trim()) {
             return res.status(400).json({ error: 'message must be a non-empty string' });
         }
+        if (message.length > MAX_CHAT_MESSAGE_CHARS) {
+            return res.status(400).json({ error: `message exceeds max length (${MAX_CHAT_MESSAGE_CHARS} chars)` });
+        }
+        if (Array.isArray(history) && history.length > MAX_CHAT_HISTORY_ITEMS) {
+            return res.status(400).json({ error: `history exceeds max items (${MAX_CHAT_HISTORY_ITEMS})` });
+        }
+        if (Array.isArray(attachedFiles) && attachedFiles.length > MAX_CHAT_ATTACHED_FILES) {
+            return res.status(400).json({ error: `too many attached files (max ${MAX_CHAT_ATTACHED_FILES})` });
+        }
 
         // Process attached files
         const fileContexts = [];
@@ -8909,8 +8964,8 @@ const handleStartupError = (error, source) => {
     process.exit(1);
 };
 
-const httpServer = app.listen(PORT, () => {
-    console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
+const httpServer = app.listen(PORT, HOST, () => {
+    console.log(`\nAI Agent Server running at http://${HOST}:${PORT}`);
     console.log(`OpenAI model: ${OPENAI_MODEL}${OPENAI_FALLBACK_MODEL ? ` (fallback: ${OPENAI_FALLBACK_MODEL})` : ''}, retries: ${OPENAI_CHAT_MAX_RETRIES}, temperature: ${OPENAI_TEMPERATURE}${OPENAI_MAX_OUTPUT_TOKENS ? `, max output tokens: ${OPENAI_MAX_OUTPUT_TOKENS}` : ''}`);
     console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length}, GCS: ${gcsTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
@@ -8932,67 +8987,151 @@ httpServer.once('error', (error) => handleStartupError(error, 'http'));
 const wss = new WebSocket.Server({ server: httpServer, path: '/meet-notes' });
 wss.once('error', (error) => handleStartupError(error, 'websocket'));
 const meetSessions = new Map(); // sessionId -> { metadata, captions[], startTime, ws }
+const MAX_MEET_SESSIONS = Math.max(1, Number.parseInt(process.env.MAX_MEET_SESSIONS || '30', 10) || 30);
+const MAX_CAPTIONS_PER_SESSION = Math.max(100, Number.parseInt(process.env.MAX_CAPTIONS_PER_SESSION || '20000', 10) || 20000);
+const MAX_CAPTION_TEXT_CHARS = Math.max(100, Number.parseInt(process.env.MAX_CAPTION_TEXT_CHARS || '2000', 10) || 2000);
+const MAX_SESSION_ID_CHARS = 120;
+const TRUSTED_WS_ORIGIN_PATTERNS = [
+    /^http:\/\/localhost:\d+$/i,
+    /^http:\/\/127\.0\.0\.1:\d+$/i,
+    /^chrome-extension:\/\/[a-p]{32}$/i
+];
 
-wss.on('connection', (ws) => {
+function isTrustedWsOrigin(origin) {
+    const raw = String(origin || '').trim();
+    if (!raw) return false;
+    return TRUSTED_WS_ORIGIN_PATTERNS.some(pattern => pattern.test(raw));
+}
+
+function sanitizeMeetMetadata(raw) {
+    const source = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const attendees = Array.isArray(source.attendees)
+        ? source.attendees
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+            .slice(0, 100)
+        : [];
+
+    return {
+        title: String(source.title || '').trim().slice(0, 200) || 'Google Meet',
+        meetingCode: String(source.meetingCode || '').trim().slice(0, 120),
+        startTime: source.startTime || null,
+        endTime: source.endTime || null,
+        eventId: source.eventId || null,
+        hangoutLink: source.hangoutLink || null,
+        attendees
+    };
+}
+
+function sanitizeCaptionPayload(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const speaker = String(raw.speaker || '').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Unknown Speaker';
+    const text = String(raw.text || '').replace(/\s+/g, ' ').trim().slice(0, MAX_CAPTION_TEXT_CHARS);
+    if (!text) return null;
+
+    const parsed = raw.timestamp ? new Date(raw.timestamp) : null;
+    const timestamp = parsed && !Number.isNaN(parsed.getTime())
+        ? parsed.toISOString()
+        : new Date().toISOString();
+
+    return { speaker, text, timestamp };
+}
+
+function isValidSessionId(sessionId) {
+    const id = String(sessionId || '').trim();
+    if (!id || id.length > MAX_SESSION_ID_CHARS) return false;
+    return /^[A-Za-z0-9._:-]+$/.test(id);
+}
+
+wss.on('connection', (ws, request) => {
+    const origin = request?.headers?.origin;
+    const remoteAddress = request?.socket?.remoteAddress || '';
+    const trustedOrigin = isTrustedWsOrigin(origin);
+    const localPeer = isLoopbackAddress(remoteAddress);
+
+    if (!trustedOrigin && !(localPeer && !origin)) {
+        console.warn(`[WebSocket] Rejected untrusted connection. origin=${origin || '(missing)'} ip=${remoteAddress || '(unknown)'}`);
+        ws.close(1008, 'Untrusted origin');
+        return;
+    }
+
     console.log('[WebSocket] Client connected');
 
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message.toString());
-            console.log('[WebSocket] Message received:', data.type);
+            const messageType = String(data?.type || '').trim();
+            const sessionId = String(data?.sessionId || '').trim();
+            console.log('[WebSocket] Message received:', messageType || '(unknown)');
 
-            if (data.type === 'session_start') {
-                // Create new session
-                meetSessions.set(data.sessionId, {
-                    metadata: data.metadata,
+            if (!isValidSessionId(sessionId)) {
+                ws.send(JSON.stringify({ type: 'error', message: 'Invalid or missing sessionId' }));
+                return;
+            }
+
+            if (messageType === 'session_start') {
+                if (!meetSessions.has(sessionId) && meetSessions.size >= MAX_MEET_SESSIONS) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Too many active sessions' }));
+                    return;
+                }
+
+                meetSessions.set(sessionId, {
+                    metadata: sanitizeMeetMetadata(data.metadata),
                     captions: [],
                     startTime: new Date(),
-                    ws: ws
+                    ws
                 });
 
-                console.log(`[WebSocket] Session started: ${data.sessionId}`);
-
-                // Acknowledge
-                ws.send(JSON.stringify({
-                    type: 'session_created',
-                    sessionId: data.sessionId
-                }));
+                console.log(`[WebSocket] Session started: ${sessionId}`);
+                ws.send(JSON.stringify({ type: 'session_created', sessionId }));
+                return;
             }
-            else if (data.type === 'caption') {
-                // Add caption to session
-                const session = meetSessions.get(data.sessionId);
 
-                if (session) {
-                    session.captions.push(data.caption);
+            const session = meetSessions.get(sessionId);
+            if (!session) {
+                ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }));
+                return;
+            }
 
-                    // Broadcast to all connected clients (for live view)
-                    wss.clients.forEach(client => {
-                        if (client.readyState === WebSocket.OPEN) {
-                            client.send(JSON.stringify({
-                                type: 'caption_added',
-                                caption: data.caption,
-                                sessionId: data.sessionId
-                            }));
-                        }
-                    });
-                } else {
-                    ws.send(JSON.stringify({
-                        type: 'error',
-                        message: 'Session not found'
-                    }));
+            if (session.ws !== ws) {
+                ws.send(JSON.stringify({ type: 'error', message: 'Session access denied' }));
+                return;
+            }
+
+            if (messageType === 'caption') {
+                if (session.captions.length >= MAX_CAPTIONS_PER_SESSION) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Caption limit reached for this session' }));
+                    return;
                 }
-            }
-            else if (data.type === 'session_end') {
-                console.log(`[WebSocket] Session ending: ${data.sessionId}`);
 
-                // Keep session in memory for finalization
-                // It will be cleaned up by the /api/meet/finalize endpoint
-                ws.send(JSON.stringify({
-                    type: 'session_ended',
-                    sessionId: data.sessionId
-                }));
+                const caption = sanitizeCaptionPayload(data.caption);
+                if (!caption) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Invalid caption payload' }));
+                    return;
+                }
+
+                session.captions.push(caption);
+
+                // Broadcast to all connected clients (for live view)
+                wss.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify({
+                            type: 'caption_added',
+                            caption,
+                            sessionId
+                        }));
+                    }
+                });
+                return;
             }
 
+            if (messageType === 'session_end') {
+                console.log(`[WebSocket] Session ending: ${sessionId}`);
+                ws.send(JSON.stringify({ type: 'session_ended', sessionId }));
+                return;
+            }
+
+            ws.send(JSON.stringify({ type: 'error', message: `Unsupported message type: ${messageType || 'unknown'}` }));
         } catch (error) {
             console.error('[WebSocket] Error processing message:', error);
             ws.send(JSON.stringify({
