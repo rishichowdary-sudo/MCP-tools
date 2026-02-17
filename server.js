@@ -433,7 +433,7 @@ function isAffirmativeEmailSendReply(value) {
     const text = String(value || '').trim().toLowerCase();
     if (!text) return false;
     if (/\b(cancel|stop|dont|don't|not now|wait)\b/.test(text)) return false;
-    return /\b(yes|yep|yeah|confirm|confirmed|looks good|all good|proceed|go ahead|send it|send now|ok)\b/.test(text);
+    return /\b(yes|yep|yeah|confirm|confirmed|looks good|all good|proceed|go ahead|send it|send now|send|ok)\b/.test(text);
 }
 
 function historyContainsEmailSendConfirmationPrompt(history = []) {
@@ -3124,6 +3124,8 @@ async function downloadDriveFileToLocal({ fileId, format }) {
         uploadedAt: Date.now()
     });
 
+    const downloadUrl = `http://localhost:${PORT}/api/download/${localFilename}`;
+
     return {
         success: true,
         fileId: localFileId,
@@ -3131,7 +3133,8 @@ async function downloadDriveFileToLocal({ fileId, format }) {
         name: downloadName,
         size: stats.size,
         mimeType,
-        message: `File "${downloadName}" downloaded to server. Use localPath "${localPath}" to attach it to emails or upload to other services.`
+        downloadUrl,
+        message: `File "${downloadName}" downloaded successfully. Click here to download to your computer: ${downloadUrl}`
     };
 }
 
@@ -5156,7 +5159,7 @@ async function gcsDownloadObject({ bucket, name, filename }) {
     const encodedBucket = encodeURIComponent(bucket);
     const encodedName = encodeURIComponent(name);
     const downloadName = filename || name.split('/').pop(); // Use last part of object name as filename
-    const downloadUrl = `/api/gcs/download/${encodedBucket}/${encodedName}?filename=${encodeURIComponent(downloadName)}`;
+    const downloadUrl = `http://localhost:${PORT}/api/gcs/download/${encodedBucket}/${encodedName}?filename=${encodeURIComponent(downloadName)}`;
 
     return {
         bucket,
@@ -5165,7 +5168,7 @@ async function gcsDownloadObject({ bucket, name, filename }) {
         contentType,
         downloadName,
         downloadUrl,
-        message: `Download ready for "${name}" from bucket "${bucket}". Use the provided link to save the file.`
+        message: `Download ready for "${name}" from bucket "${bucket}". Click here to download to your computer: ${downloadUrl}`
     };
 }
 
@@ -6231,6 +6234,42 @@ async function executeTool(toolName, args) {
 // ============================================================
 
 // Return tools list for the UI grouped by service
+// Serve downloaded files for browser download
+app.get('/api/download/:filename', (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filepath = path.join(UPLOADS_DIR, filename);
+
+        // Security check: ensure file is in uploads directory
+        const normalizedPath = path.normalize(filepath);
+        const normalizedUploadDir = path.normalize(UPLOADS_DIR);
+        if (!normalizedPath.startsWith(normalizedUploadDir)) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        // Check if file exists
+        if (!fs.existsSync(filepath)) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+
+        // Extract original filename (remove timestamp and hash)
+        const originalFilename = filename.replace(/-\d+-[a-f0-9]+\./, '.');
+
+        // Send file with download headers
+        res.download(filepath, originalFilename, (err) => {
+            if (err) {
+                console.error('Error sending file:', err);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Failed to download file' });
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Download error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.get('/api/tools', (req, res) => {
     const gmail = { service: 'gmail', connected: !!gmailClient, tools: gmailTools.map(t => ({ function: t.function })) };
     const calendarConnected = !!calendarClient && hasCalendarScope();
@@ -6995,8 +7034,18 @@ function getConnectedToolContext() {
     return { availableTools, statusText, docsConnected, docsListOnlyConnected };
 }
 
-function buildAgentSystemPrompt({ statusText, toolCount, dateContext }) {
-    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You can perform complex, multi-step operations across all connected services.
+function buildAgentSystemPrompt({ statusText, toolCount, dateContext, connectedServices, userFirstName, userEmail }) {
+    // Build list of available service names for clarity
+    const availableServicesList = connectedServices && connectedServices.length > 0
+        ? connectedServices.join(', ')
+        : 'No services';
+
+    // Add user context for email signatures
+    const userContext = userFirstName && userEmail
+        ? `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📧 EMAIL SIGNATURE RULES (MANDATORY)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n**Current User:** ${userFirstName} (${userEmail})\n\n**When composing/drafting emails:**\n1. ALWAYS show recipient email address in your confirmation message\n2. ALWAYS use this exact signature format:\n\n   Best regards,\n   ${userFirstName}\n\n3. NEVER use "[Your Name]", "Your Name", placeholders, or full name\n4. Use ONLY the first name: "${userFirstName}"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+        : '';
+
+    const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You can perform complex, multi-step operations across all connected services.${userContext}
 
 Connected Services: ${statusText}
 Total Tools Available: ${toolCount}
@@ -7016,6 +7065,8 @@ Total Tools Available: ${toolCount}
    - If user asks to create/schedule a meeting, use Calendar meeting tools. Do NOT route this to Google Docs tools.
 
 1. **DISCOVERY FIRST, NEVER GUESS**: When the user refers to emails/docs/files/issues by description, use search/list/discovery tools first. Never invent IDs, email addresses, or repository names.
+
+1b. **CLEAN FILE OPERATIONS**: When downloading/attaching files, search for the file using list_drive_files or gcs_list_objects, then immediately download it. In your response text, do NOT list all the search results - just confirm the file was found and provide the download link or confirm the attachment. Keep it concise: "Found and downloaded [filename]" or "Attached [filename] to email".
 
 2. **ONE COMMAND -> MULTI-TOOL EXECUTION**: If the user asks for a compound task, execute all required steps in the same request flow.
    - "Read and reply to John's latest email" -> search_emails -> read_email -> reply_to_email
@@ -7056,9 +7107,10 @@ Total Tools Available: ${toolCount}
 - Email recipients (CRITICAL - READ CAREFULLY): When the user provides a person's name (not a full email), pass JUST THE NAME to send_email/create_draft — the system will automatically resolve it from Gmail history. RULES:
   1. NEVER construct/fabricate an email address yourself. For example, if user says "send to shubham" and you know others use @terralogic.com, do NOT guess "shubham@terralogic.com" — that is WRONG. The real email might be "shubham.barhate@terralogic.com" or completely different.
   2. Pass the raw name (e.g., to: ["shubham"]) and let the system resolve it.
-  3. If resolution fails, ASK the user: "I couldn't find an email for [name]. Could you provide their exact email address?"
-  4. NEVER guess email formats like firstname@domain.com, firstname.lastname@domain.com, etc.
-  5. NEVER use placeholder domains (example.com, test.com, domain.com).
+  3. DO NOT call search_emails to find recipient addresses before sending - just pass the name directly to send_email/create_draft and let the backend resolve it.
+  4. If resolution fails, the backend will return an error. Then ASK the user: "I couldn't find an email for [name]. Could you provide their exact email address?"
+  5. NEVER guess email formats like firstname@domain.com, firstname.lastname@domain.com, etc.
+  6. NEVER use placeholder domains (example.com, test.com, domain.com).
 - Email formatting: Use \n for line breaks in email body (will be converted to proper HTML breaks). For professional emails, include proper greetings, spacing, and signatures.
 - Email sending confirmation: Always ask the user to confirm final details before any send action (send_email, reply_to_email, forward_email, send_draft, outlook_send_email, outlook_reply_to_email, outlook_forward_email, outlook_send_draft). After confirmation, call with confirmSend: true.
 - Email attachments: To attach uploaded files, use the attachments parameter with localPath from attached files. Example: attachments: [{ localPath: "path/from/attached/files" }]
@@ -7090,7 +7142,7 @@ Total Tools Available: ${toolCount}
 - Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
 - GCS (Cloud Storage): All GCS tools are prefixed with gcs_. GCS buckets store raw objects/files separate from Google Drive. When the user mentions bucket names (e.g., "yikes-clickscan", "my-bucket"), always use gcs_list_objects NOT Drive tools. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets. Use gcs_move_object to move (copy+delete). Use gcs_rename_object to rename within same bucket. Use gcs_make_object_public to get public URLs or gcs_generate_signed_url for temporary secure access. Use gcs_batch_delete_objects to delete multiple files by prefix (requires confirmDelete=true).
 - Service disambiguation: GCS bucket names are typically lowercase with hyphens (e.g., "yikes-clickscan", "my-data-bucket"). Google Drive folder names can have any casing/spaces. If a user refers to a hyphenated lowercase name that sounds like a bucket, try GCS first. If unsure, check both.
-- File Discovery: When the user asks for a file by name (e.g., "download facial recognition PDF", "get contract.docx", "find invoice.pdf") WITHOUT specifying storage location, ALWAYS search ALL available storage locations in PARALLEL using multiple tool calls: Drive (list_drive_files with query containing filename) AND GCS buckets (gcs_list_objects across all buckets with filename filter). Do NOT assume the user knows where their file is stored. After finding matches, download/access from the correct location. If no explicit bucket name is mentioned, check both storage systems simultaneously.
+- File Discovery & Downloads: When the user asks to download/get a specific file by name (e.g., "download facial recognition PDF"), search Drive FIRST using list_drive_files. If found, immediately download using download_drive_file_to_local WITHOUT explaining the search. Only if NOT found in Drive, search GCS using gcs_list_objects and download from there. The goal is clean UX - user should only see the final download link, not all the intermediate search steps. For general browsing requests (e.g., "show me my PDFs", "list all files"), then display search results normally.
 
 ## FINAL RESPONSE QUALITY:
 - Provide a concise outcome summary of what was completed.
@@ -7234,10 +7286,33 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
         docsListOnlyConnected: toolContext.docsListOnlyConnected
     });
     const dateContext = getCurrentDateContext();
+
+    // Get user's first name for email signatures
+    let userFirstName = null;
+    let userEmail = null;
+    try {
+        userEmail = await getPrimaryEmailAddress();
+        if (userEmail) {
+            const db = readUsersDb();
+            const user = db.users[userEmail];
+            if (user?.name) {
+                // Remove role labels like "(Admin)" and extract first name
+                const cleanName = user.name.replace(/\s*\([^)]*\)\s*/g, '').trim();
+                userFirstName = cleanName.split(' ')[0];
+            }
+        }
+    } catch (err) {
+        // If we can't get user email, continue without signature customization
+        console.log('Could not get user email for signature:', err.message);
+    }
+
     const systemPrompt = buildAgentSystemPrompt({
         statusText: toolContext.statusText,
         toolCount: availableTools.length,
-        dateContext
+        dateContext,
+        connectedServices: toolContext.connectedServices,
+        userFirstName: userFirstName,
+        userEmail: userEmail
     });
     const routingHintBlock = routingHints.length > 0
         ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
@@ -7656,10 +7731,33 @@ async function runAgentConversation({ message, history = [], attachedFiles = [] 
         docsListOnlyConnected: toolContext.docsListOnlyConnected
     });
     const dateContext = getCurrentDateContext();
+
+    // Get user's first name for email signatures
+    let userFirstName = null;
+    let userEmail = null;
+    try {
+        userEmail = await getPrimaryEmailAddress();
+        if (userEmail) {
+            const db = readUsersDb();
+            const user = db.users[userEmail];
+            if (user?.name) {
+                // Remove role labels like "(Admin)" and extract first name
+                const cleanName = user.name.replace(/\s*\([^)]*\)\s*/g, '').trim();
+                userFirstName = cleanName.split(' ')[0];
+            }
+        }
+    } catch (err) {
+        // If we can't get user email, continue without signature customization
+        console.log('Could not get user email for signature:', err.message);
+    }
+
     const systemPrompt = buildAgentSystemPrompt({
         statusText: toolContext.statusText,
         toolCount: availableTools.length,
-        dateContext
+        dateContext,
+        connectedServices: toolContext.connectedServices,
+        userFirstName: userFirstName,
+        userEmail: userEmail
     });
     const routingHintBlock = routingHints.length > 0
         ? `\n\n[Tool Routing Hints]\n${routingHints.map(hint => `- ${hint}`).join('\n')}`
@@ -8129,6 +8227,40 @@ app.post('/api/meet/finalize', async (req, res) => {
         }
 
         // Normalize and deduplicate caption stream so transcript reads cleanly.
+        const transcriptNoisePatterns = [
+            /arrow_downward\s*jump to bottom/gi,
+            /jump to bottom/gi,
+            /(^|\s)you:\s*/gi
+        ];
+
+        function sanitizeSpeakerName(rawSpeaker, fallback = 'Unknown Speaker') {
+            const base = typeof rawSpeaker === 'string' ? rawSpeaker : '';
+            const cleaned = base
+                .replace(/\s+/g, ' ')
+                .replace(/^[^A-Za-z0-9]+/, '')
+                .trim();
+
+            if (!cleaned || cleaned.length > 120) {
+                return fallback;
+            }
+
+            return cleaned;
+        }
+
+        function sanitizeTranscriptText(rawText) {
+            if (typeof rawText !== 'string') {
+                return '';
+            }
+
+            let text = rawText.replace(/\s+/g, ' ').trim();
+            for (const pattern of transcriptNoisePatterns) {
+                text = text.replace(pattern, ' ');
+            }
+
+            text = text.replace(/\s+/g, ' ').trim();
+            return text;
+        }
+
         function normalizeCaptions(captions) {
             if (!Array.isArray(captions)) return [];
 
@@ -8138,13 +8270,8 @@ app.post('/api/meet/finalize', async (req, res) => {
                         return null;
                     }
 
-                    const speaker = typeof caption.speaker === 'string' && caption.speaker.trim()
-                        ? caption.speaker.trim()
-                        : 'Unknown Speaker';
-
-                    const text = typeof caption.text === 'string'
-                        ? caption.text.replace(/\s+/g, ' ').trim()
-                        : '';
+                    const speaker = sanitizeSpeakerName(caption.speaker, 'Unknown Speaker');
+                    const text = sanitizeTranscriptText(caption.text);
 
                     if (!text) {
                         return null;
@@ -8212,7 +8339,7 @@ app.post('/api/meet/finalize', async (req, res) => {
             return captions
                 .map((caption, index) => {
                     const time = formatCaptionTime(caption.timestamp);
-                    const speakerLine = `${index + 1}. ${time ? `[${time}] ` : ''}${caption.speaker}`;
+                    const speakerLine = `${index + 1}. ${time ? `[${time}] ` : ''}Speaker: ${caption.speaker}`;
                     return `${speakerLine}\n${caption.text}`;
                 })
                 .join('\n\n');
@@ -8290,13 +8417,13 @@ app.post('/api/meet/finalize', async (req, res) => {
             }
 
             const turnsForModel = captions.map((caption, index) => ({
-                index: index + 1,
+                sourceIndex: index + 1,
                 speaker: caption.speaker,
                 time: formatCaptionTime(caption.timestamp),
                 text: caption.text
             }));
 
-            const polishPrompt = `You are cleaning an automatic meeting transcript.
+            const polishPrompt = `You are cleaning and restructuring an automatic meeting transcript.
 
 Input turns (JSON):
 ${JSON.stringify(turnsForModel)}
@@ -8304,16 +8431,20 @@ ${JSON.stringify(turnsForModel)}
 Return ONLY valid JSON in this exact shape:
 {
   "turns": [
-    { "index": 1, "text": "..." }
+    { "sourceIndex": 1, "speaker": "...", "text": "..." }
   ]
 }
 
 Rules:
-- Keep the same number of turns and same indices.
-- Do NOT merge, split, remove, reorder, or invent turns.
-- Do NOT add speaker names to text.
-- Fix obvious spelling, punctuation, and capitalization only.
-- Preserve meaning; if uncertain, keep original wording.
+- Each item must be a single speaker turn.
+- Keep chronological order by sourceIndex.
+- You MAY split one source turn into multiple turns when multiple speakers appear in one line.
+- Keep or correct speaker names when obvious from text; otherwise keep original speaker.
+- Do NOT add speaker names inside text.
+- Fix obvious spelling, punctuation, and capitalization.
+- Remove obvious UI noise such as "Jump to bottom", "arrow_downward", stray duplicated labels.
+- Remove exact duplicates caused by live-caption glitches.
+- Preserve meaning; do not invent facts.
 - No markdown, no code fences, no extra keys.`;
 
             try {
@@ -8342,25 +8473,33 @@ Rules:
                     return captions;
                 }
 
-                const textByIndex = new Map();
+                const rebuiltTurns = [];
                 for (const turn of modelTurns) {
-                    const index = Number(turn?.index);
-                    const text = typeof turn?.text === 'string'
-                        ? turn.text.replace(/\s+/g, ' ').trim()
-                        : '';
-
-                    if (!Number.isInteger(index) || index < 1 || !text) {
+                    const sourceIndex = Number(turn?.sourceIndex ?? turn?.index);
+                    if (!Number.isInteger(sourceIndex) || sourceIndex < 1 || sourceIndex > captions.length) {
                         continue;
                     }
 
-                    textByIndex.set(index, text);
+                    const sourceCaption = captions[sourceIndex - 1];
+                    const speaker = sanitizeSpeakerName(turn?.speaker, sourceCaption?.speaker || 'Unknown Speaker');
+                    const text = sanitizeTranscriptText(turn?.text);
+
+                    if (!text) {
+                        continue;
+                    }
+
+                    rebuiltTurns.push({
+                        speaker,
+                        text,
+                        timestamp: sourceCaption?.timestamp || null
+                    });
                 }
 
-                return captions.map((caption, idx) => {
-                    const polishedText = textByIndex.get(idx + 1);
-                    if (!polishedText) return caption;
-                    return { ...caption, text: polishedText };
-                });
+                if (rebuiltTurns.length === 0) {
+                    return captions;
+                }
+
+                return deduplicateCaptions(rebuiltTurns);
             } catch (error) {
                 console.error('[Meet] Transcript polishing failed, using cleaned transcript:', error.message);
                 return captions;
@@ -8492,7 +8631,7 @@ ${transcriptSpeakerWise}
             documentId,
             docUrl,
             summary,
-            captionCount: cleanedCaptions.length,
+            captionCount: polishedCaptions.length,
             attendees: attendeeEmails,
             autoShared: false
         });
