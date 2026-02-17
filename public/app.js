@@ -1718,23 +1718,9 @@ async function sendMessage() {
                     streamingText.innerHTML = formatResponse(accumulatedText);
                     chatMessages.scrollTop = chatMessages.scrollHeight;
                 } else if (event === 'tool_start') {
-                    // Show tool execution indicator
-                    const toolId = `tool-${data.tool}-${data.turn}`;
-                    const toolDiv = document.createElement('div');
-                    toolDiv.id = toolId;
-                    toolDiv.className = 'tool-indicator executing';
-                    toolDiv.innerHTML = `<span class="tool-spinner">⟳</span> ${data.tool}...`;
-                    streamingTools.appendChild(toolDiv);
-                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    // Tool steps hidden - only show AI response text
                 } else if (event === 'tool_end') {
-                    // Update tool indicator to completed
-                    const toolId = `tool-${data.tool}-${data.turn}`;
-                    const toolDiv = document.getElementById(toolId);
-                    if (toolDiv) {
-                        toolDiv.className = `tool-indicator ${data.success ? 'success' : 'error'}`;
-                        toolDiv.innerHTML = `<span>${data.success ? '✓' : '✗'}</span> ${data.tool}`;
-                    }
-                    steps.push({ tool: data.tool, result: data.result, success: data.success, turn: data.turn });
+                    // Tool steps hidden - only show AI response text
                 } else if (event === 'done') {
                     // Final result received
                     if (data.turnsUsed > 0) {
@@ -1744,6 +1730,9 @@ async function sendMessage() {
                     }
 
                     // Handle automatic downloads
+                    // NOTE: download_drive_file_to_local is a silent intermediate step for email
+                    // attachments — do NOT trigger a browser download for it. Only explicit download
+                    // tools (download_drive_file, gcs_download_object, conversions) should trigger downloads.
                     const automaticDownloads = (data.toolResults || [])
                         .filter(result =>
                             result &&
@@ -1761,17 +1750,10 @@ async function sendMessage() {
                     streamingTools.innerHTML = '';
 
                     let finalHtml = '';
-                    if (data.steps && data.steps.length > 0) {
-                        finalHtml += formatStepsPipeline(data.steps);
-                    }
 
                     const finalResponseText = String(data.response || '').trim() || String(accumulatedText || '').trim();
                     if (finalResponseText) {
                         finalHtml += formatResponse(finalResponseText);
-                    }
-
-                    if (data.toolResults && data.toolResults.length > 0) {
-                        finalHtml += `<div class="tool-results-stack">${formatToolResults(data.toolResults)}</div>`;
                     }
 
                     // Never leave an empty assistant bubble after streaming.
@@ -2176,10 +2158,10 @@ function formatToolResults(results) {
                     </div>
                 `).join('');
                 // Drive download payload
-            } else if (result.tool === 'download_drive_file' && result.result.downloadUrl) {
+            } else if ((result.tool === 'download_drive_file' || result.tool === 'download_drive_file_to_local') && result.result.downloadUrl) {
                 const downloadHref = result.result.downloadUrl;
                 const downloadName = result.result.downloadName || result.result.name || 'download';
-                const formatLabel = escapeHtml(result.result.format || 'raw');
+                const formatLabel = escapeHtml(result.result.format || (result.tool === 'download_drive_file_to_local' ? 'local' : 'raw'));
                 content = `
                     <div class="email-card vertical">
                         <div class="email-card-header">

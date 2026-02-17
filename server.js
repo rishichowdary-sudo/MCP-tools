@@ -52,23 +52,41 @@ const upload = multer({
 // Store uploaded files metadata temporarily (in-memory)
 const uploadedFiles = new Map(); // fileId -> { path, originalName, size, mimeType, uploadedAt }
 
-// Clean up old uploads every hour
+// Clean up old uploads every 10 minutes
+// Covers both user-uploaded files (tracked in uploadedFiles Map) AND
+// Drive/GCS files downloaded as email attachment intermediates (not in Map)
 setInterval(() => {
-    const ONE_HOUR = 60 * 60 * 1000;
+    const MAX_AGE = 15 * 60 * 1000; // 15 minutes
     const now = Date.now();
+
+    // 1. Clean tracked user uploads
     for (const [fileId, fileInfo] of uploadedFiles.entries()) {
-        if (now - fileInfo.uploadedAt > ONE_HOUR) {
+        if (now - fileInfo.uploadedAt > MAX_AGE) {
             try {
-                if (fs.existsSync(fileInfo.path)) {
-                    fs.unlinkSync(fileInfo.path);
-                }
+                if (fs.existsSync(fileInfo.path)) fs.unlinkSync(fileInfo.path);
                 uploadedFiles.delete(fileId);
             } catch (error) {
-                console.error('Failed to clean up old upload:', error);
+                console.error('Failed to clean up tracked upload:', error);
             }
         }
     }
-}, 60 * 60 * 1000); // Run every hour
+
+    // 2. Clean any untracked files in uploads/ dir (Drive/GCS downloads for attachments)
+    try {
+        const files = fs.readdirSync(UPLOADS_DIR);
+        for (const filename of files) {
+            const filepath = path.join(UPLOADS_DIR, filename);
+            try {
+                const stat = fs.statSync(filepath);
+                if (stat.isFile() && (now - stat.mtimeMs) > MAX_AGE) {
+                    fs.unlinkSync(filepath);
+                }
+            } catch (_) {}
+        }
+    } catch (error) {
+        console.error('Failed to sweep uploads dir:', error);
+    }
+}, 10 * 60 * 1000); // Run every 10 minutes
 
 // OpenAI setup
 const openai = new OpenAI({
@@ -499,8 +517,6 @@ function buildEmailSendConfirmationMessage(toolName, args = {}) {
     }
 
     lines.push(`- Body preview: ${bodyPreview}`);
-    lines.push('');
-    lines.push('If everything looks correct, ask the user for confirmation and then call the same send tool again with `confirmSend: true`.');
 
     return lines.join('\n');
 }
@@ -7042,7 +7058,7 @@ function buildAgentSystemPrompt({ statusText, toolCount, dateContext, connectedS
 
     // Add user context for email signatures
     const userContext = userFirstName && userEmail
-        ? `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📧 EMAIL SIGNATURE RULES (MANDATORY)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n**Current User:** ${userFirstName} (${userEmail})\n\n**When composing/drafting emails:**\n1. ALWAYS show recipient email address in your confirmation message\n2. ALWAYS use this exact signature format:\n\n   Best regards,\n   ${userFirstName}\n\n3. NEVER use "[Your Name]", "Your Name", placeholders, or full name\n4. Use ONLY the first name: "${userFirstName}"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+        ? `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📧 EMAIL SIGNATURE RULES (MANDATORY)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n**Current User:** ${userFirstName} (${userEmail})\n\n**When composing/drafting emails:**\n1. ALWAYS show recipient email address in your confirmation message\n2. ALWAYS end the email body with this EXACT signature (nothing more):\n\n   Best regards,\n   ${userFirstName}\n\n3. NEVER add "[Your Position]", "[Your Contact Information]", "[Your Title]", or ANY placeholder text after the signature\n4. NEVER use "[Your Name]", "Your Name", or any name placeholder — use ONLY the first name: "${userFirstName}"\n5. NEVER ask the user for their name — you already know it is "${userFirstName}"\n6. The signature is COMPLETE as: "Best regards,\\n${userFirstName}" — stop there\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
         : '';
 
     const basePrompt = `You are a powerful AI assistant with tools across Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You can perform complex, multi-step operations across all connected services.${userContext}
@@ -7086,6 +7102,8 @@ Total Tools Available: ${toolCount}
 5. **NEVER STOP MID-TASK**: Continue tool execution until completion for normal workflows.
 
 5b. **EMAIL SEND CONFIRMATION REQUIRED**: Before calling any send action (send_email, reply_to_email, forward_email, send_draft, outlook_send_email, outlook_reply_to_email, outlook_forward_email, outlook_send_draft), show the final recipients/target, subject (if available), and body summary and ask the user to confirm. Only send after explicit confirmation, and pass confirmSend: true.
+   - **HANDLING CONFIRMATION TOOL RESULT**: If a send tool returns "Email send confirmation required before sending", do NOT echo that raw text to the user. Instead present the details cleanly (To, Subject, Body preview) and ask "Shall I go ahead and send this?" in plain language.
+   - **ONCE USER CONFIRMS**: When the user says "yes", "ok", "send", "go ahead" etc. after seeing your confirmation, call the send tool again with confirmSend: true immediately — do NOT ask again.
 
 6. **RECOVER FROM FAILURES**: If a tool fails due to missing ID, scope, or lookup ambiguity, run the appropriate discovery/diagnostic tool and retry with corrected arguments. Explain blockers only after retry paths are exhausted.
 
@@ -7133,6 +7151,7 @@ Total Tools Available: ${toolCount}
   - NEVER paste file content into the email body as a substitute for attaching
   - NEVER use extract_drive_file_text for attachments — that is for reading/summarizing only
   - NEVER use download_drive_file for attachments — it returns a browser URL, NOT a local file
+  - **NO RE-DOWNLOAD ON CONFIRMATION (CRITICAL)**: If you already completed Steps 1 & 2 earlier in this conversation and have a localPath, when the user confirms the send, call send_email DIRECTLY with that SAME localPath and confirmSend: true. Do NOT call list_drive_files or download_drive_file_to_local again — the file is ALREADY on disk. Re-downloading is wrong and wastes time.
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
 - Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
 - Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
