@@ -42,7 +42,11 @@ app.use((req, res, next) => {
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: { error: 'Too many requests, please try again later.' } });
 const chatLimiter = rateLimit({ windowMs: 60 * 1000, max: 15, message: { error: 'Too many requests, please try again later.' } });
 const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { error: 'Too many uploads, please try again later.' } });
-app.use('/api/', apiLimiter);
+// Apply rate limiting (skip status endpoints — they're read-only polling)
+app.use('/api/', (req, res, next) => {
+    if (req.path.endsWith('/status')) return next();
+    return apiLimiter(req, res, next);
+});
 app.use('/api/chat', chatLimiter);
 app.use('/api/upload', uploadLimiter);
 
@@ -1085,6 +1089,19 @@ function initOAuthClient() {
         if (fs.existsSync(TOKEN_PATH)) {
             const token = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
             oauth2Client.setCredentials(token);
+
+            // Force refresh if token is expired (so clients work immediately on startup)
+            if (token.refresh_token && token.expiry_date && Date.now() > token.expiry_date) {
+                console.log('Google token expired, refreshing...');
+                oauth2Client.refreshAccessToken().then(({ credentials }) => {
+                    oauth2Client.setCredentials(credentials);
+                    // on('tokens') listener will save to disk
+                    console.log('Google token refreshed successfully on startup');
+                }).catch(err => {
+                    console.error('Failed to refresh Google token on startup:', err.message);
+                });
+            }
+
             gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
             calendarClient = tokenHasScope(token, CALENDAR_SCOPE)
                 ? google.calendar({ version: 'v3', auth: oauth2Client })

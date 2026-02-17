@@ -604,7 +604,7 @@ async function checkAllStatuses() {
         checkTeamsStatus();
         checkGcsStatus();
         checkTimerStatus();
-    }, 5000);
+    }, 30000);
 }
 
 // Gmail status
