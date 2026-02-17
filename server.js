@@ -7068,6 +7068,8 @@ Total Tools Available: ${toolCount}
 
 1b. **CLEAN FILE OPERATIONS**: When downloading/attaching files, search for the file using list_drive_files or gcs_list_objects, then immediately download it. In your response text, do NOT list all the search results - just confirm the file was found and provide the download link or confirm the attachment. Keep it concise: "Found and downloaded [filename]" or "Attached [filename] to email".
 
+1c. **MULTIPLE FILE MATCHES - ASK USER (CRITICAL)**: When searching for a file to download/attach and the search returns MORE THAN ONE file that could match the user's request, you MUST stop and ask the user which one they want. List each matching file with its name and type. Example: User says "download face recognition doc" and you find both "PRD_Face_Recognition.docx" and "Face_Recognition_System.pdf" - you MUST ask "I found 2 files: 1) PRD_Face_Recognition.docx (Document), 2) Face_Recognition_System.pdf (PDF). Which one would you like?" NEVER auto-select when there are multiple matches.
+
 2. **ONE COMMAND -> MULTI-TOOL EXECUTION**: If the user asks for a compound task, execute all required steps in the same request flow.
    - "Read and reply to John's latest email" -> search_emails -> read_email -> reply_to_email
    - "Create an issue for the bug and email the team" -> create_issue -> send_email
@@ -7119,18 +7121,18 @@ Total Tools Available: ${toolCount}
 - Calendar IDs: get_event requires a Calendar eventId, not a Gmail messageId from search_emails/read_email.
 - Google Chat: Use list_chat_spaces to discover spaces, then send_chat_message to post updates.
 - Drive: Use list_drive_files for discovery before updates/deletes. Use share_drive_file to grant access. Use download_drive_file for real file downloads, extract_drive_file_text for summarization/Q&A, append_drive_document_text to append text to docs/files, convert_file_to_google_doc to convert PDFs/files into Docs stored in Drive, and convert_file_to_google_sheet to convert CSV/XLSX/files into Sheets stored in Drive.
-- SENDING FILES FROM DRIVE VIA EMAIL (MANDATORY 3-STEP PROCESS - NO EXCEPTIONS):
-  When a user says "send [file] from Drive to [person]" or "email [file] to [person]" or "attach [file] from Drive", you MUST follow these exact steps:
-  Step 1: list_drive_files to find the file and get its fileId
-  Step 2: download_drive_file_to_local with that fileId → this returns { localPath: "C:\\...\\uploads\\filename.txt" }
-  Step 3: send_email with attachments: [{ localPath: "<EXACT localPath from Step 2 result>" }]
+- ATTACHING DRIVE/GCS FILES TO EMAIL (3-step process — do this silently, user does NOT need to know about intermediate steps):
+  When a user says "attach [file] to email", "send [file] to [person]", "email [file] from Drive/bucket":
+  Step 1: list_drive_files (or gcs_list_objects) to find the file and get its fileId/objectName
+  Step 2: download_drive_file_to_local (or gcs_download_object) — this is a required technical step to prepare the file for attachment. Do NOT mention this step to the user.
+  Step 3: send_email (or outlook_send_email) with attachments: [{ localPath: "<EXACT localPath from Step 2 result>" }]
+  In your response, just say "Attached [filename] to the email to [recipient]" — never say "I downloaded the file first" or mention the local path.
   CRITICAL RULES:
-  - The localPath in Step 3 MUST be the EXACT full absolute path returned by Step 2 (e.g., "C:\\Meghan\\MCP-tools\\uploads\\Creating PR-1739...txt")
-  - NEVER use just the filename (e.g., "Creating PR.txt") as localPath — it MUST be the full path
-  - NEVER skip Step 2 — without it, there is NO file to attach
+  - The localPath in Step 3 MUST be the EXACT full absolute path returned by Step 2
+  - NEVER skip Step 2 — without it there is NO file to attach
   - NEVER paste file content into the email body as a substitute for attaching
-  - NEVER use extract_drive_file_text for sending files — that is for reading/summarizing, NOT for email attachments
-  - NEVER use download_drive_file for email attachments — it returns a browser URL, NOT a local file
+  - NEVER use extract_drive_file_text for attachments — that is for reading/summarizing only
+  - NEVER use download_drive_file for attachments — it returns a browser URL, NOT a local file
 - Sheets: Use list_spreadsheets then list_sheet_tabs/read_sheet_values before edits. Use update_sheet_values/append_sheet_values for writes.
 - Sheets timesheets: For any date-based timesheet update (hours and/or task details), ALWAYS use update_timesheet_hours (not update_sheet_values/append_sheet_values), and pass the user's exact date phrase (e.g., "Feb 6th 2026").
 - Sheets timesheets row safety: Resolve the row by date and update that row only. Never hardcode row numbers/cell addresses from prior runs.
@@ -7142,7 +7144,7 @@ Total Tools Available: ${toolCount}
 - Microsoft Teams: All Teams tools are prefixed with teams_. Use teams_list_teams to discover teams, then teams_list_channels for channels. Use teams_send_channel_message to post. Use teams_list_chats for 1:1/group chats, teams_send_chat_message to reply.
 - GCS (Cloud Storage): All GCS tools are prefixed with gcs_. GCS buckets store raw objects/files separate from Google Drive. When the user mentions bucket names (e.g., "yikes-clickscan", "my-bucket"), always use gcs_list_objects NOT Drive tools. Use gcs_list_buckets to discover buckets. Use gcs_list_objects with prefix for folder-like browsing. Use gcs_upload_object for text/JSON content. Use gcs_download_object to read file contents. Bucket names must be globally unique. Use gcs_copy_object to copy within or between buckets. Use gcs_move_object to move (copy+delete). Use gcs_rename_object to rename within same bucket. Use gcs_make_object_public to get public URLs or gcs_generate_signed_url for temporary secure access. Use gcs_batch_delete_objects to delete multiple files by prefix (requires confirmDelete=true).
 - Service disambiguation: GCS bucket names are typically lowercase with hyphens (e.g., "yikes-clickscan", "my-data-bucket"). Google Drive folder names can have any casing/spaces. If a user refers to a hyphenated lowercase name that sounds like a bucket, try GCS first. If unsure, check both.
-- File Discovery & Downloads: When the user asks to download/get a specific file by name (e.g., "download facial recognition PDF"), search Drive FIRST using list_drive_files. If found, immediately download using download_drive_file_to_local WITHOUT explaining the search. Only if NOT found in Drive, search GCS using gcs_list_objects and download from there. The goal is clean UX - user should only see the final download link, not all the intermediate search steps. For general browsing requests (e.g., "show me my PDFs", "list all files"), then display search results normally.
+- File Discovery & Downloads: When the user asks to download/get a specific file by name (e.g., "download facial recognition PDF"), search Drive FIRST using list_drive_files. If MULTIPLE files match the search term, STOP and ask the user "I found multiple files matching '[search term]'. Which one would you like?" and list the options with their names and types. Only proceed to download after the user selects one. If only ONE file matches, immediately download it. Use download_drive_file_to_local only when the file must be attached to an email or uploaded to another service. The goal is clean UX - user should only see the final download link, not all the intermediate search steps. For general browsing requests (e.g., "show me my PDFs", "list all files"), then display search results normally.
 
 ## FINAL RESPONSE QUALITY:
 - Provide a concise outcome summary of what was completed.
@@ -8411,8 +8413,8 @@ app.post('/api/meet/finalize', async (req, res) => {
             }
 
             const totalChars = captions.reduce((sum, caption) => sum + String(caption.text || '').length, 0);
-            if (captions.length > 400 || totalChars > 40000) {
-                console.log('[Meet] Skipping transcript polishing due to size.');
+            if (captions.length > 800 || totalChars > 80000) {
+                console.log('[Meet] Transcript too large for polishing, using cleaned version.');
                 return captions;
             }
 
@@ -8423,7 +8425,7 @@ app.post('/api/meet/finalize', async (req, res) => {
                 text: caption.text
             }));
 
-            const polishPrompt = `You are cleaning and restructuring an automatic meeting transcript.
+            const polishPrompt = `You are cleaning an automatic speech recognition (ASR) transcript from Google Meet. Google Meet's ASR makes frequent mistakes especially with technical jargon, proper nouns, and Indian English accents.
 
 Input turns (JSON):
 ${JSON.stringify(turnsForModel)}
@@ -8435,17 +8437,21 @@ Return ONLY valid JSON in this exact shape:
   ]
 }
 
-Rules:
-- Each item must be a single speaker turn.
-- Keep chronological order by sourceIndex.
-- You MAY split one source turn into multiple turns when multiple speakers appear in one line.
-- Keep or correct speaker names when obvious from text; otherwise keep original speaker.
-- Do NOT add speaker names inside text.
-- Fix obvious spelling, punctuation, and capitalization.
-- Remove obvious UI noise such as "Jump to bottom", "arrow_downward", stray duplicated labels.
-- Remove exact duplicates caused by live-caption glitches.
-- Preserve meaning; do not invent facts.
-- No markdown, no code fences, no extra keys.`;
+CRITICAL RULES for fixing ASR errors:
+- Fix words that sound similar but are wrong in context (e.g. "Mcptation" → "MCP integration", "rubra tap" → "Rubrik app", "composer" → "Composer", "irradable" → "I'll be right back")
+- Fix technical terms: OAuth, API, GitHub, MCP, OpenAI, GPT, etc. — capitalize them correctly
+- Fix proper names and product names based on context
+- Fix grammar and sentence flow so it reads naturally
+- Remove filler words that are clearly ASR noise (not real speech)
+- Each item must be a single speaker turn in chronological order
+- You MAY split one source turn into multiple turns when multiple speakers appear in one line
+- Keep or correct speaker names when obvious from text; otherwise keep original speaker name
+- Do NOT add speaker names inside the text field
+- Remove UI noise: "Jump to bottom", "arrow_downward", "Coming out of English", stray duplicated labels
+- Remove exact duplicates caused by live-caption glitches
+- Preserve meaning and intent; do not invent facts or add information not present
+- If a turn is pure noise with no recoverable meaning, omit it entirely
+- No markdown, no code fences, no extra keys in JSON`;
 
             try {
                 console.log('[Meet] Polishing transcript text with OpenAI...');
@@ -8455,7 +8461,7 @@ Rules:
                     messages: [
                         {
                             role: 'system',
-                            content: 'You are a strict transcript cleaner. Return JSON only.'
+                            content: 'You are a strict ASR transcript cleaner. You fix Google Meet speech recognition errors. Return JSON only, no other text.'
                         },
                         {
                             role: 'user',
@@ -8463,7 +8469,7 @@ Rules:
                         }
                     ],
                     temperature: 0.1,
-                    max_tokens: 2500
+                    max_tokens: 6000
                 });
 
                 const raw = polishCompletion.choices?.[0]?.message?.content || '';
@@ -8753,6 +8759,25 @@ loadScheduledTasksFromDisk();
 startScheduledTaskRunner();
 
 const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length + gcsTools.length;
+let startupErrorHandled = false;
+const handleStartupError = (error, source) => {
+    if (startupErrorHandled) return;
+    startupErrorHandled = true;
+
+    const errorCode = error?.code || 'UNKNOWN';
+    const errorMessage = error?.message || 'Unknown startup error';
+
+    if (errorCode === 'EADDRINUSE') {
+        console.error(`Port ${PORT} is already in use (${source}).`);
+        console.error('Stop the existing process on this port or set a different PORT in .env.');
+        process.exit(1);
+        return;
+    }
+
+    console.error(`Server startup error [${source}] (${errorCode}): ${errorMessage}`);
+    process.exit(1);
+};
+
 const httpServer = app.listen(PORT, () => {
     console.log(`\nAI Agent Server running at http://localhost:${PORT}`);
     console.log(`OpenAI model: ${OPENAI_MODEL}${OPENAI_FALLBACK_MODEL ? ` (fallback: ${OPENAI_FALLBACK_MODEL})` : ''}, retries: ${OPENAI_CHAT_MAX_RETRIES}, temperature: ${OPENAI_TEMPERATURE}${OPENAI_MAX_OUTPUT_TOKENS ? `, max output tokens: ${OPENAI_MAX_OUTPUT_TOKENS}` : ''}`);
@@ -8770,9 +8795,11 @@ const httpServer = app.listen(PORT, () => {
     console.log(`GCS: ${gcsAuthenticated ? `Connected (project: ${gcsProjectId})` : 'Not connected'}`);
     console.log(`Timer Tasks: ${scheduledTasks.length} configured (${scheduledTasks.filter(task => task.enabled).length} enabled)`);
 });
+httpServer.once('error', (error) => handleStartupError(error, 'http'));
 
 // WebSocket Server for Google Meet Note-Taker
 const wss = new WebSocket.Server({ server: httpServer, path: '/meet-notes' });
+wss.once('error', (error) => handleStartupError(error, 'websocket'));
 const meetSessions = new Map(); // sessionId -> { metadata, captions[], startTime, ws }
 
 wss.on('connection', (ws) => {
@@ -8854,15 +8881,6 @@ wss.on('connection', (ws) => {
 });
 
 console.log('WebSocket server initialized on path: /meet-notes');
-
-httpServer.on('error', (error) => {
-    if (error && error.code === 'EADDRINUSE') {
-        console.error(`Port ${PORT} is already in use. Stop the existing server process or set a different PORT in .env.`);
-        return process.exit(1);
-    }
-    console.error('Server startup error:', error?.message || error);
-    process.exit(1);
-});
 
 process.on('SIGINT', async () => {
     if (schedulerInterval) clearInterval(schedulerInterval);
