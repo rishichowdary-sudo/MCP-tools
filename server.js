@@ -27,12 +27,27 @@ function isLoopbackAddress(address) {
     return false;
 }
 
-// Security: restrict CORS to same-origin and localhost
+const CORS_TRUSTED_EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/[a-p]{32}$/i;
+
+function isAllowedCorsOrigin(origin) {
+    const raw = String(origin || '').trim();
+    if (!raw) return true;
+
+    const allowedOrigins = new Set([
+        `http://localhost:${PORT}`,
+        `http://127.0.0.1:${PORT}`,
+        'http://localhost:3000',
+        'http://127.0.0.1:3000'
+    ]);
+
+    if (allowedOrigins.has(raw)) return true;
+    return CORS_TRUSTED_EXTENSION_ORIGIN_PATTERN.test(raw);
+}
+
+// Security: restrict CORS to localhost UI + trusted extension origins.
 app.use(cors({
     origin: (origin, callback) => {
-        if (!origin) return callback(null, true);
-        const allowed = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`];
-        if (allowed.includes(origin)) return callback(null, true);
+        if (isAllowedCorsOrigin(origin)) return callback(null, true);
         callback(new Error('Not allowed by CORS'));
     },
     credentials: true
@@ -9070,19 +9085,25 @@ wss.on('connection', (ws, request) => {
             }
 
             if (messageType === 'session_start') {
-                if (!meetSessions.has(sessionId) && meetSessions.size >= MAX_MEET_SESSIONS) {
+                const existingSession = meetSessions.get(sessionId);
+                if (!existingSession && meetSessions.size >= MAX_MEET_SESSIONS) {
                     ws.send(JSON.stringify({ type: 'error', message: 'Too many active sessions' }));
                     return;
                 }
 
-                meetSessions.set(sessionId, {
-                    metadata: sanitizeMeetMetadata(data.metadata),
-                    captions: [],
-                    startTime: new Date(),
-                    ws
-                });
+                if (existingSession) {
+                    existingSession.metadata = sanitizeMeetMetadata(data.metadata);
+                    existingSession.ws = ws;
+                } else {
+                    meetSessions.set(sessionId, {
+                        metadata: sanitizeMeetMetadata(data.metadata),
+                        captions: [],
+                        startTime: new Date(),
+                        ws
+                    });
+                }
 
-                console.log(`[WebSocket] Session started: ${sessionId}`);
+                console.log(`[WebSocket] Session started: ${sessionId}${existingSession ? ' (resumed)' : ''}`);
                 ws.send(JSON.stringify({ type: 'session_created', sessionId }));
                 return;
             }
