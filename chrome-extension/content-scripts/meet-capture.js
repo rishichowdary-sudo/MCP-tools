@@ -79,14 +79,18 @@ const SPEAKER_SELECTORS = [
 ];
 
 const TEXT_SELECTORS = [
+  // 2026-era generic fallbacks
   '[jsname="YSxPC"]',
   '[jsname="K4s0"]',
   '.a4cQT',
   '.iTTPOb',
+  '.VbkSUe', // New common text container
+  '.cn87Jb', // Another text container variant
   '[class*="caption-text" i]',
   '[class*="transcript" i]',
   // Generic fallback
   'span',
+  'div[jsname]'
 ];
 
 // ── Heuristic caption container discovery ──────────────────────────────────
@@ -116,17 +120,21 @@ function scoreCaptionCandidate(el) {
 
   // Contains text that looks conversational (has letters, spaces)
   const text = el.textContent || '';
-  if (text.length > 10 && /[a-zA-Z]{2,}/.test(text)) score += 2;
+  if (text.length > 5 && /[a-zA-Z]{2,}/.test(text)) score += 2;
 
   // Has child elements (speaker blocks)
   if (el.children.length >= 1) score += 1;
   if (el.children.length >= 2) score += 1;
 
   // aria-live is a strong caption signal
-  if (el.getAttribute('aria-live')) score += 4;
+  if (el.getAttribute('aria-live')) score += 5;
+  if (el.getAttribute('role') === 'region') score += 2;
 
   // Contains a colon (speaker: text pattern)
-  if (text.includes(':')) score += 1;
+  if (text.includes(':')) score += 2;
+
+  // Specific check for "You" or known speaker patterns
+  if (/^[A-Z][a-z]+(\s[A-Z][a-z]+)*:/.test(text)) score += 3;
 
   // Penalty: if it looks like a toolbar, chat, or participant list
   const cl = (el.className || '').toLowerCase();
