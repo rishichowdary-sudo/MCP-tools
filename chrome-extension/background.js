@@ -18,6 +18,59 @@ let currentSession = null;
 let captionBuffer = []; // Buffer captions when disconnected
 let isConnecting = false;
 let pendingSessionStart = false;
+let activeMeetTabId = null;
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function getMeetTabs() {
+  const tabs = await chrome.tabs.query({ url: ['https://meet.google.com/*'] });
+  return (tabs || []).filter(tab => Number.isInteger(tab.id));
+}
+
+async function sendMessageToMeetTab(tabId, message) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, message);
+    return { success: true, response };
+  } catch (error) {
+    return { success: false, error };
+  }
+}
+
+async function sendCaptureCommandToMeetTabs(commandType, { retries = 5, retryDelayMs = 1200 } = {}) {
+  let lastError = 'No Google Meet tab found';
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    const tabs = await getMeetTabs();
+    if (!tabs.length) {
+      lastError = 'No Google Meet tab found';
+      if (attempt < retries) await delay(retryDelayMs);
+      continue;
+    }
+
+    const orderedTabs = [...tabs].sort((a, b) => {
+      if (a.id === activeMeetTabId) return -1;
+      if (b.id === activeMeetTabId) return 1;
+      if (a.active && !b.active) return -1;
+      if (!a.active && b.active) return 1;
+      return 0;
+    });
+
+    for (const tab of orderedTabs) {
+      const result = await sendMessageToMeetTab(tab.id, { type: commandType });
+      if (result.success && result.response?.success !== false) {
+        activeMeetTabId = tab.id;
+        return tab.id;
+      }
+      lastError = result.error?.message || `Failed to send ${commandType} to tab ${tab.id}`;
+    }
+
+    if (attempt < retries) await delay(retryDelayMs);
+  }
+
+  throw new Error(lastError);
+}
 
 /**
  * Generate unique session ID
@@ -119,6 +172,8 @@ function connectWebSocket() {
 
       // Auto-reconnect if there's an active session
       if (currentSession) {
+        // Rebind session on reconnect so the server accepts future captions.
+        pendingSessionStart = true;
         scheduleReconnect();
       }
     };
@@ -203,14 +258,16 @@ async function startSession(meetingMetadata) {
     });
   }
 
-  // Send session start message
-  const started = sendMessage({
-    type: 'session_start',
-    sessionId,
-    metadata: meetingMetadata
-  });
-  if (started) {
-    pendingSessionStart = false;
+  // Send session start only if it wasn't already sent in ws.onopen.
+  if (pendingSessionStart) {
+    const started = sendMessage({
+      type: 'session_start',
+      sessionId,
+      metadata: meetingMetadata
+    });
+    if (started) {
+      pendingSessionStart = false;
+    }
   }
 
   return sessionId;
@@ -221,15 +278,21 @@ async function startSession(meetingMetadata) {
  */
 async function addCaption(caption) {
   if (!currentSession) {
-    console.warn('[Background] No active session, ignoring caption');
-    return;
+    // Service worker can restart; recover active session from storage.
+    const restored = await chrome.storage.local.get(['currentSession']);
+    if (restored?.currentSession) {
+      currentSession = restored.currentSession;
+      pendingSessionStart = true;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        connectWebSocket();
+      }
+    } else {
+      console.warn('[Background] No active session, ignoring caption');
+      return;
+    }
   }
 
-  // Add to local storage
-  currentSession.captions.push(caption);
-  await chrome.storage.local.set({ currentSession });
-
-  // Send to server via WebSocket
+  // Send first so storage failures never block live forwarding.
   const sent = sendMessage({
     type: 'caption',
     sessionId: currentSession.sessionId,
@@ -240,6 +303,17 @@ async function addCaption(caption) {
   if (!sent) {
     captionBuffer.push(caption);
     console.log('[Background] Caption buffered (disconnected)');
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connectWebSocket();
+    }
+  }
+
+  // Persist locally as best effort.
+  currentSession.captions.push(caption);
+  try {
+    await chrome.storage.local.set({ currentSession });
+  } catch (storageError) {
+    console.warn('[Background] Failed to persist caption in storage:', storageError?.message || storageError);
   }
 }
 
@@ -292,7 +366,7 @@ function broadcastToPopup(message) {
 async function fetchMeetingMetadata(meetingCode) {
   try {
     const response = await fetch(`${BACKEND_URL}/api/meet/metadata?code=${meetingCode}`);
-    const data = await response.json();
+    const data = await parseBackendJsonResponse(response, 'fetch meeting metadata');
 
     if (data.error) {
       throw new Error(data.error);
@@ -318,7 +392,7 @@ async function finalizeMeeting(sessionId) {
       body: JSON.stringify({ sessionId })
     });
 
-    const data = await response.json();
+    const data = await parseBackendJsonResponse(response, 'finalize meeting');
 
     if (data.error) {
       throw new Error(data.error);
@@ -331,6 +405,23 @@ async function finalizeMeeting(sessionId) {
   }
 }
 
+async function parseBackendJsonResponse(response, operation) {
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    const snippet = String(text || '').slice(0, 180).replace(/\s+/g, ' ').trim();
+    throw new Error(`${operation} failed: backend returned non-JSON (${response.status})${snippet ? `: ${snippet}` : ''}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(data?.error || `${operation} failed with status ${response.status}`);
+  }
+
+  return data;
+}
+
 /**
  * Message handler
  */
@@ -339,6 +430,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Handle caption captured from content script
   if (message.type === 'CAPTION_CAPTURED') {
+    if (sender?.tab?.id) {
+      activeMeetTabId = sender.tab.id;
+    }
     addCaption(message.caption)
       .then(() => {
         sendResponse({ success: true });
@@ -353,15 +447,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle session start request from popup
   else if (message.type === 'START_SESSION') {
     startSession(message.metadata)
-      .then(sessionId => {
-        sendResponse({ success: true, sessionId });
+      .then(async (sessionId) => {
+        try {
+          await sendCaptureCommandToMeetTabs('START_CAPTURE', { retries: 6, retryDelayMs: 1000 });
+        } catch (captureStartError) {
+          console.warn('[Background] START_CAPTURE did not reach Meet tab:', captureStartError.message);
+        }
 
-        // Tell content script to start capturing
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]) {
-            chrome.tabs.sendMessage(tabs[0].id, { type: 'START_CAPTURE' });
-          }
-        });
+        sendResponse({ success: true, sessionId });
       })
       .catch(err => {
         console.error('[Background] Error starting session:', err);
@@ -373,13 +466,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle session end request from popup
   else if (message.type === 'END_SESSION') {
     endSession()
-      .then(sessionId => {
-        // Tell content script to stop capturing
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]) {
-            chrome.tabs.sendMessage(tabs[0].id, { type: 'STOP_CAPTURE' });
-          }
-        });
+      .then(async (sessionId) => {
+        try {
+          await sendCaptureCommandToMeetTabs('STOP_CAPTURE', { retries: 2, retryDelayMs: 500 });
+        } catch (captureStopError) {
+          console.warn('[Background] STOP_CAPTURE could not be confirmed:', captureStopError.message);
+        }
 
         sendResponse({ success: true, sessionId });
       })
@@ -423,11 +515,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle meeting detected from content script
   else if (message.type === 'MEETING_DETECTED') {
     console.log('[Background] Meeting detected:', message.meetingCode, message.meetingTitle);
+    if (sender?.tab?.id) {
+      activeMeetTabId = sender.tab.id;
+    }
     // Store for later use
     chrome.storage.local.set({
       lastMeetingCode: message.meetingCode,
       lastMeetingTitle: message.meetingTitle
     });
+    return false;
+  }
+
+  else if (message.type === 'CAPTURE_STARTED' || message.type === 'CAPTURE_STOPPED') {
+    if (sender?.tab?.id) {
+      activeMeetTabId = sender.tab.id;
+    }
     return false;
   }
 
@@ -439,6 +541,7 @@ chrome.storage.local.get(['currentSession'], (result) => {
   if (result.currentSession) {
     console.log('[Background] Restoring session from storage');
     currentSession = result.currentSession;
+    pendingSessionStart = true;
     connectWebSocket();
   }
 });
