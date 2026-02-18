@@ -4815,6 +4815,60 @@ async function revertCommit({ owner, repo, commitSha, branch = 'main' }) {
     };
 }
 
+// 19. Reset Branch (Hard Reset)
+async function resetBranch({ owner, repo, branch, targetSha, removeCommitSha }) {
+    if (!octokitClient) throw new Error('GitHub not connected');
+
+    if (targetSha && removeCommitSha) {
+        throw new Error('Please provide either targetSha (to reset TO) or removeCommitSha (to remove), not both.');
+    }
+    if (!targetSha && !removeCommitSha) {
+        throw new Error('targetSha or removeCommitSha is required');
+    }
+
+    let finalTargetSha = targetSha;
+
+    // If removing a specific commit, we really mean "reset to its parent"
+    if (removeCommitSha) {
+        try {
+            const { data: commitToRemove } = await octokitClient.rest.git.getCommit({
+                owner, repo, commit_sha: removeCommitSha
+            });
+            if (!commitToRemove.parents || commitToRemove.parents.length === 0) {
+                throw new Error('Cannot remove the initial commit (no parent to reset to).');
+            }
+            finalTargetSha = commitToRemove.parents[0].sha;
+            console.log(`[reset_branch] Removing ${removeCommitSha} by resetting to parent ${finalTargetSha}`);
+        } catch (error) {
+            throw new Error(`Commit to remove ${removeCommitSha} not found: ${error.message}`);
+        }
+    }
+
+    // 1. Verify the target commit exists
+    try {
+        await octokitClient.rest.git.getCommit({
+            owner, repo, commit_sha: finalTargetSha
+        });
+    } catch (error) {
+        throw new Error(`Target commit ${finalTargetSha} not found.`);
+    }
+
+    // 2. Force update the branch ref
+    await octokitClient.rest.git.updateRef({
+        owner, repo,
+        ref: `heads/${branch}`,
+        sha: finalTargetSha,
+        force: true // This is the "hard reset" part
+    });
+
+    return {
+        success: true,
+        message: `Successfully reset branch '${branch}' to ${finalTargetSha} (effectively removing ${removeCommitSha || 'subsequent commits'}).`,
+        branch,
+        newHeadSha: finalTargetSha
+    };
+}
+
 // 18. Get User Profile
 async function getUserProfile({ username }) {
     if (!octokitClient) throw new Error('GitHub not connected');
@@ -5960,6 +6014,7 @@ const githubTools = [
     { type: "function", function: { name: "search_code", description: "Search code on GitHub.", parameters: { type: "object", properties: { query: { type: "string", description: "Code search query (e.g. 'useState repo:facebook/react')" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["query"] } } },
     { type: "function", function: { name: "list_commits", description: "List recent commits.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, sha: { type: "string", description: "Branch name or commit SHA" }, perPage: { type: "integer", description: "Results per page (default 20)" } }, required: ["owner", "repo"] } } },
     { type: "function", function: { name: "revert_commit", description: "Revert a commit.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, commitSha: { type: "string", description: "Full or short SHA of the commit to revert" }, branch: { type: "string", description: "Branch to revert on (default: main)" } }, required: ["owner", "repo", "commitSha"] } } },
+    { type: "function", function: { name: "reset_branch", description: "Hard reset a branch. use 'removeCommitSha' to remove a specific recent commit (and everything after it), OR 'targetSha' to reset the branch to a specific past state.", parameters: { type: "object", properties: { owner: { type: "string", description: "Repository owner" }, repo: { type: "string", description: "Repository name" }, branch: { type: "string", description: "Branch to reset" }, targetSha: { type: "string", description: "Commit SHA to reset TO (retain history up to here)" }, removeCommitSha: { type: "string", description: "Commit SHA to REMOVE (resets to its parent)" } }, required: ["owner", "repo", "branch"] } } },
     { type: "function", function: { name: "get_user_profile", description: "Get GitHub user profile.", parameters: { type: "object", properties: { username: { type: "string", description: "GitHub username (omit for your own)" } } } } },
     { type: "function", function: { name: "list_notifications", description: "List your GitHub notifications.", parameters: { type: "object", properties: { all: { type: "boolean", description: "Show all including read (default: false)" }, perPage: { type: "integer", description: "Results per page (default 20)" } } } } },
     { type: "function", function: { name: "list_gists", description: "List your GitHub gists.", parameters: { type: "object", properties: { perPage: { type: "integer", description: "Results per page (default 20)" } } } } }
@@ -6313,7 +6368,7 @@ async function executeGitHubTool(toolName, args) {
         list_branches: listBranches, create_branch: createBranch,
         get_file_content: getFileContent, create_or_update_file: createOrUpdateFile,
         search_repos: searchRepos, search_code: searchCode, list_commits: listCommits,
-        revert_commit: revertCommit,
+        revert_commit: revertCommit, reset_branch: resetBranch,
         get_user_profile: getUserProfile, list_notifications: listNotifications,
         list_gists: listGists
     };
@@ -7344,6 +7399,8 @@ list_chat_spaces → send_chat_message.
 
 **GitHub**
 Use owner/repo format. search_repos for discovery.
+- **Undo/Revert**: Use \`revert_commit\` to safely undo changes by adding a new commit.
+- **Permanently Remove**: Use \`reset_branch\` ONLY if the user explicitly asks to "remove", "delete", or "hard reset" a commit PERMANENTLY. This is destructive and rewrites history.
 
 **Outlook**
 Prefix: outlook_. KQL search: from:, subject:, hasAttachment:true. Use outlook_list_folders before moving.
