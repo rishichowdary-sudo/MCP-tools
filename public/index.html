@@ -131,6 +131,20 @@
                         </span>
                     </button>
 
+                    <!-- Meeting Transcription Option -->
+                    <button class="nav-item" id="meetingTranscriptionNavItem" data-service="meeting_transcription">
+                        <div class="nav-item-icon meeting-transcription-icon">
+                            <svg viewBox="0 0 24 24" width="20" height="20">
+                                <path fill="#2563eb" d="M4 4h16a2 2 0 012 2v10a2 2 0 01-2 2h-6l-4 4v-4H4a2 2 0 01-2-2V6a2 2 0 012-2z"/>
+                                <path fill="#fff" d="M7 9h10v1.5H7zm0 3h8v1.5H7z"/>
+                            </svg>
+                        </div>
+                        <span class="nav-item-text">Meeting Transcription</span>
+                        <span class="nav-item-status" id="meetingTranscriptionStatus">
+                            <span class="status-dot disconnected"></span>
+                        </span>
+                    </button>
+
                     <!-- Outlook Option -->
                     <button class="nav-item" id="outlookNavItem" data-service="outlook">
                         <div class="nav-item-icon outlook-icon">
@@ -234,6 +248,10 @@
                         <div class="nav-item-icon"><span style="font-size:16px">&#128196;</span></div>
                         <span class="nav-item-text">My Docs</span>
                     </button>
+                    <button class="nav-item quick-nav" data-prompt="Show my meeting transcriptions shared with me">
+                        <div class="nav-item-icon"><span style="font-size:16px">&#127908;</span></div>
+                        <span class="nav-item-text">Meeting Transcripts</span>
+                    </button>
                     <button class="nav-item quick-nav" data-prompt="List my Microsoft Teams">
                         <div class="nav-item-icon"><span style="font-size:16px">&#128101;</span></div>
                         <span class="nav-item-text">My Teams</span>
@@ -268,6 +286,7 @@
                         <button class="service-tab" data-filter="calendar">Calendar (19)</button>
                         <button class="service-tab" data-filter="outlook">Outlook (18)</button>
                         <button class="service-tab" data-filter="docs">Docs (8)</button>
+                        <button class="service-tab" data-filter="meeting_transcription">Meeting Transcription (3)</button>
                         <button class="service-tab" data-filter="teams">Teams (10)</button>
                         <button class="service-tab" data-filter="gcs">GCS (10)</button>
                     </div>
@@ -815,6 +834,52 @@
                 </div>
             </div>
 
+            <!-- Meeting Transcription Panel -->
+            <div class="service-panel" id="meetingTranscriptionPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <svg viewBox="0 0 24 24" width="28" height="28">
+                            <path fill="#2563eb" d="M4 4h16a2 2 0 012 2v10a2 2 0 01-2 2h-6l-4 4v-4H4a2 2 0 01-2-2V6a2 2 0 012-2z"/>
+                            <path fill="#fff" d="M7 9h10v1.5H7zm0 3h8v1.5H7z"/>
+                        </svg>
+                        <h2>Meeting Transcription</h2>
+                    </div>
+                    <button class="close-panel-btn" data-panel="meeting_transcription">&times;</button>
+                </div>
+                <div class="panel-content">
+                    <div class="connected-section" id="meetingTranscriptionConnectedSection" style="display: none;">
+                        <div class="connected-card">
+                            <div class="connected-header">
+                                <div class="connected-icon">&#10003;</div>
+                                <div>
+                                    <h3>Meeting Transcription Ready</h3>
+                                    <p>Find transcript docs, open links, and generate structured meeting summaries.</p>
+                                </div>
+                            </div>
+                            <div class="quick-actions">
+                                <button class="quick-action-btn" data-prompt="Show my meeting transcriptions shared with me">List Shared Transcripts</button>
+                                <button class="quick-action-btn" data-prompt="Summarize my latest meeting transcription">Summarize Latest Transcript</button>
+                            </div>
+                            <button class="start-chat-btn" data-panel="meeting_transcription">Start Chatting</button>
+                        </div>
+                    </div>
+                    <div class="auth-section" id="meetingTranscriptionAuthSection">
+                        <div class="auth-card">
+                            <div class="auth-icon">
+                                <svg viewBox="0 0 24 24" width="64" height="64">
+                                    <path fill="#2563eb" d="M4 4h16a2 2 0 012 2v10a2 2 0 01-2 2h-6l-4 4v-4H4a2 2 0 01-2-2V6a2 2 0 012-2z"/>
+                                    <path fill="#fff" d="M7 9h10v1.5H7zm0 3h8v1.5H7z"/>
+                                </svg>
+                            </div>
+                            <h3>Connect Google Drive</h3>
+                            <p>Meeting transcription search uses Google Drive (Shared with me).</p>
+                            <p class="auth-note">Connect or reauthenticate Google Drive to enable transcript discovery and summary.</p>
+                            <button class="disconnect-btn reauth-btn" id="meetingTranscriptionReauthBtn">Reconnect Drive Access</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Microsoft Teams Panel -->
             <div class="service-panel" id="teamsPanel">
                 <div class="panel-header">
@@ -1083,6 +1148,10 @@
                         <span class="service-badge docs-badge" id="docsBadge" style="display: none;">
                             <span class="badge-dot"></span>
                             Docs
+                        </span>
+                        <span class="service-badge meeting-transcription-badge" id="meetingTranscriptionBadge" style="display: none;">
+                            <span class="badge-dot"></span>
+                            Meeting Transcription
                         </span>
                         <span class="service-badge teams-badge" id="teamsBadge" style="display: none;">
                             <span class="badge-dot"></span>

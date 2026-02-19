@@ -68,6 +68,13 @@ const docsAuthSection = document.getElementById('docsAuthSection');
 const docsConnectedSection = document.getElementById('docsConnectedSection');
 const docsStatus = document.getElementById('docsStatus');
 const docsBadge = document.getElementById('docsBadge');
+const meetingTranscriptionNavItem = document.getElementById('meetingTranscriptionNavItem');
+const meetingTranscriptionPanel = document.getElementById('meetingTranscriptionPanel');
+const meetingTranscriptionAuthSection = document.getElementById('meetingTranscriptionAuthSection');
+const meetingTranscriptionConnectedSection = document.getElementById('meetingTranscriptionConnectedSection');
+const meetingTranscriptionStatus = document.getElementById('meetingTranscriptionStatus');
+const meetingTranscriptionBadge = document.getElementById('meetingTranscriptionBadge');
+const meetingTranscriptionReauthBtn = document.getElementById('meetingTranscriptionReauthBtn');
 const teamsNavItem = document.getElementById('teamsNavItem');
 const teamsPanel = document.getElementById('teamsPanel');
 const teamsAuthBtn = document.getElementById('teamsAuthBtn');
@@ -124,6 +131,7 @@ let isSheetsConnected = false;
 let isGithubConnected = false;
 let isOutlookConnected = false;
 let isDocsConnected = false;
+let isMeetingTranscriptionConnected = false;
 let isTeamsConnected = false;
 let isGcsConnected = false;
 let isTimerConnected = false;
@@ -214,6 +222,22 @@ ${preview || '(No body text available)'}
 Ask me who to forward it to if recipient is missing.`;
 }
 
+function buildMeetingTranscriptionSummaryPrompt({ fileId, fileName }) {
+    const id = String(fileId || '').trim();
+    const name = String(fileName || 'selected meeting transcription').trim();
+    return `Summarize my meeting transcription file.
+
+File ID: ${id}
+File Name: ${name}
+
+Generate:
+1. Summary
+2. Action Items (Owner | Action | Due)
+3. Next Steps
+
+Include the source document link at the end.`;
+}
+
 // Tool icon mapping
 const TOOL_ICONS = {
     // Gmail (25)
@@ -272,6 +296,8 @@ const TOOL_ICONS = {
     list_documents: '&#128196;', get_document: '&#128196;', create_document: '&#10133;',
     insert_text: '&#9998;', replace_text: '&#128260;', delete_content: '&#128465;',
     append_text: '&#128228;', get_document_text: '&#128214;',
+    // Meeting Transcription (3)
+    list_meeting_transcriptions: '&#127908;', open_meeting_transcription_file: '&#128279;', summarize_meeting_transcription: '&#128221;',
     // Microsoft Teams (10)
     teams_list_teams: '&#128101;', teams_get_team: '&#128196;',
     teams_list_channels: '&#128193;', teams_send_channel_message: '&#9993;',
@@ -345,6 +371,11 @@ const DOCS_CATEGORIES = {
     'Read': ['get_document_text']
 };
 
+const MEETING_TRANSCRIPTION_CATEGORIES = {
+    'Discovery': ['list_meeting_transcriptions', 'open_meeting_transcription_file'],
+    'Summary': ['summarize_meeting_transcription']
+};
+
 const TEAMS_CATEGORIES = {
     'Teams': ['teams_list_teams', 'teams_get_team'],
     'Channels': ['teams_list_channels', 'teams_send_channel_message', 'teams_list_channel_messages'],
@@ -369,6 +400,17 @@ function setupEventListeners() {
 
     // Event delegation for dynamically created email cards (security: no inline onclick)
     chatMessages.addEventListener('click', (e) => {
+        const summaryBtn = e.target.closest('.meeting-summary-btn[data-file-id]');
+        if (summaryBtn) {
+            e.preventDefault();
+            const fileId = summaryBtn.dataset.fileId;
+            const fileName = summaryBtn.dataset.fileName || '';
+            if (!fileId) return;
+            setComposerPrompt(buildMeetingTranscriptionSummaryPrompt({ fileId, fileName }));
+            sendMessage();
+            return;
+        }
+
         if (e.target.closest('a, button, input, textarea, select')) {
             return;
         }
@@ -405,6 +447,7 @@ function setupEventListeners() {
     sheetsNavItem.addEventListener('click', () => openPanel('sheets'));
     githubNavItem.addEventListener('click', () => openPanel('github'));
     docsNavItem.addEventListener('click', () => openPanel('docs'));
+    meetingTranscriptionNavItem.addEventListener('click', () => openPanel('meeting_transcription'));
     teamsNavItem.addEventListener('click', () => openPanel('teams'));
     outlookNavItem.addEventListener('click', () => openPanel('outlook'));
     gcsNavItem.addEventListener('click', () => openPanel('gcs'));
@@ -462,6 +505,7 @@ function setupEventListeners() {
     driveReauthBtn.addEventListener('click', initiateDriveAuth);
     sheetsReauthBtn.addEventListener('click', initiateSheetsAuth);
     docsReauthBtn.addEventListener('click', initiateGoogleAuth);
+    meetingTranscriptionReauthBtn.addEventListener('click', initiateDriveAuth);
     githubReauthBtn.addEventListener('click', initiateGithubAuth);
     teamsAuthBtn.addEventListener('click', initiateTeamsAuth);
     teamsDisconnectBtn.addEventListener('click', disconnectTeams);
@@ -535,8 +579,34 @@ function setupEventListeners() {
 // Panel management
 function openPanel(service) {
     closeAllPanels();
-    const panels = { gmail: gmailPanel, calendar: calendarPanel, gchat: gchatPanel, drive: drivePanel, sheets: sheetsPanel, docs: docsPanel, github: githubPanel, outlook: outlookPanel, teams: teamsPanel, gcs: gcsPanel, timer: timerPanel };
-    const navItems = { gmail: gmailNavItem, calendar: calendarNavItem, gchat: gchatNavItem, drive: driveNavItem, sheets: sheetsNavItem, docs: docsNavItem, github: githubNavItem, outlook: outlookNavItem, teams: teamsNavItem, gcs: gcsNavItem, timer: timerNavItem };
+    const panels = {
+        gmail: gmailPanel,
+        calendar: calendarPanel,
+        gchat: gchatPanel,
+        drive: drivePanel,
+        sheets: sheetsPanel,
+        docs: docsPanel,
+        meeting_transcription: meetingTranscriptionPanel,
+        github: githubPanel,
+        outlook: outlookPanel,
+        teams: teamsPanel,
+        gcs: gcsPanel,
+        timer: timerPanel
+    };
+    const navItems = {
+        gmail: gmailNavItem,
+        calendar: calendarNavItem,
+        gchat: gchatNavItem,
+        drive: driveNavItem,
+        sheets: sheetsNavItem,
+        docs: docsNavItem,
+        meeting_transcription: meetingTranscriptionNavItem,
+        github: githubNavItem,
+        outlook: outlookNavItem,
+        teams: teamsNavItem,
+        gcs: gcsNavItem,
+        timer: timerNavItem
+    };
     if (panels[service]) {
         panels[service].classList.add('active');
         navItems[service].classList.add('active');
@@ -544,8 +614,8 @@ function openPanel(service) {
 }
 
 function closeAllPanels() {
-    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, docsPanel, githubPanel, outlookPanel, teamsPanel, gcsPanel, timerPanel].forEach(p => p.classList.remove('active'));
-    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, docsNavItem, githubNavItem, outlookNavItem, teamsNavItem, gcsNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
+    [gmailPanel, calendarPanel, gchatPanel, drivePanel, sheetsPanel, docsPanel, meetingTranscriptionPanel, githubPanel, outlookPanel, teamsPanel, gcsPanel, timerPanel].forEach(p => p.classList.remove('active'));
+    [gmailNavItem, calendarNavItem, gchatNavItem, driveNavItem, sheetsNavItem, docsNavItem, meetingTranscriptionNavItem, githubNavItem, outlookNavItem, teamsNavItem, gcsNavItem, timerNavItem].forEach(n => n.classList.remove('active'));
 }
 
 // Load capabilities into the modal dynamically
@@ -577,6 +647,7 @@ async function loadCapabilities() {
             github: { label: 'GitHub', dot: 'github', categories: GITHUB_CATEGORIES },
             outlook: { label: 'Outlook', dot: 'outlook', categories: OUTLOOK_CATEGORIES },
             docs: { label: 'Google Docs', dot: 'docs', categories: DOCS_CATEGORIES },
+            meeting_transcription: { label: 'Meeting Transcription', dot: 'meeting-transcription', categories: MEETING_TRANSCRIPTION_CATEGORIES },
             teams: { label: 'Microsoft Teams', dot: 'teams', categories: TEAMS_CATEGORIES },
             gcs: { label: 'GCP Cloud Storage', dot: 'gcs', categories: GCS_CATEGORIES }
         };
@@ -645,6 +716,7 @@ async function checkAllStatuses() {
     checkDriveStatus();
     checkSheetsStatus();
     checkDocsStatus();
+    checkMeetingTranscriptionStatus();
     checkGitHubStatus();
     checkOutlookStatus();
     checkTeamsStatus();
@@ -658,6 +730,7 @@ async function checkAllStatuses() {
         checkDriveStatus();
         checkSheetsStatus();
         checkDocsStatus();
+        checkMeetingTranscriptionStatus();
         checkGitHubStatus();
         checkOutlookStatus();
         checkTeamsStatus();
@@ -889,6 +962,7 @@ async function initiateGoogleAuth() {
                     checkCalendarStatus();
                     checkGchatStatus();
                     checkDriveStatus();
+                    checkMeetingTranscriptionStatus();
                     checkSheetsStatus();
                     resetGoogleAuthButton();
                 }
@@ -943,6 +1017,7 @@ async function initiateCalendarAuth() {
                     checkCalendarStatus();
                     checkGchatStatus();
                     checkDriveStatus();
+                    checkMeetingTranscriptionStatus();
                     checkSheetsStatus();
                     resetCalendarAuthButton();
                 }
@@ -1007,6 +1082,7 @@ async function initiateGchatAuth() {
                     checkCalendarStatus();
                     checkGchatStatus();
                     checkDriveStatus();
+                    checkMeetingTranscriptionStatus();
                     checkSheetsStatus();
                     resetGchatAuthButton();
                 }
@@ -1066,6 +1142,7 @@ async function initiateDriveAuth() {
                     checkCalendarStatus();
                     checkGchatStatus();
                     checkDriveStatus();
+                    checkMeetingTranscriptionStatus();
                     checkSheetsStatus();
                     resetDriveAuthButton();
                 }
@@ -1125,6 +1202,7 @@ async function initiateSheetsAuth() {
                     checkCalendarStatus();
                     checkGchatStatus();
                     checkDriveStatus();
+                    checkMeetingTranscriptionStatus();
                     checkSheetsStatus();
                     resetSheetsAuthButton();
                 }
@@ -1334,6 +1412,33 @@ function updateDocsStatus(data) {
         docsAuthSection.style.display = 'block';
         docsConnectedSection.style.display = 'none';
         docsBadge.style.display = 'none';
+    }
+}
+
+async function checkMeetingTranscriptionStatus() {
+    try {
+        const response = await fetch('/api/meeting-transcription/status');
+        const data = await response.json();
+        updateMeetingTranscriptionStatus(data);
+    } catch (error) {
+        updateMeetingTranscriptionStatus({ authenticated: false });
+    }
+}
+
+function updateMeetingTranscriptionStatus(data) {
+    const statusDot = meetingTranscriptionStatus.querySelector('.status-dot');
+    isMeetingTranscriptionConnected = data.authenticated;
+
+    if (data.authenticated) {
+        statusDot.className = 'status-dot connected';
+        meetingTranscriptionAuthSection.style.display = 'none';
+        meetingTranscriptionConnectedSection.style.display = 'block';
+        meetingTranscriptionBadge.style.display = 'inline-flex';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        meetingTranscriptionAuthSection.style.display = 'block';
+        meetingTranscriptionConnectedSection.style.display = 'none';
+        meetingTranscriptionBadge.style.display = 'none';
     }
 }
 
@@ -2115,6 +2220,13 @@ function formatToolResults(results) {
         return `<div class="result-actions">${valid.join('')}</div>`;
     };
 
+    const summaryButton = ({ fileId, fileName, label = 'Summary' }) => {
+        const id = String(fileId || '').trim();
+        if (!id) return '';
+        const nameAttr = fileName ? ` data-file-name="${escapeHtml(String(fileName))}"` : '';
+        return `<button type="button" class="result-link result-link-primary result-link-btn meeting-summary-btn" data-file-id="${escapeHtml(id)}"${nameAttr}>${escapeHtml(label)}</button>`;
+    };
+
     return results.map(result => {
         const isError = result.error;
         const icon = isError ? '&#10007;' : '&#10003;';
@@ -2239,6 +2351,65 @@ function formatToolResults(results) {
                         ${c.description ? `<div class="email-card-snippet">${escapeHtml(c.description)}</div>` : ''}
                     </div>
                 `).join('');
+                // Meeting transcription list
+            } else if (result.tool === 'list_meeting_transcriptions' && result.result.files && Array.isArray(result.result.files)) {
+                content = result.result.files.map(file => {
+                    const fileName = file.name || file.id || 'Meeting Transcript';
+                    const hasLink = !!file.webViewLink;
+                    const cardClasses = `email-card vertical${hasLink ? ' docs-file-clickable' : ''}`;
+                    const cardAttrs = hasLink ? ` data-web-link="${escapeHtml(file.webViewLink)}"` : '';
+                    return `
+                    <div class="${cardClasses}"${cardAttrs}>
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(fileName)}</span>
+                            <span class="email-card-date">${escapeHtml(file.date || formatDate(file.modifiedTime || file.createdTime))}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(file.id || '')}</code></div>
+                        ${hasLink ? '<div class="email-card-snippet result-note">Click card to open document</div>' : ''}
+                        ${actionRow(
+                    hasLink ? actionLink({ href: file.webViewLink, label: 'Open File', variant: 'secondary' }) : '',
+                    summaryButton({ fileId: file.id, fileName: fileName, label: 'Summary' })
+                )}
+                    </div>
+                `;
+                }).join('');
+                // Single meeting transcription file
+            } else if (result.tool === 'open_meeting_transcription_file' && result.result.file) {
+                const file = result.result.file;
+                const fileName = file.name || file.id || 'Meeting Transcript';
+                content = `
+                    <div class="email-card vertical${file.webViewLink ? ' docs-file-clickable' : ''}"${file.webViewLink ? ` data-web-link="${escapeHtml(file.webViewLink)}"` : ''}>
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(fileName)}</span>
+                            <span class="email-card-date">${escapeHtml(file.date || formatDate(file.modifiedTime || file.createdTime))}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(file.id || '')}</code></div>
+                        ${file.webViewLink ? '<div class="email-card-snippet result-note">Click card to open document</div>' : ''}
+                        ${actionRow(
+                    file.webViewLink ? actionLink({ href: file.webViewLink, label: 'Open File', variant: 'secondary' }) : '',
+                    summaryButton({ fileId: file.id, fileName: fileName, label: 'Summary' })
+                )}
+                    </div>
+                `;
+                // Meeting transcription summary
+            } else if (result.tool === 'summarize_meeting_transcription' && result.result.summaryMarkdown) {
+                const summaryHtml = formatResponse(String(result.result.summaryMarkdown || ''));
+                const file = result.result.file || {};
+                const fileName = file.name || file.id || 'Meeting Transcript';
+                content = `
+                    <div class="email-card vertical${file.webViewLink ? ' docs-file-clickable' : ''}"${file.webViewLink ? ` data-web-link="${escapeHtml(file.webViewLink)}"` : ''}>
+                        <div class="email-card-header">
+                            <span class="email-card-subject">${escapeHtml(fileName)}</span>
+                            <span class="email-card-date">${escapeHtml(file.date || formatDate(file.modifiedTime || file.createdTime))}</span>
+                        </div>
+                        <div class="email-card-from"><code>${escapeHtml(file.id || '')}</code></div>
+                        ${summaryHtml}
+                        ${actionRow(
+                    file.webViewLink ? actionLink({ href: file.webViewLink, label: 'Open File', variant: 'secondary' }) : '',
+                    summaryButton({ fileId: file.id, fileName: fileName, label: 'Regenerate Summary' })
+                )}
+                    </div>
+                `;
                 // Google Docs list
             } else if (result.result.documents && Array.isArray(result.result.documents)) {
                 content = result.result.documents.map(d => {

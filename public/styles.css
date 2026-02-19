@@ -193,6 +193,10 @@ body {
     background: rgba(66, 133, 244, 0.15);
 }
 
+.nav-item-icon.meeting-transcription-icon {
+    background: rgba(37, 99, 235, 0.18);
+}
+
 .nav-item-icon.teams-icon {
     background: rgba(98, 100, 167, 0.18);
 }
@@ -588,6 +592,12 @@ body {
     background: rgba(66, 133, 244, 0.15);
     border: 1px solid rgba(66, 133, 244, 0.3);
     color: #4285F4;
+}
+
+.meeting-transcription-badge {
+    background: rgba(37, 99, 235, 0.15);
+    border: 1px solid rgba(37, 99, 235, 0.32);
+    color: #2563eb;
 }
 
 .teams-badge {
@@ -1146,6 +1156,12 @@ body {
     font-size: 0.78rem;
     font-weight: 600;
     transition: all var(--transition-fast);
+}
+
+.result-link-btn {
+    cursor: pointer;
+    font: inherit;
+    line-height: inherit;
 }
 
 .result-link-primary {

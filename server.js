@@ -330,6 +330,23 @@ let gcsClient = null;
 let gcsAuthenticated = false;
 let gcsProjectId = null;
 
+const MEETING_TRANSCRIPTION_TOOL_MAX_RESULTS = Math.max(
+    5,
+    Number.parseInt(process.env.MEETING_TRANSCRIPTION_TOOL_MAX_RESULTS || '50', 10) || 50
+);
+const MEETING_TRANSCRIPTION_TEXT_MAX_CHARS = Math.max(
+    50000,
+    Number.parseInt(process.env.MEETING_TRANSCRIPTION_TEXT_MAX_CHARS || '500000', 10) || 500000
+);
+const MEETING_TRANSCRIPTION_CHUNK_CHARS = Math.max(
+    12000,
+    Number.parseInt(process.env.MEETING_TRANSCRIPTION_CHUNK_CHARS || '45000', 10) || 45000
+);
+const MEETING_TRANSCRIPTION_SINGLE_PASS_CHARS = Math.max(
+    30000,
+    Number.parseInt(process.env.MEETING_TRANSCRIPTION_SINGLE_PASS_CHARS || '120000', 10) || 120000
+);
+
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 const DISALLOWED_ATTENDEE_DOMAINS = new Set(['example.com', 'test.com', 'domain.com', 'email.com']);
 const NO_REPLY_PATTERN = /(no-?reply|do-?not-?reply|noreply)/i;
@@ -788,6 +805,269 @@ function normalizeReadableText(text, maxChars = 40000) {
     }
 
     return { text: normalized, truncated, originalLength };
+}
+
+function safeLocalDateOnly(value) {
+    if (!value) return '';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return formatLocalDate(parsed);
+}
+
+function parseDateRangeInput(dateValue) {
+    const raw = String(dateValue || '').trim();
+    if (!raw) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        throw new Error('date must be in YYYY-MM-DD format');
+    }
+    const start = new Date(`${raw}T00:00:00`);
+    if (Number.isNaN(start.getTime())) {
+        throw new Error('Invalid date value');
+    }
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return {
+        date: raw,
+        startIso: start.toISOString(),
+        endIso: end.toISOString()
+    };
+}
+
+function splitTextIntoSizedChunks(text, maxChars = 45000) {
+    const source = String(text || '').trim();
+    if (!source) return [];
+    const size = Math.max(2000, Number.parseInt(maxChars, 10) || 45000);
+    const chunks = [];
+    let cursor = 0;
+
+    while (cursor < source.length) {
+        const remaining = source.length - cursor;
+        if (remaining <= size) {
+            chunks.push(source.slice(cursor).trim());
+            break;
+        }
+
+        let splitAt = source.lastIndexOf('\n\n', cursor + size);
+        if (splitAt <= cursor + (size * 0.5)) {
+            splitAt = source.lastIndexOf('\n', cursor + size);
+        }
+        if (splitAt <= cursor + (size * 0.5)) {
+            splitAt = source.lastIndexOf(' ', cursor + size);
+        }
+        if (splitAt <= cursor) {
+            splitAt = cursor + size;
+        }
+
+        const chunk = source.slice(cursor, splitAt).trim();
+        if (chunk) chunks.push(chunk);
+        cursor = splitAt;
+    }
+
+    return chunks.filter(Boolean);
+}
+
+function normalizeMeetingSummaryPayload(payload) {
+    const source = (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : {};
+
+    const normalizeStringList = (value, fallback = []) => {
+        if (Array.isArray(value)) {
+            return value
+                .map(item => String(item || '').trim())
+                .filter(Boolean)
+                .slice(0, 20);
+        }
+        const single = String(value || '').trim();
+        if (single) return [single];
+        return fallback;
+    };
+
+    const actionItemsRaw = Array.isArray(source.actionItems) ? source.actionItems : [];
+    const actionItems = actionItemsRaw
+        .map(item => {
+            if (!item) return null;
+            if (typeof item === 'string') {
+                return {
+                    owner: 'TBD',
+                    action: item.trim(),
+                    due: 'TBD'
+                };
+            }
+            if (typeof item === 'object' && !Array.isArray(item)) {
+                const owner = String(item.owner || item.assignee || item.person || 'TBD').trim() || 'TBD';
+                const action = String(item.action || item.task || '').trim();
+                const due = String(item.due || item.dueDate || item.deadline || 'TBD').trim() || 'TBD';
+                if (!action) return null;
+                return { owner, action, due };
+            }
+            return null;
+        })
+        .filter(Boolean)
+        .slice(0, 30);
+
+    return {
+        summary: normalizeStringList(source.summary, ['No clear discussion summary was identified.']),
+        actionItems,
+        nextSteps: normalizeStringList(source.nextSteps, ['No next steps identified.'])
+    };
+}
+
+function renderMeetingSummaryMarkdown({ summary = [], actionItems = [], nextSteps = [], sourceLink }) {
+    const summaryLines = summary.length > 0
+        ? summary.map(item => `- ${item}`)
+        : ['- No clear discussion summary was identified.'];
+    const actionLines = actionItems.length > 0
+        ? actionItems.map(item => `- ${item.owner || 'TBD'} | ${item.action || 'TBD'} | ${item.due || 'TBD'}`)
+        : ['- None identified.'];
+    const nextStepLines = nextSteps.length > 0
+        ? nextSteps.map(item => `- ${item}`)
+        : ['- None identified.'];
+
+    const sections = [
+        '## Summary',
+        ...summaryLines,
+        '',
+        '## Action Items (Owner | Action | Due)',
+        ...actionLines,
+        '',
+        '## Next Steps',
+        ...nextStepLines
+    ];
+
+    if (sourceLink) {
+        sections.push('', `Source File: ${sourceLink}`);
+    }
+
+    return sections.join('\n');
+}
+
+async function summarizeMeetingTranscriptChunkWithOpenAI({
+    title,
+    transcriptText,
+    chunkLabel = ''
+}) {
+    const prompt = `Meeting title: ${title || 'Meeting'}
+${chunkLabel ? `Section: ${chunkLabel}` : ''}
+
+Transcript:
+${transcriptText}
+
+Return ONLY valid JSON with this shape:
+{
+  "summary": ["point 1", "point 2"],
+  "actionItems": [{"owner":"Name or TBD","action":"Task","due":"Date or TBD"}],
+  "nextSteps": ["step 1", "step 2"]
+}
+
+Rules:
+- Be concise and factual.
+- Keep each list item short.
+- If a field is unknown, use "TBD".
+- Do not include markdown or commentary.`;
+
+    const completion = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages: [
+            {
+                role: 'system',
+                content: 'You extract structured meeting notes from transcripts. Return JSON only.'
+            },
+            {
+                role: 'user',
+                content: prompt
+            }
+        ],
+        temperature: 0.15,
+        max_tokens: 1400
+    });
+
+    const raw = completion?.choices?.[0]?.message?.content || '';
+    const parsed = parseJsonObjectFromText(raw);
+    if (!parsed) {
+        throw new Error('Failed to parse meeting summary JSON from OpenAI response.');
+    }
+
+    return normalizeMeetingSummaryPayload(parsed);
+}
+
+function mergeMeetingSummaryPayloads(parts = []) {
+    const summaryMap = new Map();
+    const nextStepMap = new Map();
+    const mergedActions = [];
+
+    const addTextToMap = (target, text) => {
+        const value = String(text || '').trim();
+        if (!value) return;
+        const key = value.toLowerCase();
+        if (target.has(key)) return;
+        target.set(key, value);
+    };
+
+    for (const part of parts) {
+        const normalized = normalizeMeetingSummaryPayload(part);
+        normalized.summary.forEach(item => addTextToMap(summaryMap, item));
+        normalized.nextSteps.forEach(item => addTextToMap(nextStepMap, item));
+        normalized.actionItems.forEach(item => {
+            const owner = String(item.owner || 'TBD').trim() || 'TBD';
+            const action = String(item.action || '').trim();
+            const due = String(item.due || 'TBD').trim() || 'TBD';
+            if (!action) return;
+            const dedupeKey = `${owner.toLowerCase()}|${action.toLowerCase()}`;
+            if (mergedActions.some(existing => `${existing.owner.toLowerCase()}|${existing.action.toLowerCase()}` === dedupeKey)) {
+                return;
+            }
+            mergedActions.push({ owner, action, due });
+        });
+    }
+
+    return {
+        summary: Array.from(summaryMap.values()).slice(0, 20),
+        actionItems: mergedActions.slice(0, 30),
+        nextSteps: Array.from(nextStepMap.values()).slice(0, 20)
+    };
+}
+
+async function refineMergedMeetingSummaryWithOpenAI({ title, mergedPayload }) {
+    const normalized = normalizeMeetingSummaryPayload(mergedPayload);
+    const prompt = `Meeting title: ${title || 'Meeting'}
+
+Input summary data (JSON):
+${JSON.stringify(normalized)}
+
+Return ONLY valid JSON with this same shape:
+{
+  "summary": ["point 1", "point 2"],
+  "actionItems": [{"owner":"Name or TBD","action":"Task","due":"Date or TBD"}],
+  "nextSteps": ["step 1", "step 2"]
+}
+
+Rules:
+- Remove duplicates.
+- Keep concise, factual points.
+- Preserve all important action items.
+- Use "TBD" for unknown owner/due values.`;
+
+    const completion = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages: [
+            {
+                role: 'system',
+                content: 'You clean and consolidate structured meeting notes. Return JSON only.'
+            },
+            {
+                role: 'user',
+                content: prompt
+            }
+        ],
+        temperature: 0.1,
+        max_tokens: 1400
+    });
+
+    const raw = completion?.choices?.[0]?.message?.content || '';
+    const parsed = parseJsonObjectFromText(raw);
+    if (!parsed) {
+        return normalized;
+    }
+    return normalizeMeetingSummaryPayload(parsed);
 }
 
 function isLikelyTextMimeType(mimeType) {
@@ -4560,6 +4840,258 @@ async function getDocumentText({ documentId }) {
     return { documentId, title: doc.title, text: text.trim(), characterCount: text.trim().length };
 }
 
+function buildMeetingTranscriptionDefaultDriveClause() {
+    return [
+        "(",
+        "name contains 'meeting'",
+        "or name contains 'transcript'",
+        "or name contains 'notes'",
+        "or name contains 'google meet'",
+        "or name contains 'ready to join'",
+        "or fullText contains 'Generated by Google Meet Note-Taker'",
+        ")"
+    ].join(' ');
+}
+
+async function listMeetingTranscriptions({ query, date, pageSize = 20, sharedWithMe = true }) {
+    if (!driveClient) throw new Error('Google Drive not connected. Please authenticate with Google first.');
+
+    const limit = clampPagination(pageSize, { fallback: 20, max: MEETING_TRANSCRIPTION_TOOL_MAX_RESULTS });
+    const qParts = [
+        "trashed = false",
+        "mimeType = 'application/vnd.google-apps.document'"
+    ];
+
+    if (sharedWithMe !== false) {
+        qParts.push('sharedWithMe = true');
+    }
+
+    const queryText = String(query || '').trim();
+    if (queryText) {
+        qParts.push(buildDriveQueryClause(queryText));
+    } else {
+        qParts.push(buildMeetingTranscriptionDefaultDriveClause());
+    }
+
+    const dateRange = parseDateRangeInput(date);
+    if (dateRange) {
+        qParts.push(`modifiedTime >= '${dateRange.startIso}'`);
+        qParts.push(`modifiedTime < '${dateRange.endIso}'`);
+    }
+
+    const listParams = {
+        pageSize: limit,
+        orderBy: 'modifiedTime desc',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: 'allDrives',
+        fields: 'files(id,name,mimeType,owners(displayName,emailAddress),modifiedTime,createdTime,webViewLink)'
+    };
+
+    let response;
+    try {
+        response = await driveClient.files.list({
+            ...listParams,
+            q: qParts.join(' and ')
+        });
+    } catch (error) {
+        const fallbackQParts = [
+            "trashed = false",
+            "mimeType = 'application/vnd.google-apps.document'"
+        ];
+        if (sharedWithMe !== false) fallbackQParts.push('sharedWithMe = true');
+
+        if (queryText) {
+            const escaped = escapeDriveQueryLiteral(queryText);
+            fallbackQParts.push(`name contains '${escaped}'`);
+        } else {
+            fallbackQParts.push("(name contains 'meeting' or name contains 'transcript' or name contains 'notes' or name contains 'google meet' or name contains 'ready to join')");
+        }
+
+        if (dateRange) {
+            fallbackQParts.push(`modifiedTime >= '${dateRange.startIso}'`);
+            fallbackQParts.push(`modifiedTime < '${dateRange.endIso}'`);
+        }
+
+        response = await driveClient.files.list({
+            ...listParams,
+            q: fallbackQParts.join(' and ')
+        });
+    }
+
+    let files = (response.data.files || []).map(file => {
+        const normalized = normalizeDriveFile(file);
+        const fileDate = safeLocalDateOnly(normalized.modifiedTime || normalized.createdTime || '');
+        return {
+            id: normalized.id,
+            name: normalized.name,
+            date: fileDate || null,
+            modifiedTime: normalized.modifiedTime || null,
+            createdTime: normalized.createdTime || null,
+            owners: normalized.owners || [],
+            webViewLink: normalized.webViewLink || null,
+            mimeType: normalized.mimeType
+        };
+    });
+
+    if (dateRange) {
+        files = files.filter(file => {
+            const modifiedDate = safeLocalDateOnly(file.modifiedTime || '');
+            const createdDate = safeLocalDateOnly(file.createdTime || '');
+            return modifiedDate === dateRange.date || createdDate === dateRange.date;
+        });
+    }
+
+    return {
+        files,
+        count: files.length,
+        appliedFilters: {
+            query: queryText || null,
+            date: dateRange?.date || null,
+            sharedWithMe: sharedWithMe !== false
+        },
+        message: `Found ${files.length} meeting transcription file(s)`
+    };
+}
+
+async function openMeetingTranscriptionFile({ fileId }) {
+    if (!driveClient) throw new Error('Google Drive not connected. Please authenticate with Google first.');
+    if (!fileId) throw new Error('fileId is required');
+
+    const response = await driveClient.files.get({
+        fileId: String(fileId),
+        supportsAllDrives: true,
+        fields: 'id,name,mimeType,owners(displayName,emailAddress),modifiedTime,createdTime,webViewLink'
+    });
+
+    const normalized = normalizeDriveFile(response.data || {});
+    return {
+        file: {
+            id: normalized.id,
+            name: normalized.name,
+            mimeType: normalized.mimeType,
+            date: safeLocalDateOnly(normalized.modifiedTime || normalized.createdTime || '') || null,
+            modifiedTime: normalized.modifiedTime || null,
+            createdTime: normalized.createdTime || null,
+            owners: normalized.owners || [],
+            webViewLink: normalized.webViewLink || null
+        },
+        openUrl: normalized.webViewLink || null,
+        message: normalized.webViewLink
+            ? `Open this document: ${normalized.webViewLink}`
+            : `Document "${normalized.name}" loaded.`
+    };
+}
+
+async function extractMeetingTranscriptionText({ fileId, mimeType, name }) {
+    if (!driveClient) throw new Error('Google Drive not authenticated');
+
+    const resolvedMimeType = String(mimeType || '');
+    let text = '';
+
+    if (resolvedMimeType === 'application/vnd.google-apps.document') {
+        const exportResponse = await driveClient.files.export(
+            { fileId, mimeType: 'text/plain' },
+            { responseType: 'arraybuffer' }
+        );
+        text = Buffer.from(exportResponse.data).toString('utf8');
+    } else if (resolvedMimeType === 'application/pdf') {
+        text = await extractPdfTextViaDriveConversion({ fileId, originalName: name || 'meeting-transcript.pdf' });
+    } else if (isLikelyTextMimeType(resolvedMimeType)) {
+        const fileResponse = await driveClient.files.get(
+            { fileId, alt: 'media' },
+            { responseType: 'arraybuffer' }
+        );
+        text = Buffer.from(fileResponse.data).toString('utf8');
+    } else {
+        const fallback = await extractDriveFileText({ fileId, maxBytes: 120000 });
+        text = String(fallback?.text || '').trim();
+    }
+
+    const normalized = normalizeReadableText(text, MEETING_TRANSCRIPTION_TEXT_MAX_CHARS);
+    return {
+        text: normalized.text,
+        truncated: normalized.truncated,
+        originalLength: normalized.originalLength
+    };
+}
+
+async function summarizeMeetingTranscription({ fileId }) {
+    if (!driveClient) throw new Error('Google Drive not connected. Please authenticate with Google first.');
+    if (!openai || !process.env.OPENAI_API_KEY) throw new Error('OpenAI API key is required for summarization.');
+    if (!fileId) throw new Error('fileId is required');
+
+    const opened = await openMeetingTranscriptionFile({ fileId });
+    const file = opened.file || {};
+    const extracted = await extractMeetingTranscriptionText({
+        fileId: file.id,
+        mimeType: file.mimeType,
+        name: file.name
+    });
+
+    const transcriptText = String(extracted.text || '').trim();
+    if (!transcriptText) {
+        throw new Error('Transcript text is empty or could not be extracted from this file.');
+    }
+
+    let summaryPayload;
+    if (transcriptText.length <= MEETING_TRANSCRIPTION_SINGLE_PASS_CHARS) {
+        summaryPayload = await summarizeMeetingTranscriptChunkWithOpenAI({
+            title: file.name || 'Meeting',
+            transcriptText
+        });
+    } else {
+        const chunks = splitTextIntoSizedChunks(transcriptText, MEETING_TRANSCRIPTION_CHUNK_CHARS);
+        const partialPayloads = [];
+
+        for (let index = 0; index < chunks.length; index += 1) {
+            const chunk = chunks[index];
+            const chunkSummary = await summarizeMeetingTranscriptChunkWithOpenAI({
+                title: file.name || 'Meeting',
+                transcriptText: chunk,
+                chunkLabel: `Part ${index + 1} of ${chunks.length}`
+            });
+            partialPayloads.push(chunkSummary);
+        }
+
+        const mergedPayload = mergeMeetingSummaryPayloads(partialPayloads);
+        summaryPayload = await refineMergedMeetingSummaryWithOpenAI({
+            title: file.name || 'Meeting',
+            mergedPayload
+        });
+    }
+
+    const normalizedSummary = normalizeMeetingSummaryPayload(summaryPayload);
+    const summaryMarkdown = renderMeetingSummaryMarkdown({
+        summary: normalizedSummary.summary,
+        actionItems: normalizedSummary.actionItems,
+        nextSteps: normalizedSummary.nextSteps,
+        sourceLink: file.webViewLink || null
+    });
+
+    return {
+        file: {
+            id: file.id,
+            name: file.name,
+            date: file.date,
+            modifiedTime: file.modifiedTime,
+            createdTime: file.createdTime,
+            webViewLink: file.webViewLink
+        },
+        summary: normalizedSummary.summary,
+        actionItems: normalizedSummary.actionItems,
+        nextSteps: normalizedSummary.nextSteps,
+        summaryMarkdown,
+        sourceLink: file.webViewLink || null,
+        transcriptStats: {
+            characters: transcriptText.length,
+            truncated: !!extracted.truncated,
+            originalLength: extracted.originalLength
+        },
+        message: `Summary generated for "${file.name || file.id}".`
+    };
+}
+
 // ============================================================
 //  20 GITHUB TOOL IMPLEMENTATIONS
 // ============================================================
@@ -6067,6 +6599,53 @@ const docsTools = [
     { type: "function", function: { name: "get_document_text", description: "Get Doc text content.", parameters: { type: "object", properties: { documentId: { type: "string", description: "Google Doc document ID" } }, required: ["documentId"] } } }
 ];
 
+const meetingTranscriptionTools = [
+    {
+        type: "function",
+        function: {
+            name: "list_meeting_transcriptions",
+            description: "Search Google Drive for meeting transcript documents (defaults to Shared with me) and return file name + date + link.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: { type: "string", description: "Optional keyword or Drive query (e.g. team sync, 'name contains \\'retrospective\\'')" },
+                    date: { type: "string", description: "Optional exact date filter in YYYY-MM-DD." },
+                    pageSize: { type: "integer", description: "Max files to return (default 20)." },
+                    sharedWithMe: { type: "boolean", description: "Search only files shared with me (default true)." }
+                }
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "open_meeting_transcription_file",
+            description: "Get metadata and web link for a specific meeting transcription file.",
+            parameters: {
+                type: "object",
+                properties: {
+                    fileId: { type: "string", description: "Google Drive file ID." }
+                },
+                required: ["fileId"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "summarize_meeting_transcription",
+            description: "Read a meeting transcription document and generate Summary, Action Items, Next Steps, plus source file link.",
+            parameters: {
+                type: "object",
+                properties: {
+                    fileId: { type: "string", description: "Google Drive file ID of the transcript document." }
+                },
+                required: ["fileId"]
+            }
+        }
+    }
+];
+
 const teamsTools = [
     { type: "function", function: { name: "teams_list_teams", description: "List Teams.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "teams_get_team", description: "Get Team details.", parameters: { type: "object", properties: { teamId: { type: "string", description: "Team ID" } }, required: ["teamId"] } } },
@@ -6112,6 +6691,7 @@ const sheetsToolNames = new Set(sheetsTools.map(t => t.function.name));
 const githubToolNames = new Set(githubTools.map(t => t.function.name));
 const outlookToolNames = new Set(outlookTools.map(t => t.function.name));
 const docsToolNames = new Set(docsTools.map(t => t.function.name));
+const meetingTranscriptionToolNames = new Set(meetingTranscriptionTools.map(t => t.function.name));
 const teamsToolNames = new Set(teamsTools.map(t => t.function.name));
 const gcsToolNames = new Set(gcsTools.map(t => t.function.name));
 const docsListOnlyTools = docsTools.filter(tool => tool.function.name === 'list_documents');
@@ -6433,6 +7013,27 @@ async function executeDocsTool(toolName, args) {
     return await fn(args);
 }
 
+async function executeMeetingTranscriptionTool(toolName, args) {
+    if (!driveClient) throw new Error('Google Drive not connected. Please authenticate with Google first.');
+    const toolMap = {
+        list_meeting_transcriptions: listMeetingTranscriptions,
+        open_meeting_transcription_file: openMeetingTranscriptionFile,
+        summarize_meeting_transcription: summarizeMeetingTranscription
+    };
+    const fn = toolMap[toolName];
+    if (!fn) throw new Error(`Unknown Meeting Transcription tool: ${toolName}`);
+    try {
+        return await fn(args);
+    } catch (error) {
+        const permissionError = getDrivePermissionError(error);
+        if (permissionError) {
+            driveClient = null;
+            throw new Error(permissionError);
+        }
+        throw error;
+    }
+}
+
 async function executeTeamsTool(toolName, args) {
     if (!outlookAccessToken) throw new Error('Microsoft Teams not connected. Please authenticate with Teams first.');
     const toolMap = {
@@ -6497,6 +7098,7 @@ async function executeTool(toolName, args) {
     if (sheetsToolNames.has(toolName)) return await executeSheetsTool(toolName, sanitizedArgs);
     if (toolName.startsWith(SHEETS_MCP_TOOL_PREFIX)) return await executeSheetsMcpTool(toolName, sanitizedArgs);
     if (docsToolNames.has(toolName)) return await executeDocsTool(toolName, sanitizedArgs);
+    if (meetingTranscriptionToolNames.has(toolName)) return await executeMeetingTranscriptionTool(toolName, sanitizedArgs);
     if (githubToolNames.has(toolName)) return await executeGitHubTool(toolName, sanitizedArgs);
     if (outlookToolNames.has(toolName)) return await executeOutlookTool(toolName, sanitizedArgs);
     if (teamsToolNames.has(toolName)) return await executeTeamsTool(toolName, sanitizedArgs);
@@ -6563,12 +7165,17 @@ app.get('/api/tools', (req, res) => {
     const docsListOnlyConnected = !docsConnected && driveConnected;
     const docsVisibleTools = docsConnected ? docsTools : (docsListOnlyConnected ? docsListOnlyTools : []);
     const docs = { service: 'docs', connected: docsConnected || docsListOnlyConnected, tools: docsVisibleTools.map(t => ({ function: t.function })) };
+    const meetingTranscription = {
+        service: 'meeting_transcription',
+        connected: driveConnected,
+        tools: meetingTranscriptionTools.map(t => ({ function: t.function }))
+    };
     const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
     const teams = { service: 'teams', connected: teamsConnected, tools: teamsTools.map(t => ({ function: t.function })) };
     const gcs = { service: 'gcs', connected: gcsAuthenticated, tools: gcsTools.map(t => ({ function: t.function })) };
-    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length + gcsTools.length;
+    const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + meetingTranscriptionTools.length + teamsTools.length + gcsTools.length;
     res.json({
-        services: [gmail, calendar, gchat, drive, sheets, github, outlook, docs, teams, gcs],
+        services: [gmail, calendar, gchat, drive, sheets, github, outlook, docs, meetingTranscription, teams, gcs],
         totalTools
     });
 });
@@ -6866,6 +7473,19 @@ app.get('/api/docs/status', (req, res) => {
         hasDocsScope: docsScopeGranted,
         requiresReconnect: hasToken && !docsScopeGranted,
         toolCount: docsTools.length
+    });
+});
+
+app.get('/api/meeting-transcription/status', (req, res) => {
+    const hasCredentials = isGoogleOAuthConfigured();
+    const hasToken = fs.existsSync(TOKEN_PATH);
+    const driveScopeGranted = hasDriveScope();
+    res.json({
+        credentialsConfigured: !!hasCredentials,
+        authenticated: hasToken && driveClient !== null && driveScopeGranted,
+        hasDriveScope: driveScopeGranted,
+        requiresReconnect: hasToken && !driveScopeGranted,
+        toolCount: meetingTranscriptionTools.length
     });
 });
 
@@ -7284,6 +7904,7 @@ function getConnectedToolContext() {
     const docsListOnlyConnected = !docsConnected && driveConnected;
     if (docsConnected) availableTools.push(...docsTools);
     else if (docsListOnlyConnected) availableTools.push(...docsListOnlyTools);
+    if (driveConnected) availableTools.push(...meetingTranscriptionTools);
     if (octokitClient) availableTools.push(...githubTools);
     if (outlookAccessToken) availableTools.push(...outlookTools);
     const teamsConnected = !!outlookAccessToken && hasTeamsScopes();
@@ -7299,6 +7920,7 @@ function getConnectedToolContext() {
     if (sheetsMcpConnected) connectedServices.push(`Google Sheets MCP (${sheetsMcpTools.length} tools)`);
     if (docsConnected) connectedServices.push(`Google Docs (${docsTools.length} tools)`);
     if (docsListOnlyConnected) connectedServices.push(`Google Docs (${docsListOnlyTools.length} tool via Drive scope)`);
+    if (driveConnected) connectedServices.push(`Meeting Transcription (${meetingTranscriptionTools.length} tools)`);
     if (octokitClient) connectedServices.push('GitHub (20 tools)');
     if (outlookAccessToken) connectedServices.push(`Outlook (${outlookTools.length} tools)`);
     if (teamsConnected) connectedServices.push(`Microsoft Teams (${teamsTools.length} tools)`);
@@ -7314,7 +7936,7 @@ function buildAgentSystemPrompt({ statusText, toolCount, dateContext, connectedS
         ? connectedServices.join(', ')
         : 'No services';
 
-    const basePrompt = `You are a powerful AI assistant integrated with Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You execute complex, multi-step operations across connected services.
+    const basePrompt = `You are a powerful AI assistant integrated with Gmail, Google Calendar, Google Chat, Google Drive, Google Sheets, Google Docs, Meeting Transcription, GitHub, Outlook, Microsoft Teams, and GCP Cloud Storage. You execute complex, multi-step operations across connected services.
 
 Connected Services: ${statusText}
 Total Tools Available: ${toolCount}
@@ -7378,7 +8000,16 @@ Confirm delete/trash/clear/bulk operations unless explicitly requested.
 **12. BATCH OVER REPEATED CALLS**
 Use batch_modify_emails for bulk operations.
 
-**13. SERVICE & TOOL DISCIPLINE**
+**13. MEETING TRANSCRIPT WORKFLOW**
+- For requests like "summary of my meetings" or "show my transcriptions", call list_meeting_transcriptions first.
+- Default transcript discovery to sharedWithMe=true unless the user asks otherwise.
+- When the user chooses a file, ask whether they want:
+  1) a summary (summarize_meeting_transcription), or
+  2) the file link (open_meeting_transcription_file),
+  unless they already specified one.
+- Always include the source document link in transcript summary responses.
+
+**14. SERVICE & TOOL DISCIPLINE**
 Never cross service tools (Sheets ≠ Docs, GitHub ≠ Drive). Verify success from tool output.
 
 ---
@@ -7408,6 +8039,11 @@ list_spreadsheets → read_sheet_values before edits. update_timesheet_hours for
 
 **Google Docs**
 list_documents → get_document_text → create_document / insert_text / append_text / replace_text. No write scope? Use append_drive_document_text.
+
+**Meeting Transcription**
+Use list_meeting_transcriptions to discover transcript docs (sharedWithMe by default), then:
+- summarize_meeting_transcription for structured notes, or
+- open_meeting_transcription_file for direct doc link.
 
 **Google Chat**
 list_chat_spaces → send_chat_message.
@@ -9016,7 +9652,7 @@ initGcsClient();
 loadScheduledTasksFromDisk();
 startScheduledTaskRunner();
 
-const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + teamsTools.length + gcsTools.length;
+const totalTools = gmailTools.length + calendarTools.length + gchatTools.length + driveTools.length + sheetsTools.length + sheetsMcpTools.length + githubTools.length + outlookTools.length + docsTools.length + meetingTranscriptionTools.length + teamsTools.length + gcsTools.length;
 let startupErrorHandled = false;
 const handleStartupError = (error, source) => {
     if (startupErrorHandled) return;
@@ -9039,7 +9675,7 @@ const handleStartupError = (error, source) => {
 const httpServer = app.listen(PORT, HOST, () => {
     console.log(`\nAI Agent Server running at http://${HOST}:${PORT}`);
     console.log(`OpenAI model: ${OPENAI_MODEL}${OPENAI_FALLBACK_MODEL ? ` (fallback: ${OPENAI_FALLBACK_MODEL})` : ''}, retries: ${OPENAI_CHAT_MAX_RETRIES}, temperature: ${OPENAI_TEMPERATURE}${OPENAI_MAX_OUTPUT_TOKENS ? `, max output tokens: ${OPENAI_MAX_OUTPUT_TOKENS}` : ''}`);
-    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length}, GCS: ${gcsTools.length})`);
+    console.log(`Total tools available: ${totalTools} (Gmail: ${gmailTools.length}, Calendar: ${calendarTools.length}, Chat: ${gchatTools.length}, Drive: ${driveTools.length}, Sheets: ${sheetsTools.length}, Sheets MCP: ${sheetsMcpTools.length}, Docs: ${docsTools.length}, Meeting Transcription: ${meetingTranscriptionTools.length}, GitHub: ${githubTools.length}, Outlook: ${outlookTools.length}, Teams: ${teamsTools.length}, GCS: ${gcsTools.length})`);
     console.log(`Gmail: ${gmailClient ? 'Connected' : 'Not connected'}`);
     console.log(`Calendar: ${calendarClient && hasCalendarScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Chat: ${gchatClient && hasGchatScopes() ? 'Connected' : 'Not connected'}`);
@@ -9047,6 +9683,7 @@ const httpServer = app.listen(PORT, HOST, () => {
     console.log(`Google Sheets: ${sheetsClient && hasSheetsScope() ? 'Connected' : 'Not connected'}`);
     console.log(`Google Sheets MCP: ${sheetsMcpClient ? `Connected (${sheetsMcpTools.length} tools)` : `Not connected${sheetsMcpError ? ` (${sheetsMcpError})` : ''}`}`);
     console.log(`Google Docs: ${docsClient && hasDocsScope() ? 'Connected' : 'Not connected'}`);
+    console.log(`Meeting Transcription: ${driveClient && hasDriveScope() ? 'Connected' : 'Not connected'}`);
     console.log(`GitHub: ${octokitClient ? 'Connected' : 'Not connected'}`);
     console.log(`Outlook: ${outlookAccessToken ? `Connected (${outlookUserEmail || 'unknown'})` : 'Not connected'}`);
     console.log(`Microsoft Teams: ${outlookAccessToken && hasTeamsScopes() ? 'Connected' : 'Not connected'}`);
