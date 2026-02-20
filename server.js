@@ -881,6 +881,22 @@ function normalizeMeetingSummaryPayload(payload) {
         return fallback;
     };
 
+    const normalizeImportantTopics = (value) => {
+        if (!Array.isArray(value)) return [];
+        return value.map(item => {
+            if (typeof item === 'string') {
+                return { topic: item.trim(), headingId: null };
+            }
+            if (typeof item === 'object' && item !== null) {
+                return {
+                    topic: String(item.topic || '').trim(),
+                    headingId: String(item.headingId || '').trim() || null
+                };
+            }
+            return null;
+        }).filter(item => item && item.topic).slice(0, 15);
+    };
+
     const actionItemsRaw = Array.isArray(source.actionItems) ? source.actionItems : [];
     const actionItems = actionItemsRaw
         .map(item => {
@@ -932,7 +948,7 @@ function normalizeMeetingSummaryPayload(payload) {
 
     return {
         topics: finalTopics.length > 0 ? finalTopics : [{ topic: 'General', speakers: [], points: ['No clear discussion summary was identified.'] }],
-        importantTopics: normalizeStringList(source.importantTopics, []),
+        importantTopics: normalizeImportantTopics(source.importantTopics),
         suggestions: normalizeStringList(source.suggestions, []),
         summary: summaryRaw.length > 0 ? summaryRaw : [],
         actionItems,
@@ -945,7 +961,24 @@ function renderMeetingSummaryMarkdown({ topics = [], importantTopics = [], sugge
 
     if (importantTopics && importantTopics.length > 0) {
         sections.push('## Important Topics Discussed');
-        importantTopics.forEach(item => sections.push(`- ${item}`));
+        importantTopics.forEach(item => {
+            if (typeof item === 'string') {
+                sections.push(`- ${item}`);
+            } else if (item && item.topic) {
+                if (item.headingId && sourceLink && sourceLink.includes('docs.google.com/document/d/')) {
+                    const match = sourceLink.match(/\/d\/([a-zA-Z0-9-_]+)/);
+                    if (match && match[1]) {
+                        const docId = match[1];
+                        const link = `https://docs.google.com/document/d/${docId}/edit?heading=${item.headingId}`;
+                        sections.push(`- ${item.topic} [Open in Docs](${link})`);
+                    } else {
+                        sections.push(`- ${item.topic}`);
+                    }
+                } else {
+                    sections.push(`- ${item.topic}`);
+                }
+            }
+        });
         sections.push('');
     }
 
@@ -1044,7 +1077,12 @@ Return ONLY valid JSON with this shape:
       ]
     }
   ],
-  "importantTopics": ["High level topic 1", "High level topic 2"],
+  "importantTopics": [
+    {
+      "topic": "High level topic 1",
+      "headingId": "h.abc123yz"
+    }
+  ],
   "suggestions": ["Suggestion 1", "Suggestion 2"],
   "actionItems": [{"owner":"Name or TBD","action":"Task description","due":"Date or TBD"}],
   "nextSteps": ["step 1", "step 2"]
@@ -1052,7 +1090,7 @@ Return ONLY valid JSON with this shape:
 
 Rules (to make a great summary):
 - FIRST read the ENTIRE transcript thoroughly. Identify ALL distinct topics/subjects discussed in the meeting.
-- Important Topics: Provide a brief list of the most critical 3-5 high-level topics or themes discussed overall (importantTopics array).
+- Important Topics: Provide a brief list of the most critical 3-5 high-level topics or themes discussed overall. For each, find the nearest preceding [HEADING_ID: h.xxx] marker in the transcript and include it as "headingId" (or null if none exists).
 - Create a SEPARATE topic entry for EACH distinct subject discussed. For example, if the meeting covered "Figma MCP Integration" AND "Task Management Process", those are TWO separate topics.
 - For each topic, list the speakers who contributed to that topic discussion accurately based on the transcript lines.
 - Each topic should have 3-8 detailed points covering what was discussed, decided, demonstrated, or explained.
@@ -1060,7 +1098,7 @@ Rules (to make a great summary):
 - Do NOT merge unrelated topics into one. If a speaker changes subject, that is a new topic.
 - Capture contributions from EVERY speaker — if someone spoke about a topic, their points must appear.
 - Include demonstrations, examples, questions raised, and process explanations within the topic points.
-- Suggestions: Extract any ideas, improvements, or recommendations mentioned EXCLUSIVELY into the separate "suggestions" array. DO NOT include suggestions inside the topic "points" array.
+- Suggestions: If ANY speaker suggests an idea, improvement, or future consideration (like Akash suggesting expanding the window), you MUST extract it into the "suggestions" array. DO NOT list suggestions as bullet points inside the topics. Please move them entirely to the "suggestions" array.
 - Next Steps: Detail clear next steps resulting from the meeting, especially immediate follow-ups.
 - Extract ALL action items (explicit or implied) with the responsible person.
 - If a field is unknown, use "TBD".
@@ -1126,7 +1164,18 @@ function mergeMeetingSummaryPayloads(parts = []) {
             }
         }
 
-        normalized.importantTopics.forEach(item => addTextToMap(importantTopicMap, item));
+        normalized.importantTopics.forEach(item => {
+            if (typeof item === 'string') {
+                addTextToMap(importantTopicMap, item);
+            } else if (item && item.topic) {
+                const key = item.topic.toLowerCase();
+                if (!importantTopicMap.has(key)) {
+                    importantTopicMap.set(key, item);
+                } else if (!importantTopicMap.get(key).headingId && item.headingId) {
+                    importantTopicMap.get(key).headingId = item.headingId;
+                }
+            }
+        });
         normalized.suggestions.forEach(item => addTextToMap(suggestionMap, item));
         normalized.nextSteps.forEach(item => addTextToMap(nextStepMap, item));
         normalized.actionItems.forEach(item => {
@@ -1180,10 +1229,10 @@ Return ONLY valid JSON with this same shape:
 }
 
 Rules (to make a great summary):
-- Important Topics: Provide a brief list of the most critical 3-5 high-level topics or themes discussed overall (importantTopics array).
+- Important Topics: Provide a brief list of the most critical 3-5 high-level topics or themes discussed overall, maintaining their associated headingId.
 - Keep ALL distinct topics as separate entries — do NOT merge unrelated topics together.
 - Remove exact duplicate points within a topic, but keep all unique points.
-- Suggestions: Extract any ideas, improvements, or recommendations mentioned EXCLUSIVELY into the separate "suggestions" array. DO NOT include them inside the "points" array.
+- Suggestions: Ensure any ideas, improvements, or recommendations remain exclusively in the "suggestions" array. If a point in the input topics looks like a suggestion, move it to the "suggestions" array. DO NOT duplicate or merge them back into the topics "points" array.
 - Preserve the DETAIL and COMPREHENSIVENESS — the refined output should be at least as detailed as the input.
 - Ensure contributions from ALL speakers/participants are represented in their respective topics.
 - Each point should be 1-2 detailed sentences.
@@ -4953,7 +5002,7 @@ async function appendText({ documentId, text }) {
 }
 
 // 8. Get Document Text
-async function getDocumentText({ documentId }) {
+async function getDocumentText({ documentId, includeHeadings = false }) {
     if (!docsClient) throw new Error('Google Docs not authenticated');
     if (!documentId) throw new Error('documentId is required');
     const response = await docsClient.documents.get({ documentId });
@@ -4961,6 +5010,9 @@ async function getDocumentText({ documentId }) {
     let text = '';
     for (const element of (doc.body?.content || [])) {
         if (element.paragraph) {
+            if (includeHeadings && element.paragraph.paragraphStyle && element.paragraph.paragraphStyle.headingId) {
+                text += `[HEADING_ID: ${element.paragraph.paragraphStyle.headingId}]\n`;
+            }
             for (const el of (element.paragraph.elements || [])) {
                 if (el.textRun) text += el.textRun.content;
             }
@@ -5134,11 +5186,25 @@ async function extractMeetingTranscriptionText({ fileId, mimeType, name }) {
     let text = '';
 
     if (resolvedMimeType === 'application/vnd.google-apps.document') {
-        const exportResponse = await driveClient.files.export(
-            { fileId, mimeType: 'text/plain' },
-            { responseType: 'arraybuffer' }
-        );
-        text = Buffer.from(exportResponse.data).toString('utf8');
+        if (docsClient) {
+            try {
+                const docExtracted = await getDocumentText({ documentId: fileId, includeHeadings: true });
+                text = docExtracted.text;
+            } catch (err) {
+                // Fallback to export if getDocumentText fails (e.g., missing scopes)
+                const exportResponse = await driveClient.files.export(
+                    { fileId, mimeType: 'text/plain' },
+                    { responseType: 'arraybuffer' }
+                );
+                text = Buffer.from(exportResponse.data).toString('utf8');
+            }
+        } else {
+            const exportResponse = await driveClient.files.export(
+                { fileId, mimeType: 'text/plain' },
+                { responseType: 'arraybuffer' }
+            );
+            text = Buffer.from(exportResponse.data).toString('utf8');
+        }
     } else if (resolvedMimeType === 'application/pdf') {
         text = await extractPdfTextViaDriveConversion({ fileId, originalName: name || 'meeting-transcript.pdf' });
     } else if (isLikelyTextMimeType(resolvedMimeType)) {
