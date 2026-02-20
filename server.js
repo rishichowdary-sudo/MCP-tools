@@ -1000,6 +1000,25 @@ function renderMeetingSummaryMarkdown({ topics = [], importantTopics = [], sugge
     return sections.join('\n');
 }
 
+function parseJsonObjectFromText(text) {
+    if (!text || typeof text !== 'string') return null;
+    try {
+        const raw = text.trim();
+        const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+        const jsonStr = fenced && fenced[1] ? fenced[1].trim() : raw;
+        const firstBrace = jsonStr.indexOf('{');
+        const lastBrace = jsonStr.lastIndexOf('}');
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+            const cleanStr = jsonStr.substring(firstBrace, lastBrace + 1);
+            return JSON.parse(cleanStr);
+        }
+        return JSON.parse(jsonStr);
+    } catch (e) {
+        console.error('Failed to parse JSON object from OpenAI text:', e.message);
+        return null;
+    }
+}
+
 async function summarizeMeetingTranscriptChunkWithOpenAI({
     title,
     transcriptText,
@@ -1041,7 +1060,7 @@ Rules (to make a great summary):
 - Do NOT merge unrelated topics into one. If a speaker changes subject, that is a new topic.
 - Capture contributions from EVERY speaker — if someone spoke about a topic, their points must appear.
 - Include demonstrations, examples, questions raised, and process explanations within the topic points.
-- Suggestions: Extract any ideas, improvements, or recommendations mentioned into the separate "suggestions" array.
+- Suggestions: Extract any ideas, improvements, or recommendations mentioned EXCLUSIVELY into the separate "suggestions" array. DO NOT include suggestions inside the topic "points" array.
 - Next Steps: Detail clear next steps resulting from the meeting, especially immediate follow-ups.
 - Extract ALL action items (explicit or implied) with the responsible person.
 - If a field is unknown, use "TBD".
@@ -1164,6 +1183,7 @@ Rules (to make a great summary):
 - Important Topics: Provide a brief list of the most critical 3-5 high-level topics or themes discussed overall (importantTopics array).
 - Keep ALL distinct topics as separate entries — do NOT merge unrelated topics together.
 - Remove exact duplicate points within a topic, but keep all unique points.
+- Suggestions: Extract any ideas, improvements, or recommendations mentioned EXCLUSIVELY into the separate "suggestions" array. DO NOT include them inside the "points" array.
 - Preserve the DETAIL and COMPREHENSIVENESS — the refined output should be at least as detailed as the input.
 - Ensure contributions from ALL speakers/participants are represented in their respective topics.
 - Each point should be 1-2 detailed sentences.
