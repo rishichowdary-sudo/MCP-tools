@@ -1098,7 +1098,7 @@ Rules (to make a great summary):
 - Do NOT merge unrelated topics into one. If a speaker changes subject, that is a new topic.
 - Capture contributions from EVERY speaker — if someone spoke about a topic, their points must appear.
 - Include demonstrations, examples, questions raised, and process explanations within the topic points.
-- Suggestions: If ANY speaker suggests an idea, improvement, or future consideration (like Akash suggesting expanding the window), you MUST extract it into the "suggestions" array. DO NOT list suggestions as bullet points inside the topics. Please move them entirely to the "suggestions" array.
+- Suggestions: If ANY speaker suggests an idea, improvement, or future consideration (for example, if a speaker named "Alex" suggests changing a color scheme or adding a new button), you MUST extract it into the "suggestions" array. DO NOT list suggestions as bullet points inside the topics. Please move them entirely to the "suggestions" array.
 - Next Steps: Detail clear next steps resulting from the meeting, especially immediate follow-ups.
 - Extract ALL action items (explicit or implied) with the responsible person.
 - If a field is unknown, use "TBD".
