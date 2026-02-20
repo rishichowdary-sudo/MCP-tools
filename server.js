@@ -201,8 +201,8 @@ const CHAT_HISTORY_MAX_TOTAL_CHARS = Math.max(
     Number.parseInt(process.env.CHAT_HISTORY_MAX_TOTAL_CHARS || '12000', 10) || 12000
 );
 const MODEL_TOOL_RESULT_MAX_CHARS = Math.max(
-    1200,
-    Number.parseInt(process.env.MODEL_TOOL_RESULT_MAX_CHARS || '2500', 10) || 2500
+    8000,
+    Number.parseInt(process.env.MODEL_TOOL_RESULT_MAX_CHARS || '25000', 10) || 25000
 );
 const MODEL_TOOL_VALUE_MAX_STRING_CHARS = Math.max(
     400,
@@ -874,7 +874,7 @@ function normalizeMeetingSummaryPayload(payload) {
             return value
                 .map(item => String(item || '').trim())
                 .filter(Boolean)
-                .slice(0, 20);
+                .slice(0, 30);
         }
         const single = String(value || '').trim();
         if (single) return [single];
@@ -902,36 +902,96 @@ function normalizeMeetingSummaryPayload(payload) {
             return null;
         })
         .filter(Boolean)
-        .slice(0, 30);
+        .slice(0, 40);
+
+    // Normalize topics array (new topic-wise structure)
+    const topicsRaw = Array.isArray(source.topics) ? source.topics : [];
+    const topics = topicsRaw
+        .map(topic => {
+            if (!topic || typeof topic !== 'object') return null;
+            const topicName = String(topic.topic || '').trim();
+            if (!topicName) return null;
+            const speakers = Array.isArray(topic.speakers)
+                ? topic.speakers.map(s => String(s || '').trim()).filter(Boolean)
+                : [];
+            const points = Array.isArray(topic.points)
+                ? topic.points.map(p => String(p || '').trim()).filter(Boolean)
+                : [];
+            if (points.length === 0) return null;
+            return { topic: topicName, speakers, points };
+        })
+        .filter(Boolean)
+        .slice(0, 15);
+
+    // Fallback: if no topics but old-style summary exists, convert to a single topic
+    const summaryRaw = normalizeStringList(source.summary, []);
+    let finalTopics = topics;
+    if (finalTopics.length === 0 && summaryRaw.length > 0) {
+        finalTopics = [{ topic: 'General Discussion', speakers: [], points: summaryRaw }];
+    }
 
     return {
-        summary: normalizeStringList(source.summary, ['No clear discussion summary was identified.']),
+        topics: finalTopics.length > 0 ? finalTopics : [{ topic: 'General', speakers: [], points: ['No clear discussion summary was identified.'] }],
+        importantTopics: normalizeStringList(source.importantTopics, []),
+        suggestions: normalizeStringList(source.suggestions, []),
+        summary: summaryRaw.length > 0 ? summaryRaw : [],
         actionItems,
         nextSteps: normalizeStringList(source.nextSteps, ['No next steps identified.'])
     };
 }
 
-function renderMeetingSummaryMarkdown({ summary = [], actionItems = [], nextSteps = [], sourceLink }) {
-    const summaryLines = summary.length > 0
-        ? summary.map(item => `- ${item}`)
-        : ['- No clear discussion summary was identified.'];
+function renderMeetingSummaryMarkdown({ topics = [], importantTopics = [], suggestions = [], summary = [], actionItems = [], nextSteps = [], sourceLink }) {
+    const sections = [];
+
+    if (importantTopics && importantTopics.length > 0) {
+        sections.push('## Important Topics Discussed');
+        importantTopics.forEach(item => sections.push(`- ${item}`));
+        sections.push('');
+    }
+
+    // Render topic-wise summary if available
+    if (topics.length > 0) {
+        sections.push('## Meeting Summary');
+        sections.push('');
+        for (const topic of topics) {
+            const speakerLabel = topic.speakers && topic.speakers.length > 0
+                ? ` _(${topic.speakers.join(', ')})_`
+                : '';
+            sections.push(`### ${topic.topic}${speakerLabel}`);
+            if (topic.points && topic.points.length > 0) {
+                topic.points.forEach((point, idx) => sections.push(`${idx + 1}. ${point}`));
+            }
+            sections.push('');
+        }
+    } else if (summary.length > 0) {
+        // Fallback to flat summary if no topics
+        sections.push('## Summary');
+        summary.forEach(item => sections.push(`- ${item}`));
+        sections.push('');
+    } else {
+        sections.push('## Summary');
+        sections.push('- No clear discussion summary was identified.');
+        sections.push('');
+    }
+
     const actionLines = actionItems.length > 0
         ? actionItems.map(item => `- ${item.owner || 'TBD'} | ${item.action || 'TBD'} | ${item.due || 'TBD'}`)
         : ['- None identified.'];
+    sections.push('## Action Items (Owner | Action | Due)');
+    sections.push(...actionLines);
+    sections.push('');
+
+    if (suggestions && suggestions.length > 0) {
+        sections.push('## Suggestions & Ideas');
+        suggestions.forEach(item => sections.push(`- ${item}`));
+        sections.push('');
+    }
+
     const nextStepLines = nextSteps.length > 0
         ? nextSteps.map(item => `- ${item}`)
         : ['- None identified.'];
-
-    const sections = [
-        '## Summary',
-        ...summaryLines,
-        '',
-        '## Action Items (Owner | Action | Due)',
-        ...actionLines,
-        '',
-        '## Next Steps',
-        ...nextStepLines
-    ];
+    sections.push('## Next Steps');
+    sections.push(...nextStepLines);
 
     if (sourceLink) {
         sections.push('', `Source File: ${sourceLink}`);
@@ -948,28 +1008,51 @@ async function summarizeMeetingTranscriptChunkWithOpenAI({
     const prompt = `Meeting title: ${title || 'Meeting'}
 ${chunkLabel ? `Section: ${chunkLabel}` : ''}
 
+IMPORTANT: Read the ENTIRE transcript from start to end before generating the summary. Do NOT stop reading partway through.
+
 Transcript:
 ${transcriptText}
 
 Return ONLY valid JSON with this shape:
 {
-  "summary": ["point 1", "point 2"],
-  "actionItems": [{"owner":"Name or TBD","action":"Task","due":"Date or TBD"}],
+  "topics": [
+    {
+      "topic": "Topic/Subject Name",
+      "speakers": ["Speaker 1", "Speaker 2"],
+      "points": [
+        "Detailed point about what was discussed",
+        "Another detailed point"
+      ]
+    }
+  ],
+  "importantTopics": ["High level topic 1", "High level topic 2"],
+  "suggestions": ["Suggestion 1", "Suggestion 2"],
+  "actionItems": [{"owner":"Name or TBD","action":"Task description","due":"Date or TBD"}],
   "nextSteps": ["step 1", "step 2"]
 }
 
-Rules:
-- Be concise and factual.
-- Keep each list item short.
+Rules (to make a great summary):
+- FIRST read the ENTIRE transcript thoroughly. Identify ALL distinct topics/subjects discussed in the meeting.
+- Important Topics: Provide a brief list of the most critical 3-5 high-level topics or themes discussed overall (importantTopics array).
+- Create a SEPARATE topic entry for EACH distinct subject discussed. For example, if the meeting covered "Figma MCP Integration" AND "Task Management Process", those are TWO separate topics.
+- For each topic, list the speakers who contributed to that topic discussion accurately based on the transcript lines.
+- Each topic should have 3-8 detailed points covering what was discussed, decided, demonstrated, or explained.
+- Each point should be 1-2 sentences with enough detail to understand without reading the transcript. Focus on decisions, technical details, and key takeaways.
+- Do NOT merge unrelated topics into one. If a speaker changes subject, that is a new topic.
+- Capture contributions from EVERY speaker — if someone spoke about a topic, their points must appear.
+- Include demonstrations, examples, questions raised, and process explanations within the topic points.
+- Suggestions: Extract any ideas, improvements, or recommendations mentioned into the separate "suggestions" array.
+- Next Steps: Detail clear next steps resulting from the meeting, especially immediate follow-ups.
+- Extract ALL action items (explicit or implied) with the responsible person.
 - If a field is unknown, use "TBD".
-- Do not include markdown or commentary.`;
+- Do not include markdown or commentary — return valid JSON only.`;
 
     const completion = await openai.chat.completions.create({
         model: OPENAI_MODEL,
         messages: [
             {
                 role: 'system',
-                content: 'You extract structured meeting notes from transcripts. Return JSON only.'
+                content: 'You are an expert meeting note-taker who creates comprehensive topic-wise meeting summaries. You MUST read the ENTIRE transcript and identify EVERY distinct topic discussed. Each topic gets its own section with the speakers who discussed it and detailed points. Extract distinct suggestions into a separate section. Return JSON only.'
             },
             {
                 role: 'user',
@@ -977,7 +1060,7 @@ Rules:
             }
         ],
         temperature: 0.15,
-        max_tokens: 1400
+        max_tokens: 4096
     });
 
     const raw = completion?.choices?.[0]?.message?.content || '';
@@ -990,9 +1073,11 @@ Rules:
 }
 
 function mergeMeetingSummaryPayloads(parts = []) {
-    const summaryMap = new Map();
     const nextStepMap = new Map();
+    const suggestionMap = new Map();
+    const importantTopicMap = new Map();
     const mergedActions = [];
+    const topicMap = new Map(); // key: lowercase topic name, value: { topic, speakers: Set, points: Map }
 
     const addTextToMap = (target, text) => {
         const value = String(text || '').trim();
@@ -1004,7 +1089,26 @@ function mergeMeetingSummaryPayloads(parts = []) {
 
     for (const part of parts) {
         const normalized = normalizeMeetingSummaryPayload(part);
-        normalized.summary.forEach(item => addTextToMap(summaryMap, item));
+
+        // Merge topics
+        if (normalized.topics && normalized.topics.length > 0) {
+            for (const topic of normalized.topics) {
+                const topicKey = topic.topic.toLowerCase();
+                if (!topicMap.has(topicKey)) {
+                    topicMap.set(topicKey, {
+                        topic: topic.topic,
+                        speakers: new Set(),
+                        points: new Map()
+                    });
+                }
+                const existing = topicMap.get(topicKey);
+                if (topic.speakers) topic.speakers.forEach(s => existing.speakers.add(s));
+                if (topic.points) topic.points.forEach(p => addTextToMap(existing.points, p));
+            }
+        }
+
+        normalized.importantTopics.forEach(item => addTextToMap(importantTopicMap, item));
+        normalized.suggestions.forEach(item => addTextToMap(suggestionMap, item));
         normalized.nextSteps.forEach(item => addTextToMap(nextStepMap, item));
         normalized.actionItems.forEach(item => {
             const owner = String(item.owner || 'TBD').trim() || 'TBD';
@@ -1019,9 +1123,17 @@ function mergeMeetingSummaryPayloads(parts = []) {
         });
     }
 
+    const mergedTopics = Array.from(topicMap.values()).map(t => ({
+        topic: t.topic,
+        speakers: Array.from(t.speakers),
+        points: Array.from(t.points.values()).slice(0, 15)
+    })).slice(0, 15);
+
     return {
-        summary: Array.from(summaryMap.values()).slice(0, 20),
-        actionItems: mergedActions.slice(0, 30),
+        topics: mergedTopics,
+        importantTopics: Array.from(importantTopicMap.values()).slice(0, 15),
+        suggestions: Array.from(suggestionMap.values()).slice(0, 20),
+        actionItems: mergedActions.slice(0, 40),
         nextSteps: Array.from(nextStepMap.values()).slice(0, 20)
     };
 }
@@ -1035,15 +1147,27 @@ ${JSON.stringify(normalized)}
 
 Return ONLY valid JSON with this same shape:
 {
-  "summary": ["point 1", "point 2"],
-  "actionItems": [{"owner":"Name or TBD","action":"Task","due":"Date or TBD"}],
+  "topics": [
+    {
+      "topic": "Topic/Subject Name",
+      "speakers": ["Speaker 1", "Speaker 2"],
+      "points": ["Detailed point 1", "Detailed point 2"]
+    }
+  ],
+  "importantTopics": ["High level topic 1", "High level topic 2"],
+  "suggestions": ["Suggestion 1", "Suggestion 2"],
+  "actionItems": [{"owner":"Name or TBD","action":"Task description","due":"Date or TBD"}],
   "nextSteps": ["step 1", "step 2"]
 }
 
-Rules:
-- Remove duplicates.
-- Keep concise, factual points.
-- Preserve all important action items.
+Rules (to make a great summary):
+- Important Topics: Provide a brief list of the most critical 3-5 high-level topics or themes discussed overall (importantTopics array).
+- Keep ALL distinct topics as separate entries — do NOT merge unrelated topics together.
+- Remove exact duplicate points within a topic, but keep all unique points.
+- Preserve the DETAIL and COMPREHENSIVENESS — the refined output should be at least as detailed as the input.
+- Ensure contributions from ALL speakers/participants are represented in their respective topics.
+- Each point should be 1-2 detailed sentences.
+- Preserve ALL action items — do not drop any.
 - Use "TBD" for unknown owner/due values.`;
 
     const completion = await openai.chat.completions.create({
@@ -1051,7 +1175,7 @@ Rules:
         messages: [
             {
                 role: 'system',
-                content: 'You clean and consolidate structured meeting notes. Return JSON only.'
+                content: 'You clean and consolidate topic-wise structured meeting notes while preserving detail and comprehensiveness. Keep distinct topics separate. Merge duplicate points within topics but keep all unique information. Ensure every participant\'s contributions remain. Return JSON only.'
             },
             {
                 role: 'user',
@@ -1059,7 +1183,7 @@ Rules:
             }
         ],
         temperature: 0.1,
-        max_tokens: 1400
+        max_tokens: 4096
     });
 
     const raw = completion?.choices?.[0]?.message?.content || '';
@@ -5063,6 +5187,9 @@ async function summarizeMeetingTranscription({ fileId }) {
 
     const normalizedSummary = normalizeMeetingSummaryPayload(summaryPayload);
     const summaryMarkdown = renderMeetingSummaryMarkdown({
+        topics: normalizedSummary.topics,
+        importantTopics: normalizedSummary.importantTopics,
+        suggestions: normalizedSummary.suggestions,
         summary: normalizedSummary.summary,
         actionItems: normalizedSummary.actionItems,
         nextSteps: normalizedSummary.nextSteps,
@@ -5078,6 +5205,9 @@ async function summarizeMeetingTranscription({ fileId }) {
             createdTime: file.createdTime,
             webViewLink: file.webViewLink
         },
+        topics: normalizedSummary.topics,
+        importantTopics: normalizedSummary.importantTopics,
+        suggestions: normalizedSummary.suggestions,
         summary: normalizedSummary.summary,
         actionItems: normalizedSummary.actionItems,
         nextSteps: normalizedSummary.nextSteps,
@@ -8044,6 +8174,7 @@ list_documents → get_document_text → create_document / insert_text / append_
 Use list_meeting_transcriptions to discover transcript docs (sharedWithMe by default), then:
 - summarize_meeting_transcription for structured notes, or
 - open_meeting_transcription_file for direct doc link.
+- IMPORTANT: When presenting the output of summarize_meeting_transcription, DO NOT just dump the JSON or write a generic conversational paragraph. You MUST structure your conversational response exactly like the tool output UI: Use Markdown headings (##) to clearly separate "Important Topics Discussed", "Suggestions & Ideas", "Action Items", and "Next Steps". Under the "Meeting Summary" heading, explicitly list the actual "Topics", their "Speakers", and their "Numbered Points" exactly. Do not merge things. Ensure your numbers are 1., 2., 3., etc. Never group suggestions into a single paragraph.
 
 **Google Chat**
 list_chat_spaces → send_chat_message.
@@ -8140,9 +8271,14 @@ async function runAgentConversationStreaming({ message, history = [], attachedFi
         return truncateText(String(value), MODEL_TOOL_VALUE_MAX_STRING_CHARS);
     };
 
-    const compactToolPayloadForModel = (payload) => {
+    const compactToolPayloadForModel = (payload, toolName) => {
         const compacted = compactValueForModel(payload);
         const json = safeJsonStringify(compacted);
+
+        if (toolName === 'extract_meeting_transcription_text' || toolName === 'summarize_meeting_transcription') {
+            return compacted;
+        }
+
         if (json.length <= MODEL_TOOL_RESULT_MAX_CHARS) {
             return compacted;
         }
@@ -8372,7 +8508,7 @@ ${attachedFilesBlock}
                 ? { tool: toolCall.function.name, error }
                 : { tool: toolCall.function.name, result: compactValueForModel(result) });
 
-            const toolPayloadForModel = compactToolPayloadForModel(error ? { error } : result);
+            const toolPayloadForModel = compactToolPayloadForModel(error ? { error } : result, toolCall.function.name);
             messages.push({
                 role: 'tool',
                 tool_call_id: toolCall.id,
@@ -8761,7 +8897,7 @@ ${attachedFilesBlock}
                 ? { tool: toolCall.function.name, error }
                 : { tool: toolCall.function.name, result: compactValueForModel(result) });
 
-            const toolPayloadForModel = compactToolPayloadForModel(error ? { error } : result);
+            const toolPayloadForModel = compactToolPayloadForModel(error ? { error } : result, toolCall.function.name);
             messages.push({
                 role: 'tool',
                 tool_call_id: toolCall.id,
@@ -9426,18 +9562,37 @@ Rules:
         // Generate AI summary using OpenAI
         const summaryPrompt = `Meeting: ${session.metadata.title || 'Google Meet'} (${new Date(session.startTime).toLocaleString()})
 
+IMPORTANT: Read the ENTIRE transcript from start to end before generating the summary. Do NOT stop reading partway through.
+
 Transcript:
 ${transcriptStepByStep}
 
-Generate meeting notes in this exact structure:
+Generate COMPREHENSIVE topic-wise meeting notes in this exact structure:
 
-## Key Discussion Points
+## Topics Discussed
+
+For EACH distinct topic/subject discussed in the meeting, create a subsection:
+
+### [Topic Name] (Speakers: Speaker1, Speaker2)
+- Detailed point about what was discussed
+- Another detailed point
+- ...
+
+IMPORTANT: If different subjects were discussed (e.g., a technical demo AND a process/workflow discussion), they MUST be separate subsections. Do NOT merge unrelated topics.
+
 ## Decisions Made
 ## Action Items (Owner | Action | Due)
 ## Next Steps
 ## Open Questions
 
-Rules: Concise factual points only. If a section has nothing, write "- None identified." No intro/closing text.`;
+Rules:
+- Read the ENTIRE transcript — do not skip any part.
+- Identify ALL distinct topics discussed and create a separate subsection for each.
+- Each topic should have 3-8 detailed bullet points (1-2 sentences each).
+- Include contributions from EVERY speaker who participated in each topic.
+- Capture demonstrations, examples, process explanations, questions, and suggestions.
+- If a section has nothing, write "- None identified."
+- No intro/closing text.`;
 
         console.log('[Meet] Generating summary with OpenAI...');
 
@@ -9446,7 +9601,7 @@ Rules: Concise factual points only. If a section has nothing, write "- None iden
             messages: [
                 {
                     role: 'system',
-                    content: 'You are a meeting-notes formatter. Follow the requested structure exactly.'
+                    content: 'You are an expert meeting note-taker. You create comprehensive, topic-wise meeting summaries. You MUST read the ENTIRE transcript and identify EVERY distinct topic discussed. Each topic gets its own subsection. You never skip or miss any part of the transcript. Every speaker\'s contributions must be captured.'
                 },
                 {
                     role: 'user',
@@ -9454,7 +9609,7 @@ Rules: Concise factual points only. If a section has nothing, write "- None iden
                 }
             ],
             temperature: 0.2,
-            max_tokens: 4000
+            max_tokens: 4096
         });
 
         const summary = completion.choices[0].message.content;
