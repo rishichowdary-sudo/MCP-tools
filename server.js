@@ -1099,7 +1099,7 @@ Rules (to make a great summary):
 - Do NOT merge unrelated topics into one. If a speaker changes subject, that is a new topic.
 - Capture contributions from EVERY speaker — if someone spoke about a topic, their points must appear.
 - Include demonstrations, examples, questions raised, and process explanations within the topic points.
-- Suggestions & Ideas: Carefully identify any point where ANY speaker proposes a new idea, a potential improvement, a future consideration, or an alternative approach (e.g., phrasing like "we could add X", "maybe we should do Y", "what if we tried Z"). You MUST extract ALL such forward-looking proposals exclusively into the "suggestions" array. DO NOT list these ideas as normal bullet points inside the topics.
+- Suggestions & Ideas: Any statement where a speaker suggests, recommends, proposes, advises, requests a change, or offers feedback with an improvement MUST go exclusively into the "suggestions" array and NOT appear as a point inside any topic. This applies regardless of when or where in the meeting it was said — even mid-discussion or mid-demo. Look for linguistic cues like: "can you...", "you should...", "try doing...", "let's use...", "maybe we could...", "what if...", "I think we should...", "it would be better to...", "we could explore...", or any speaker asking for something to be done differently. Each suggestion entry must include the speaker's name who made it.
 - Next Steps: Detail clear next steps resulting from the meeting, especially immediate follow-ups.
 - Extract ALL action items (explicit or implied) with the responsible person.
 - If a field is unknown, use "TBD".
@@ -9673,6 +9673,7 @@ For EACH distinct topic/subject discussed in the meeting, create a subsection:
 
 IMPORTANT: If different subjects were discussed (e.g., a technical demo AND a process/workflow discussion), they MUST be separate subsections. Do NOT merge unrelated topics.
 
+## Suggestions & Ideas
 ## Decisions Made
 ## Action Items (Owner | Action | Due)
 ## Next Steps
@@ -9683,7 +9684,8 @@ Rules:
 - Identify ALL distinct topics discussed and create a separate subsection for each.
 - Each topic should have 3-8 detailed bullet points (1-2 sentences each).
 - Include contributions from EVERY speaker who participated in each topic.
-- Capture demonstrations, examples, process explanations, questions, and suggestions.
+- Capture demonstrations, examples, process explanations, and questions within topic points.
+- Suggestions & Ideas: Any statement where a speaker suggests, recommends, proposes, advises, requests a change, or offers feedback with an improvement MUST go exclusively under "Suggestions & Ideas" and NOT appear as a point inside any topic. This applies regardless of when or where in the meeting it was said — even mid-discussion or mid-demo. Look for linguistic cues like: "can you...", "you should...", "try doing...", "let's use...", "maybe we could...", "what if...", "I think we should...", "it would be better to...", "we could explore...", or any speaker asking for something to be done differently. Each suggestion must include the speaker's name who made it.
 - If a section has nothing, write "- None identified."
 - No intro/closing text.`;
 
