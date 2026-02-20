@@ -230,10 +230,13 @@ function buildMeetingTranscriptionSummaryPrompt({ fileId, fileName }) {
 File ID: ${id}
 File Name: ${name}
 
-Generate:
-1. Summary
-2. Action Items (Owner | Action | Due)
-3. Next Steps
+
+Generate exactly:
+1. Important Topics Discussed
+2. Meeting Summary (Topics, Speakers, and Numbered Points)
+3. Suggestions & Ideas
+4. Action Items (Owner | Action | Due)
+5. Next Steps
 
 Include the source document link at the end.`;
 }
@@ -2367,9 +2370,9 @@ function formatToolResults(results) {
                         <div class="email-card-from"><code>${escapeHtml(file.id || '')}</code></div>
                         ${hasLink ? '<div class="email-card-snippet result-note">Click card to open document</div>' : ''}
                         ${actionRow(
-                    hasLink ? actionLink({ href: file.webViewLink, label: 'Open File', variant: 'secondary' }) : '',
-                    summaryButton({ fileId: file.id, fileName: fileName, label: 'Summary' })
-                )}
+                        hasLink ? actionLink({ href: file.webViewLink, label: 'Open File', variant: 'secondary' }) : '',
+                        summaryButton({ fileId: file.id, fileName: fileName, label: 'Summary' })
+                    )}
                     </div>
                 `;
                 }).join('');
