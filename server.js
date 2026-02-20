@@ -969,7 +969,8 @@ function renderMeetingSummaryMarkdown({ topics = [], importantTopics = [], sugge
                     const match = sourceLink.match(/\/d\/([a-zA-Z0-9-_]+)/);
                     if (match && match[1]) {
                         const docId = match[1];
-                        const link = `https://docs.google.com/document/d/${docId}/edit?heading=${item.headingId}`;
+                        console.log(`[DEBUG: Deep Link] Topic: "${item.topic}", Extracted HeadingId: "${item.headingId}"`);
+                        const link = `https://docs.google.com/document/d/${docId}/edit#heading=${item.headingId}`;
                         sections.push(`- ${item.topic} [Open in Docs](${link})`);
                     } else {
                         sections.push(`- ${item.topic}`);
@@ -1098,7 +1099,7 @@ Rules (to make a great summary):
 - Do NOT merge unrelated topics into one. If a speaker changes subject, that is a new topic.
 - Capture contributions from EVERY speaker — if someone spoke about a topic, their points must appear.
 - Include demonstrations, examples, questions raised, and process explanations within the topic points.
-- Suggestions: If ANY speaker suggests an idea, improvement, or future consideration (for example, if a speaker named "Alex" suggests changing a color scheme or adding a new button), you MUST extract it into the "suggestions" array. DO NOT list suggestions as bullet points inside the topics. Please move them entirely to the "suggestions" array.
+- Suggestions & Ideas: Carefully identify any point where ANY speaker proposes a new idea, a potential improvement, a future consideration, or an alternative approach (e.g., phrasing like "we could add X", "maybe we should do Y", "what if we tried Z"). You MUST extract ALL such forward-looking proposals exclusively into the "suggestions" array. DO NOT list these ideas as normal bullet points inside the topics.
 - Next Steps: Detail clear next steps resulting from the meeting, especially immediate follow-ups.
 - Extract ALL action items (explicit or implied) with the responsible person.
 - If a field is unknown, use "TBD".
@@ -8260,7 +8261,13 @@ list_documents → get_document_text → create_document / insert_text / append_
 Use list_meeting_transcriptions to discover transcript docs (sharedWithMe by default), then:
 - summarize_meeting_transcription for structured notes, or
 - open_meeting_transcription_file for direct doc link.
-- IMPORTANT: When presenting the output of summarize_meeting_transcription, DO NOT just dump the JSON or write a generic conversational paragraph. You MUST structure your conversational response exactly like the tool output UI: Use Markdown headings (##) to clearly separate "Important Topics Discussed", "Suggestions & Ideas", "Action Items", and "Next Steps". Under the "Meeting Summary" heading, explicitly list the actual "Topics", their "Speakers", and their "Numbered Points" exactly. Do not merge things. Ensure your numbers are 1., 2., 3., etc. Never group suggestions into a single paragraph.
+- IMPORTANT: When presenting the output of summarize_meeting_transcription, DO NOT just dump the JSON or write a generic conversational paragraph. You MUST structure your conversational response with EXACTLY these Markdown headings (##) in this order:
+  ## Important Topics Discussed
+  ## Meeting Summary
+  ## Suggestions & Ideas
+  ## Action Items
+  ## Next Steps
+  Under the "Meeting Summary" heading, explicitly list the actual "Topics", their "Speakers", and their "Numbered Points" exactly. Do not merge this section with "Important Topics Discussed". Ensure your numbers are 1., 2., 3., etc. Never group suggestions into a single paragraph.
 
 **Google Chat**
 list_chat_spaces → send_chat_message.
